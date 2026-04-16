@@ -26,13 +26,18 @@ export const useInvoicesStore = defineStore('invoices', {
     ) {
       this.loading = true
       try {
-        const response = await api.getInvoices({
-          q: query,
-          date_from: dateFrom,
-          date_to: dateTo,
-          page,
-          size
-        })
+        let response
+        if (query && !dateFrom && !dateTo) {
+          response = await api.searchInvoices(query)
+        } else {
+          response = await api.getInvoices({
+            q: query,
+            date_from: dateFrom,
+            date_to: dateTo,
+            page,
+            size
+          })
+        }
         this.invoices = response.items
         this.total = response.total
       } catch (error) {

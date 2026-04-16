@@ -6,7 +6,9 @@ import type {
   EmailAccount, 
   AccountCreate, 
   AccountUpdate, 
-  ScanLog 
+  ScanLog,
+  ScanLogListResponse,
+  ConnectionTestResponse
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -71,7 +73,7 @@ export const api = {
   },
 
   async searchInvoices(query: string): Promise<InvoiceListResponse> {
-    const res = await apiClient.get('/invoices/search', { params: { q: query } })
+    const res = await apiClient.post('/invoices/search', { query })
     return res.data
   },
 
@@ -104,14 +106,19 @@ export const api = {
     await apiClient.delete(`/accounts/${id}`)
   },
 
+  async testConnection(id: number): Promise<ConnectionTestResponse> {
+    const res = await apiClient.post(`/accounts/${id}/test-connection`)
+    return res.data
+  },
+
   // Scan
   async triggerScan(): Promise<{status: string}> {
     const res = await apiClient.post('/scan/trigger')
     return res.data
   },
 
-  async getScanLogs(): Promise<ScanLog[]> {
-    const res = await apiClient.get('/scan/logs')
+  async getScanLogs(params?: {page?: number, size?: number}): Promise<ScanLogListResponse> {
+    const res = await apiClient.get('/scan/logs', { params })
     return res.data
   }
 }
