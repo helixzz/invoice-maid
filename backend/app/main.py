@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import account_router, auth_router, download_router, invoice_router, scan_router
+from app.api import account_router, auth_router, download_router, invoice_router, scan_router, stats_router
 from app.config import get_settings
 from app.database import create_engine_and_session, init_db
 
@@ -50,6 +50,7 @@ app.include_router(invoice_router, prefix="/api/v1")
 app.include_router(download_router, prefix="/api/v1")
 app.include_router(account_router, prefix="/api/v1")
 app.include_router(scan_router, prefix="/api/v1")
+app.include_router(stats_router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health", tags=["health"])
