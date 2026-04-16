@@ -24,7 +24,7 @@ const editingAccountId = ref<number | null>(null)
 
 const defaultAccountForm: AccountCreate = {
   name: '',
-  type: 'IMAP',
+  type: 'imap',
   host: '',
   port: 993,
   username: '',
@@ -33,6 +33,10 @@ const defaultAccountForm: AccountCreate = {
 
 const accountForm = ref<AccountCreate>({ ...defaultAccountForm })
 const savingAccount = ref(false)
+
+const accountNameById = (accountId: number) => {
+  return accounts.value.find((account) => account.id === accountId)?.name || `#${accountId}`
+}
 
 const fetchAccounts = async () => {
   loadingAccounts.value = true
@@ -49,7 +53,8 @@ const fetchAccounts = async () => {
 const fetchLogs = async () => {
   loadingLogs.value = true
   try {
-    scanLogs.value = await api.getScanLogs()
+    const res = await api.getScanLogs()
+    scanLogs.value = res.items
   } catch (error) {
     console.error('Failed to fetch scan logs', error)
     toastRef.value?.addToast('Failed to fetch scan logs', 'error')
@@ -72,11 +77,19 @@ const triggerScan = async () => {
   }
 }
 
-const testConnection = () => {
+const testConnection = async (accountId: number) => {
   toastRef.value?.addToast('Connection test initiated...', 'info')
-  setTimeout(() => {
-    toastRef.value?.addToast('Connection successful!', 'success')
-  }, 1500)
+  try {
+    const response = await api.testConnection(accountId)
+    if (response.ok) {
+      toastRef.value?.addToast('Connection successful!', 'success')
+    } else {
+      toastRef.value?.addToast(response.detail || 'Connection failed', 'error')
+    }
+  } catch (error: any) {
+    console.error('Failed to test connection', error)
+    toastRef.value?.addToast(error?.response?.data?.detail || 'Connection test failed', 'error')
+  }
 }
 
 const openAddModal = () => {
@@ -104,7 +117,6 @@ const saveAccount = async () => {
     if (editingAccountId.value) {
       const updateData: AccountUpdate = {
         name: accountForm.value.name,
-        type: accountForm.value.type,
         host: accountForm.value.host,
         port: accountForm.value.port,
         username: accountForm.value.username,
@@ -223,11 +235,11 @@ onMounted(() => {
                     {{ account.username }}
                   </div>
                   <div class="text-xs text-slate-400 mt-2">
-                    Last scan: {{ formatDate(account.last_scan_uid) }}
+                    Last scan UID: {{ account.last_scan_uid || 'None' }}
                   </div>
                 </div>
                 <div class="flex items-center space-x-4">
-                  <button @click="testConnection" class="text-sm text-slate-500 hover:text-slate-700 transition-colors hidden sm:inline-block border border-slate-200 px-3 py-1 rounded hover:bg-slate-50">Test Connection</button>
+                  <button @click="testConnection(account.id)" class="text-sm text-slate-500 hover:text-slate-700 transition-colors hidden sm:inline-block border border-slate-200 px-3 py-1 rounded hover:bg-slate-50">Test Connection</button>
                   <button @click="openEditModal(account)" class="text-sm text-blue-600 hover:text-blue-900 transition-colors font-medium">Edit</button>
                   <button @click="confirmDeleteAccount(account.id)" class="text-sm text-red-600 hover:text-red-900 transition-colors font-medium">Delete</button>
                 </div>
@@ -286,7 +298,7 @@ onMounted(() => {
                   <td colspan="6" class="px-6 py-12 text-center text-slate-500">No scan logs available</td>
                 </tr>
                 <tr v-else v-for="log in scanLogs" :key="log.id" class="hover:bg-slate-50">
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-medium">#{{ log.email_account_id }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-medium">{{ accountNameById(log.email_account_id) }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.started_at) }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.finished_at) }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900">{{ log.emails_scanned }}</td>
@@ -332,27 +344,27 @@ onMounted(() => {
                     <div>
                       <label class="block text-sm font-medium text-slate-700">Protocol Type</label>
                       <select v-model="accountForm.type" class="mt-1 block w-full py-2 px-3 border border-slate-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                        <option value="IMAP">IMAP</option>
-                        <option value="POP3">POP3</option>
-                        <option value="Outlook">Outlook (OAuth)</option>
-                        <option value="QQ Mail">QQ Mail</option>
+                        <option value="imap">IMAP</option>
+                        <option value="pop3">POP3</option>
+                        <option value="outlook">Outlook (OAuth)</option>
+                        <option value="qq">QQ Mail</option>
                       </select>
                     </div>
 
-                    <template v-if="accountForm.type !== 'Outlook'">
+                    <template v-if="accountForm.type !== 'outlook'">
                       <div class="grid grid-cols-3 gap-4">
                         <div class="col-span-2">
                           <label class="block text-sm font-medium text-slate-700">Host</label>
-                          <input type="text" v-model="accountForm.host" :required="accountForm.type !== 'Outlook'" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="imap.example.com">
+                          <input type="text" v-model="accountForm.host" :required="accountForm.type !== 'outlook'" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="imap.example.com">
                         </div>
                         <div class="col-span-1">
                           <label class="block text-sm font-medium text-slate-700">Port</label>
-                          <input type="number" v-model="accountForm.port" :required="accountForm.type !== 'Outlook'" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="993">
+                          <input type="number" v-model="accountForm.port" :required="accountForm.type !== 'outlook'" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="993">
                         </div>
                       </div>
                     </template>
 
-                    <div v-if="accountForm.type === 'Outlook'" class="bg-blue-50 p-4 rounded-md border border-blue-100 text-sm text-blue-700">
+                    <div v-if="accountForm.type === 'outlook'" class="bg-blue-50 p-4 rounded-md border border-blue-100 text-sm text-blue-700">
                       Outlook accounts require OAuth2 authentication. You will be prompted to authenticate when saving.
                     </div>
 
@@ -361,12 +373,12 @@ onMounted(() => {
                       <input type="email" v-model="accountForm.username" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="user@example.com">
                     </div>
 
-                    <div v-if="accountForm.type !== 'Outlook'">
+                    <div v-if="accountForm.type !== 'outlook'">
                       <label class="block text-sm font-medium text-slate-700">
                         Password / App Password
                         <span v-if="editingAccountId" class="text-slate-400 font-normal ml-1">(Leave blank to keep existing)</span>
                       </label>
-                      <input type="password" v-model="accountForm.password" :required="!editingAccountId && accountForm.type !== 'Outlook'" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
+                      <input type="password" v-model="accountForm.password" :required="!editingAccountId && accountForm.type !== 'outlook'" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
                     </div>
                   </div>
                 </div>

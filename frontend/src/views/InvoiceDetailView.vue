@@ -36,7 +36,6 @@ const fetchInvoice = async () => {
 
 const loadPdfBlob = async (id: number) => {
   try {
-    // Fetch blob manually to attach Authorization header
     const response = await fetch(`/api/v1/invoices/${id}/download`, {
       headers: {
         'Authorization': `Bearer ${authStore.token}`
@@ -75,7 +74,6 @@ const downloadInvoice = () => {
   if (pdfUrl.value) {
     const a = document.createElement('a')
     a.href = pdfUrl.value
-    // Create a meaningful filename
     const filename = `${invoice.value?.buyer || 'buyer'}_${invoice.value?.seller || 'seller'}_${invoice.value?.invoice_no || 'invoice'}.pdf`
     a.download = filename
     document.body.appendChild(a)

@@ -43,7 +43,6 @@ export interface AccountCreate {
 
 export interface AccountUpdate {
   name?: string
-  type?: string
   host?: string | null
   port?: number | null
   username?: string
@@ -59,4 +58,16 @@ export interface ScanLog {
   emails_scanned: number
   invoices_found: number
   error_message: string | null
+}
+
+export interface ScanLogListResponse {
+  items: ScanLog[]
+  total: number
+  page: number
+  size: number
+}
+
+export interface ConnectionTestResponse {
+  ok: boolean
+  detail: string | null
 }

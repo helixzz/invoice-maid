@@ -3,12 +3,14 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useInvoicesStore } from '@/stores/invoices'
 import { useDebounceFn } from '@vueuse/core'
+import { useAuthStore } from '@/stores/auth'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AppLayout from '@/components/AppLayout.vue'
 import { api } from '@/api/client'
 
 const router = useRouter()
 const invoicesStore = useInvoicesStore()
+const authStore = useAuthStore()
 
 const searchQuery = ref('')
 const dateFrom = ref('')
@@ -78,9 +80,32 @@ const viewInvoice = (id: number) => {
   router.push(`/invoices/${id}`)
 }
 
-const downloadInvoice = (id: number) => {
-  const url = api.downloadInvoice(id)
-  window.open(url, '_blank')
+const downloadInvoice = async (id: number) => {
+  try {
+    const response = await fetch(`/api/v1/invoices/${id}/download`, {
+      headers: {
+        'Authorization': `Bearer ${authStore.token}`
+      }
+    })
+    
+    if (!response.ok) throw new Error('Failed to download PDF')
+    
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    
+    const invoice = invoicesStore.invoices.find(i => i.id === id)
+    const filename = invoice ? `${invoice.buyer || 'buyer'}_${invoice.seller || 'seller'}_${invoice.invoice_no || 'invoice'}.pdf` : `invoice_${id}.pdf`
+    
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  } catch (error) {
+    console.error('Failed to download invoice', error)
+  }
 }
 
 const confirmDelete = (id: number) => {
