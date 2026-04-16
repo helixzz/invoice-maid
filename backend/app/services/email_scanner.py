@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import email
+from email import policy
+from email.utils import parsedate_to_datetime
 import functools
 import hashlib
 import json
 import logging
+import poplib
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -19,7 +23,7 @@ from typing import Any, cast
 import httpx
 import msal
 from cryptography.fernet import Fernet
-from imap_tools import AND, MailBox, MailBoxPop3
+from imap_tools import AND, MailBox
 
 from app.config import get_settings
 from app.models import EmailAccount
@@ -101,7 +105,10 @@ def _normalize_datetime(value: datetime | str | None) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str) and value:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = parsedate_to_datetime(value)
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc)
 
@@ -195,40 +202,76 @@ class Pop3Scanner(BaseEmailScanner):
         known_ids = self._load_recent_ids(last_uid)
         emails: list[RawEmail] = []
 
-        with MailBoxPop3(account.host or "", port=account.port or 995).login(account.username, password) as mailbox:
-            for index, msg in enumerate(mailbox.fetch(limit=200, reverse=True), start=1):
+        mailbox = poplib.POP3_SSL(account.host or "", account.port or 995)
+        try:
+            mailbox.user(account.username)
+            mailbox.pass_(password)
+            total_messages = len(mailbox.list()[1])
+            start_index = max(1, total_messages - 199)
+
+            for index in range(total_messages, start_index - 1, -1):
+                _, lines, _ = mailbox.retr(index)
+                raw_message = b"\n".join(lines)
+                msg = email.message_from_bytes(raw_message, policy=policy.default)
                 message_id = self._message_id_for(msg, index)
                 if message_id in known_ids:
                     continue
 
                 attachments: list[RawAttachment] = []
-                for att in getattr(msg, "attachments", []):
-                    filename = getattr(att, "filename", None)
-                    ext = Path(filename or "").suffix.lower()
-                    if ext not in INVOICE_EXTENSIONS:
-                        continue
-                    attachments.append(
-                        RawAttachment(
-                            filename=_resolve_filename(filename, f"attachment{ext or '.bin'}"),
-                            payload=cast(bytes, getattr(att, "payload", b"")),
-                            content_type=getattr(att, "content_type", None) or "application/octet-stream",
-                        )
-                    )
+                body_text_parts: list[str] = []
+                body_html_parts: list[str] = []
 
-                body_text = cast(str, getattr(msg, "text", "") or "")
-                body_html = cast(str, getattr(msg, "html", "") or "")
+                for part in msg.walk():
+                    content_disposition = part.get_content_disposition()
+                    content_type = part.get_content_type()
+
+                    if part.is_multipart():
+                        continue
+
+                    if content_disposition == "attachment":
+                        filename = part.get_filename()
+                        ext = Path(filename or "").suffix.lower()
+                        if ext not in INVOICE_EXTENSIONS:
+                            continue
+                        attachments.append(
+                            RawAttachment(
+                                filename=_resolve_filename(filename, f"attachment{ext or '.bin'}"),
+                                payload=part.get_payload(decode=True) or b"",
+                                content_type=content_type or "application/octet-stream",
+                            )
+                        )
+                        continue
+
+                    payload = part.get_content()
+                    if not isinstance(payload, str) or not payload:
+                        continue
+                    if content_type == "text/plain":
+                        body_text_parts.append(payload)
+                    elif content_type == "text/html":
+                        body_html_parts.append(payload)
+
+                body_text = "\n".join(body_text_parts).strip()
+                body_html = "\n".join(body_html_parts).strip()
+                if not body_text and body_html:
+                    body_text = _html_to_text(body_html)
+
                 emails.append(
                     RawEmail(
                         uid=message_id,
-                        subject=cast(str, getattr(msg, "subject", "") or ""),
+                        subject=str(msg.get("Subject") or ""),
                         body_text=body_text,
                         body_html=body_html,
-                        from_addr=cast(str, getattr(msg, "from_", "") or ""),
-                        received_at=_normalize_datetime(getattr(msg, "date", None)),
+                        from_addr=str(msg.get("From") or ""),
+                        received_at=_normalize_datetime(msg.get("Date")),
                         attachments=attachments,
                         body_links=_extract_urls(body_text, body_html),
                     )
                 )
+        finally:
+            try:
+                mailbox.quit()
+            except Exception:
+                mailbox.close()
 
         return emails
 
@@ -242,8 +285,16 @@ class Pop3Scanner(BaseEmailScanner):
 
     def _test_sync(self, account: EmailAccount) -> bool:
         password = decrypt_password(account.password_encrypted)
-        with MailBoxPop3(account.host or "", port=account.port or 995).login(account.username, password):
+        mailbox = poplib.POP3_SSL(account.host or "", account.port or 995)
+        try:
+            mailbox.user(account.username)
+            mailbox.pass_(password)
             return True
+        finally:
+            try:
+                mailbox.quit()
+            except Exception:
+                mailbox.close()
 
     def _load_recent_ids(self, raw_value: str | None) -> set[str]:
         if not raw_value:
@@ -277,13 +328,18 @@ class Pop3Scanner(BaseEmailScanner):
             elif header_value is not None:
                 message_id = str(header_value)
 
+        if not message_id and hasattr(msg, "get"):
+            header_value = msg.get("Message-ID") or msg.get("Message-Id")
+            if header_value is not None:
+                message_id = str(header_value)
+
         if message_id:
             return message_id.strip()
 
         fallback_bits = [
-            cast(str, getattr(msg, "subject", "") or ""),
-            cast(str, getattr(msg, "from_", "") or ""),
-            str(getattr(msg, "date", "") or ""),
+            cast(str, getattr(msg, "subject", None) or (msg.get("Subject") if hasattr(msg, "get") else "") or ""),
+            cast(str, getattr(msg, "from_", None) or (msg.get("From") if hasattr(msg, "get") else "") or ""),
+            str(getattr(msg, "date", None) or (msg.get("Date") if hasattr(msg, "get") else "") or ""),
             str(index),
         ]
         digest = hashlib.sha256("|".join(fallback_bits).encode()).hexdigest()
