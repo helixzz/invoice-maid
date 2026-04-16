@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import apiClient from '@/api/client'
+import { api } from '@/api/client'
 import router from '@/router'
 
 interface AuthState {
@@ -16,8 +16,10 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     async login(password: string) {
       try {
-        const response = await apiClient.post('/auth/login', { password })
-        this.token = response.data.token
+        const response = await api.login(password)
+        // Adjust depending on API response shape
+        const token = response.access_token || (response as any).token
+        this.token = token
         if (this.token) {
           localStorage.setItem('token', this.token)
           router.push({ name: 'invoices' })

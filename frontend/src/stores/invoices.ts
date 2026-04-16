@@ -1,22 +1,12 @@
 import { defineStore } from 'pinia'
-import apiClient from '@/api/client'
-
-export interface Invoice {
-  id: string
-  buyer_name: string
-  seller_name: string
-  total_amount: number
-  item_description: string
-  invoice_type: string
-  invoice_number: string
-  invoice_date: string
-  file_url: string
-}
+import { api } from '@/api/client'
+import type { Invoice } from '@/types'
 
 interface InvoicesState {
   invoices: Invoice[]
   loading: boolean
   total: number
+  selectedIds: number[]
 }
 
 export const useInvoicesStore = defineStore('invoices', {
@@ -24,6 +14,7 @@ export const useInvoicesStore = defineStore('invoices', {
     invoices: [],
     loading: false,
     total: 0,
+    selectedIds: [],
   }),
   actions: {
     async fetchInvoices(
@@ -35,16 +26,15 @@ export const useInvoicesStore = defineStore('invoices', {
     ) {
       this.loading = true
       try {
-        const params = new URLSearchParams()
-        if (query) params.append('query', query)
-        if (dateFrom) params.append('date_from', dateFrom)
-        if (dateTo) params.append('date_to', dateTo)
-        params.append('page', page.toString())
-        params.append('size', size.toString())
-
-        const response = await apiClient.get(`/invoices?${params.toString()}`)
-        this.invoices = response.data.items
-        this.total = response.data.total
+        const response = await api.getInvoices({
+          q: query,
+          date_from: dateFrom,
+          date_to: dateTo,
+          page,
+          size
+        })
+        this.invoices = response.items
+        this.total = response.total
       } catch (error) {
         console.error('Failed to fetch invoices', error)
         throw error
@@ -52,5 +42,30 @@ export const useInvoicesStore = defineStore('invoices', {
         this.loading = false
       }
     },
+    async deleteInvoice(id: number) {
+      try {
+        await api.deleteInvoice(id)
+        this.invoices = this.invoices.filter(i => i.id !== id)
+        this.selectedIds = this.selectedIds.filter(selectedId => selectedId !== id)
+        this.total--
+      } catch (error) {
+        console.error('Failed to delete invoice', error)
+        throw error
+      }
+    },
+    toggleSelection(id: number) {
+      const index = this.selectedIds.indexOf(id)
+      if (index === -1) {
+        this.selectedIds.push(id)
+      } else {
+        this.selectedIds.splice(index, 1)
+      }
+    },
+    selectAll(ids: number[]) {
+      this.selectedIds = ids
+    },
+    clearSelection() {
+      this.selectedIds = []
+    }
   },
 })
