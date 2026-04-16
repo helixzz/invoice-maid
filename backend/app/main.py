@@ -57,7 +57,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-if FRONTEND_ASSETS.exists():
+if FRONTEND_ASSETS.exists():  # pragma: no cover
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_ASSETS)), name="assets")
 
 

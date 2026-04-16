@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     class _AsyncFile(Protocol):
         async def __aenter__(self) -> "_AsyncFile": ...
 

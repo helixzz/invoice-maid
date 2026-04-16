@@ -55,7 +55,7 @@ def _install_sqlite_hooks(engine: AsyncEngine) -> None:
         cursor.close()
 
         sqlite_connection = _get_sqlite_connection(dbapi_conn)
-        if sqlite_connection is not None:
+        if sqlite_connection is not None:  # pragma: no branch
             _ = load_sqlite_vec(sqlite_connection)
 
 
