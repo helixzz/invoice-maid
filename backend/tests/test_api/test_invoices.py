@@ -65,3 +65,33 @@ async def test_invoice_not_found_paths(client, auth_headers) -> None:
     assert get_response.status_code == 404
     delete_response = await client.delete("/api/v1/invoices/999", headers=auth_headers)
     assert delete_response.status_code == 404
+
+
+async def test_batch_delete_invoices(client, auth_headers, create_invoice, monkeypatch: pytest.MonkeyPatch) -> None:
+    invoice_a = await create_invoice(invoice_no="INV-BATCH-A")
+    invoice_b = await create_invoice(invoice_no="INV-BATCH-B")
+
+    delete_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(invoices_api.FileManager, "delete_invoice_file", delete_mock)
+
+    response = await client.post(
+        "/api/v1/invoices/batch-delete",
+        headers=auth_headers,
+        json={"ids": [invoice_a.id, invoice_b.id]},
+    )
+    assert response.status_code == 204
+    assert delete_mock.await_count == 2
+
+    empty_response = await client.post(
+        "/api/v1/invoices/batch-delete",
+        headers=auth_headers,
+        json={"ids": []},
+    )
+    assert empty_response.status_code == 204
+
+    mixed_response = await client.post(
+        "/api/v1/invoices/batch-delete",
+        headers=auth_headers,
+        json={"ids": [999999]},
+    )
+    assert mixed_response.status_code == 204
