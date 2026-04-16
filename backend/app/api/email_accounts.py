@@ -11,7 +11,6 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import CurrentUser
 from app.models import EmailAccount
-from app.api.test_helpers import is_smoke_account, test_helpers_enabled
 from app.schemas.email_account import EmailAccountCreate, EmailAccountResponse, EmailAccountUpdate
 from app.services.email_scanner import ScannerFactory, encrypt_password
 
@@ -124,9 +123,6 @@ async def test_account_connection(
     account = await db.get(EmailAccount, account_id)
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
-
-    if test_helpers_enabled() and is_smoke_account(account):
-        return ConnectionTestResponse(ok=True)
 
     scanner = ScannerFactory.get_scanner(account.type)
     try:

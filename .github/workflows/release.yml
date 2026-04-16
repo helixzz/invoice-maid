@@ -66,7 +66,7 @@ jobs:
       - name: Create release bundle
         run: |
           mkdir -p dist-release/invoice-maid
-          rsync -a --exclude='.git' --exclude='backend/.venv' --exclude='backend/.coverage' --exclude='backend/.pytest_cache' --exclude='frontend/node_modules' --exclude='frontend/test-results' --exclude='frontend/playwright-report' ./ dist-release/invoice-maid/
+          rsync -a --exclude='.git' --exclude='backend/.venv' --exclude='backend/.coverage' --exclude='backend/.pytest_cache' --exclude='frontend/node_modules' --exclude='frontend/test-results' --exclude='frontend/playwright-report' --exclude='frontend/.playwright' ./ dist-release/invoice-maid/
           cd dist-release
           tar -czf invoice-maid-release.tar.gz invoice-maid
           zip -r invoice-maid-release.zip invoice-maid >/dev/null

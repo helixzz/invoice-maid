@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.database import get_db
+from app.deps import CurrentUser
 from app.models import EmailAccount, Invoice, LLMCache, ScanLog
 from app.services.email_scanner import encrypt_password
 from app.services.file_manager import FileManager
@@ -52,12 +53,6 @@ def _require_test_helpers() -> Settings:
     if not settings.ENABLE_TEST_HELPERS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return settings
-
-
-def is_smoke_account(account: EmailAccount) -> bool:
-    return account.name == SMOKE_ACCOUNT_NAME and account.username == SMOKE_ACCOUNT_USERNAME
-
-
 async def _reset_database(db: AsyncSession, settings: Settings) -> None:
     shutil.rmtree(settings.STORAGE_PATH, ignore_errors=True)
     for model in (Invoice, ScanLog, EmailAccount, LLMCache):
@@ -159,6 +154,10 @@ async def run_smoke_scan() -> None:
 
 
 @router.post("/reset-smoke", response_model=SmokeSeedResponse)
-async def reset_smoke_data(db: AsyncSession = Depends(get_db)) -> SmokeSeedResponse:
+async def reset_smoke_data(
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SmokeSeedResponse:
+    del _current_user
     settings = _require_test_helpers()
     return await seed_smoke_data(db, settings)

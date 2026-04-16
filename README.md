@@ -169,6 +169,21 @@ Invoice Maid uses **OAuth2 Device Code Flow**. On first scan, check the applicat
 > **Warning**
 > Run the backend with `--workers 1`. APScheduler runs in-process, and multiple workers will duplicate scheduled jobs.
 
+### LAN tryout
+To test Invoice Maid from another device on your local network, bind Uvicorn to all interfaces:
+
+```bash
+cd backend
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+Then open `http://<your-lan-ip>:8000` from another machine on the same network.
+
+Notes:
+- Make sure your firewall allows inbound traffic on port `8000`.
+- Keep `--workers 1` to avoid duplicate scheduler jobs.
+- If you are testing without a reverse proxy, only do this on a trusted LAN.
+
 ### systemd
 Copy `deploy/invoice-maid.service` to `/etc/systemd/system/`, update the placeholders (`{{USER}}`, `{{INSTALL_DIR}}`, `{{VENV}}`), then run:
 
