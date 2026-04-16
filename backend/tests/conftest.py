@@ -40,6 +40,8 @@ import app.api.auth as auth_api
 import app.api.downloads as downloads_api
 import app.api.email_accounts as accounts_api
 import app.api.invoices as invoices_api
+import app.api.scan as scan_api
+import app.api.test_helpers as test_helpers_api
 import app.deps as deps_module
 import app.config as config_module
 import app.main as main_module
@@ -63,6 +65,8 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None
         downloads_api,
         accounts_api,
         invoices_api,
+        scan_api,
+        test_helpers_api,
         deps_module,
         main_module,
         auth_service_module,
@@ -88,6 +92,7 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
         "EMBED_DIM": 3,
         "SCAN_INTERVAL_MINUTES": 15,
         "SQLITE_VEC_ENABLED": False,
+        "ENABLE_TEST_HELPERS": False,
         "__runtime_sqlite_vec_available__": False,
     }
     for key, value in values.items():
