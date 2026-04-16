@@ -1,0 +1,31 @@
+# Invoice Maid — systemd Service Template
+# Replace {{USER}} with the Linux system user that will run the service.
+# Replace {{INSTALL_DIR}} with the installation path (for example: /opt/invoice-maid).
+# Replace {{VENV}} with the virtualenv path (for example: /opt/invoice-maid/.venv).
+#
+# IMPORTANT: --workers 1 is required because APScheduler runs in-process.
+# Multiple workers would start duplicate schedulers and duplicate scheduled jobs.
+
+[Unit]
+Description=Invoice Maid — AI Invoice Extraction Service
+After=network.target
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{INSTALL_DIR}}/backend
+EnvironmentFile={{INSTALL_DIR}}/backend/.env
+ExecStart={{VENV}}/bin/uvicorn app.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    --log-level info
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=invoice-maid
+
+[Install]
+WantedBy=multi-user.target

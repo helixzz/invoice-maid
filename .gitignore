@@ -19,6 +19,8 @@ build/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -32,6 +34,8 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+pyrightconfig.json
+basedpyrightconfig.json
 
 # OS
 .DS_Store
