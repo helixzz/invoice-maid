@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import CurrentUser
 from app.models import ScanLog
+from app.api.test_helpers import run_smoke_scan, test_helpers_enabled
 from app.tasks.scheduler import scan_all_accounts
 
 router = APIRouter(prefix="/scan", tags=["scan"])
@@ -52,7 +53,7 @@ def _serialize_log(log: ScanLog) -> ScanLogResponse:
 
 @router.post("/trigger", response_model=ScanTriggerResponse)
 async def trigger_scan(_current_user: CurrentUser) -> ScanTriggerResponse:
-    _ = asyncio.create_task(scan_all_accounts())
+    _ = asyncio.create_task(run_smoke_scan() if test_helpers_enabled() else scan_all_accounts())
     return ScanTriggerResponse(status="triggered")
 
 
