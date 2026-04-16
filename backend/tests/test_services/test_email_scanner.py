@@ -181,30 +181,53 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
     fallback_id = scanner._message_id_for(SimpleNamespace(subject="s", from_="f", date="d", headers=None), 1)
     assert fallback_id.startswith("pop3-")
 
-    message = SimpleNamespace(
-        subject="invoice",
-        text="text https://invoice.test",
-        html="",
-        from_="sender",
-        date=datetime.now(),
-        headers={"Message-ID": "mid-1"},
-        attachments=[SimpleNamespace(filename="invoice.xml", payload=b"<x/>", content_type="application/xml")],
+    message = b"\r\n".join(
+        [
+            b"From: sender",
+            b"Subject: invoice",
+            b"Date: Mon, 01 Jan 2024 00:00:00 +0000",
+            b"Message-ID: mid-1",
+            b"MIME-Version: 1.0",
+            b"Content-Type: multipart/mixed; boundary=sep",
+            b"",
+            b"--sep",
+            b"Content-Type: text/plain; charset=utf-8",
+            b"",
+            b"text https://invoice.test",
+            b"--sep",
+            b"Content-Type: application/xml",
+            b"Content-Disposition: attachment; filename=invoice.xml",
+            b"Content-Transfer-Encoding: base64",
+            b"",
+            b"PHgvPg==",
+            b"--sep--",
+        ]
     )
 
-    class FakeMailbox:
+    class FakePop3:
         def __init__(self, host, port):
             del host, port
 
-        def login(self, username, password):
-            del username, password
-            return _FakeContextManager(self)
+        def user(self, username):
+            assert username == "user@example.com"
 
-        def fetch(self, limit, reverse):
-            assert limit == 200
-            assert reverse is True
-            return [message]
+        def pass_(self, password):
+            assert password == "secret"
 
-    monkeypatch.setattr(email_scanner, "MailBoxPop3", FakeMailbox)
+        def list(self):
+            return b"+OK", [b"1 123"], 123
+
+        def retr(self, index):
+            assert index == 1
+            return b"+OK", message.split(b"\r\n"), len(message)
+
+        def quit(self):
+            return b"+OK"
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", FakePop3)
     account = EmailAccount(
         id=2,
         name="pop3",
@@ -219,24 +242,123 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
     assert emails[0].uid == "mid-1"
     assert emails[0].attachments[0].filename == "invoice.xml"
 
-    skip_message = SimpleNamespace(subject="skip", text="", html="", from_="sender", date=datetime.now(), headers={"Message-ID": "mid-1"}, attachments=[])
+    class SkipPop3(FakePop3):
+        def retr(self, index):
+            payload = b"\r\n".join(
+                [
+                    b"From: sender",
+                    b"Subject: skip",
+                    b"Date: Mon, 01 Jan 2024 00:00:00 +0000",
+                    b"Message-ID: mid-1",
+                    b"",
+                ]
+            )
+            return b"+OK", payload.split(b"\r\n"), len(payload)
 
-    class SkipMailbox(FakeMailbox):
-        def fetch(self, limit, reverse):
-            return [skip_message]
-
-    monkeypatch.setattr(email_scanner, "MailBoxPop3", SkipMailbox)
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", SkipPop3)
     assert scanner._scan_sync(account, json.dumps(["mid-1"])) == []
 
-    note_message = SimpleNamespace(subject="note", text="", html="", from_="sender", date=datetime.now(), headers={"Message-ID": "mid-2"}, attachments=[SimpleNamespace(filename="note.txt", payload=b"x", content_type="text/plain")])
+    class NotePop3(FakePop3):
+        def retr(self, index):
+            payload = b"\r\n".join(
+                [
+                    b"From: sender",
+                    b"Subject: note",
+                    b"Date: Mon, 01 Jan 2024 00:00:00 +0000",
+                    b"Message-ID: mid-2",
+                    b"MIME-Version: 1.0",
+                    b"Content-Type: multipart/mixed; boundary=sep",
+                    b"",
+                    b"--sep",
+                    b"Content-Type: text/plain; charset=utf-8",
+                    b"",
+                    b"",
+                    b"--sep",
+                    b"Content-Type: text/plain",
+                    b"Content-Disposition: attachment; filename=note.txt",
+                    b"",
+                    b"x",
+                    b"--sep--",
+                ]
+            )
+            return b"+OK", payload.split(b"\r\n"), len(payload)
 
-    class NoteMailbox(FakeMailbox):
-        def fetch(self, limit, reverse):
-            return [note_message]
-
-    monkeypatch.setattr(email_scanner, "MailBoxPop3", NoteMailbox)
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", NotePop3)
     note_emails = scanner._scan_sync(account, None)
     assert note_emails[0].attachments == []
+
+    class HtmlOnlyPop3(FakePop3):
+        def retr(self, index):
+            payload = b"\r\n".join(
+                [
+                    b"From: sender",
+                    b"Subject: html",
+                    b"Date: Mon, 01 Jan 2024 00:00:00 +0000",
+                    b"Message-ID: mid-3",
+                    b"MIME-Version: 1.0",
+                    b"Content-Type: multipart/alternative; boundary=sep",
+                    b"",
+                    b"--sep",
+                    b"Content-Type: text/html; charset=utf-8",
+                    b"",
+                    b"<p>Hello invoice</p>",
+                    b"--sep--",
+                ]
+            )
+            return b"+OK", payload.split(b"\r\n"), len(payload)
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", HtmlOnlyPop3)
+    html_emails = scanner._scan_sync(account, None)
+    assert html_emails[0].body_html == "<p>Hello invoice</p>"
+    assert html_emails[0].body_text == "Hello invoice"
+
+    class OtherTextPartPop3(FakePop3):
+        def retr(self, index):
+            payload = b"\r\n".join(
+                [
+                    b"From: sender",
+                    b"Subject: calendar",
+                    b"Date: Mon, 01 Jan 2024 00:00:00 +0000",
+                    b"Message-ID: mid-4",
+                    b"MIME-Version: 1.0",
+                    b"Content-Type: multipart/alternative; boundary=sep",
+                    b"",
+                    b"--sep",
+                    b"Content-Type: text/calendar; charset=utf-8",
+                    b"",
+                    b"BEGIN:VCALENDAR",
+                    b"--sep--",
+                ]
+            )
+            return b"+OK", payload.split(b"\r\n"), len(payload)
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", OtherTextPartPop3)
+    other_text_emails = scanner._scan_sync(account, None)
+    assert other_text_emails[0].body_text == ""
+    assert other_text_emails[0].body_html == ""
+
+    class CloseFallbackPop3(FakePop3):
+        def __init__(self, host, port):
+            super().__init__(host, port)
+            self.closed = False
+
+        def quit(self):
+            raise RuntimeError("quit failed")
+
+        def close(self):
+            self.closed = True
+            return None
+
+    close_mailbox: CloseFallbackPop3 | None = None
+
+    def build_close_fallback(host, port):
+        nonlocal close_mailbox
+        close_mailbox = CloseFallbackPop3(host, port)
+        return close_mailbox
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", build_close_fallback)
+    scanner._scan_sync(account, None)
+    assert close_mailbox is not None and close_mailbox.closed is True
 
 
 @pytest.mark.asyncio
@@ -265,16 +387,47 @@ def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatc
     scanner = Pop3Scanner()
     account = EmailAccount(id=2, name="pop3", type="pop3", host="pop.example.com", port=995, username="user@example.com", password_encrypted=encrypt_password("secret", settings.JWT_SECRET))
 
-    class FakeMailbox:
+    class FakePop3:
         def __init__(self, host, port):
             del host, port
 
-        def login(self, username, password):
-            del username, password
-            return _FakeContextManager(self)
+        def user(self, username):
+            assert username == "user@example.com"
 
-    monkeypatch.setattr(email_scanner, "MailBoxPop3", FakeMailbox)
+        def pass_(self, password):
+            assert password == "secret"
+
+        def quit(self):
+            return b"+OK"
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", FakePop3)
     assert scanner._test_sync(account) is True
+
+    class QuitFailsPop3(FakePop3):
+        def __init__(self, host, port):
+            super().__init__(host, port)
+            self.closed = False
+
+        def quit(self):
+            raise RuntimeError("quit failed")
+
+        def close(self):
+            self.closed = True
+            return None
+
+    quit_fail_mailbox: QuitFailsPop3 | None = None
+
+    def build_quit_fail(host, port):
+        nonlocal quit_fail_mailbox
+        quit_fail_mailbox = QuitFailsPop3(host, port)
+        return quit_fail_mailbox
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", build_quit_fail)
+    assert scanner._test_sync(account) is True
+    assert quit_fail_mailbox is not None and quit_fail_mailbox.closed is True
 
     class BrokenHeaders:
         def __getitem__(self, key):
@@ -282,6 +435,8 @@ def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatc
 
     assert scanner._message_id_for(SimpleNamespace(headers=BrokenHeaders(), subject="s", from_="f", date="d"), 2).startswith("pop3-")
     assert scanner._message_id_for(SimpleNamespace(headers={"Message-ID": " scalar "}, subject="s", from_="f", date="d"), 1) == "scalar"
+    assert scanner._message_id_for(email_scanner.email.message_from_bytes(b"Message-ID: msg-get\r\n\r\n", policy=email_scanner.policy.default), 3) == "msg-get"
+    assert scanner._message_id_for(email_scanner.email.message_from_bytes(b"Subject: no-id\r\n\r\n", policy=email_scanner.policy.default), 4).startswith("pop3-")
 
 
 @pytest.mark.asyncio
