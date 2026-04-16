@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,9 +12,14 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import EmailAccount
 from app.schemas.email_account import EmailAccountCreate, EmailAccountResponse, EmailAccountUpdate
-from app.services.email_scanner import encrypt_password
+from app.services.email_scanner import ScannerFactory, encrypt_password
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+
+class ConnectionTestResponse(BaseModel):
+    ok: bool
+    detail: str | None = None
 
 
 def _serialize_account(account: EmailAccount) -> EmailAccountResponse:
@@ -106,3 +112,24 @@ async def delete_account(
     await db.delete(account)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{account_id}/test-connection", response_model=ConnectionTestResponse)
+async def test_account_connection(
+    account_id: int,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> ConnectionTestResponse:
+    account = await db.get(EmailAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+
+    scanner = ScannerFactory.get_scanner(account.type)
+    try:
+        ok = await scanner.test_connection(account)
+    except Exception:
+        return ConnectionTestResponse(ok=False, detail="Connection test failed")
+
+    if ok:
+        return ConnectionTestResponse(ok=True)
+    return ConnectionTestResponse(ok=False, detail="Connection test failed")
