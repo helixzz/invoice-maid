@@ -8,7 +8,8 @@ import type {
   AccountUpdate, 
   ScanLog,
   ScanLogListResponse,
-  ConnectionTestResponse
+  ConnectionTestResponse,
+  StatsResponse
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -83,6 +84,15 @@ export const api = {
 
   async batchDownload(ids: number[]): Promise<Blob> {
     const res = await apiClient.post('/invoices/batch-download', { ids }, { responseType: 'blob' })
+    return res.data
+  },
+
+  async batchDelete(ids: number[]): Promise<void> {
+    await apiClient.post('/invoices/batch-delete', { ids })
+  },
+
+  async getStats(): Promise<StatsResponse> {
+    const res = await apiClient.get('/stats')
     return res.data
   },
 

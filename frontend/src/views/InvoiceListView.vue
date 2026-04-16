@@ -7,10 +7,24 @@ import { useAuthStore } from '@/stores/auth'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AppLayout from '@/components/AppLayout.vue'
 import { api } from '@/api/client'
+import type { StatsResponse } from '@/types'
 
 const router = useRouter()
 const invoicesStore = useInvoicesStore()
 const authStore = useAuthStore()
+
+const stats = ref<StatsResponse | null>(null)
+const loadingStats = ref(true)
+
+const fetchStats = async () => {
+  try {
+    stats.value = await api.getStats()
+  } catch (error) {
+    console.error('Failed to load stats', error)
+  } finally {
+    loadingStats.value = false
+  }
+}
 
 const searchQuery = ref('')
 const dateFrom = ref('')
@@ -121,11 +135,36 @@ const executeDelete = async () => {
         page.value--
         fetchInvoices()
       }
+      fetchStats()
     } catch (error) {
       console.error('Delete failed', error)
     } finally {
       deletingInvoiceId.value = null
     }
+  }
+}
+
+const confirmBatchDeleteDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
+const deletingBatch = ref(false)
+
+const confirmBatchDelete = () => {
+  if (invoicesStore.selectedIds.length === 0) return
+  confirmBatchDeleteDialog.value?.open()
+}
+
+const executeBatchDelete = async () => {
+  if (invoicesStore.selectedIds.length === 0) return
+  
+  deletingBatch.value = true
+  try {
+    await api.batchDelete(invoicesStore.selectedIds)
+    invoicesStore.clearSelection()
+    fetchInvoices()
+    fetchStats()
+  } catch (error) {
+    console.error('Batch delete failed', error)
+  } finally {
+    deletingBatch.value = false
   }
 }
 
@@ -158,6 +197,7 @@ const clearDates = () => {
 }
 
 onMounted(() => {
+  fetchStats()
   fetchInvoices()
 })
 </script>
@@ -165,8 +205,53 @@ onMounted(() => {
 <template>
   <AppLayout>
     <div class="space-y-6">
-      <!-- Header / Actions -->
-      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+      <div v-if="!loadingStats && stats" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+          <p class="text-sm font-medium text-slate-500">Total Invoices</p>
+          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.total_invoices }}</p>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+          <p class="text-sm font-medium text-slate-500">Total Amount</p>
+          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ formatCurrency(stats.total_amount) }}</p>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+          <p class="text-sm font-medium text-slate-500">This Month</p>
+          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.invoices_this_month }}</p>
+          <p class="text-xs text-slate-400 mt-1">{{ formatCurrency(stats.amount_this_month) }}</p>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+          <p class="text-sm font-medium text-slate-500">Active Accounts</p>
+          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.active_accounts }}</p>
+          <p class="text-xs text-slate-400 mt-1" v-if="stats.last_scan_at">Last scan: {{ formatDate(stats.last_scan_at) }}</p>
+        </div>
+      </div>
+
+      <div v-if="!loadingStats && stats?.total_invoices === 0 && stats?.active_accounts === 0" class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-8 border border-blue-100 shadow-sm text-center">
+        <div class="mx-auto w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-sm mb-4">
+          <svg class="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+        </div>
+        <h2 class="text-2xl font-bold text-slate-900 mb-2">Welcome to Invoice Maid</h2>
+        <p class="text-slate-600 max-w-md mx-auto mb-6">To get started, configure an email account. Invoice Maid will automatically scan it for invoices and extract the data.</p>
+        <button @click="router.push('/settings')" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors">
+          Go to Settings
+          <svg class="ml-2 -mr-1 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+        </button>
+      </div>
+
+      <div v-else-if="!loadingStats && stats?.total_invoices === 0 && stats?.active_accounts > 0" class="bg-white rounded-xl p-8 border border-slate-200 shadow-sm text-center">
+        <div class="mx-auto w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center border border-slate-100 mb-4">
+          <svg class="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+        </div>
+        <h2 class="text-xl font-semibold text-slate-900 mb-2">No Invoices Found Yet</h2>
+        <p class="text-slate-500 max-w-md mx-auto mb-6">Accounts are configured, but no invoices have been extracted. You can wait for the next scheduled scan or trigger one manually.</p>
+        <div class="flex items-center justify-center gap-4">
+          <button @click="router.push('/settings')" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 transition-colors">
+            Manage Scans
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
         <div class="relative w-full sm:w-96">
           <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <svg class="h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -206,21 +291,40 @@ onMounted(() => {
 
       <!-- Batch Actions -->
       <div v-if="invoicesStore.selectedIds.length > 0" class="flex items-center justify-between bg-blue-50 p-4 rounded-xl border border-blue-100 transition-all duration-300">
-        <span class="text-sm text-blue-800 font-medium">
-          {{ invoicesStore.selectedIds.length }} selected
-        </span>
-        <button
-          @click="batchDownload"
-          :disabled="downloadingBatch"
-          class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <svg v-if="downloadingBatch" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
-          <svg v-else class="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-          Download Selected ({{ invoicesStore.selectedIds.length }})
-        </button>
+        <div class="flex items-center gap-4">
+          <span class="text-sm text-blue-800 font-medium">
+            {{ invoicesStore.selectedIds.length }} selected
+          </span>
+          <button @click="invoicesStore.clearSelection" class="text-sm text-blue-600 hover:text-blue-800 hover:underline transition-colors">
+            Clear selection
+          </button>
+        </div>
+        <div class="flex items-center gap-3">
+          <button
+            @click="confirmBatchDelete"
+            :disabled="deletingBatch"
+            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <svg v-if="deletingBatch" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <svg v-else class="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+            Delete
+          </button>
+          <button
+            @click="batchDownload"
+            :disabled="downloadingBatch"
+            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <svg v-if="downloadingBatch" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <svg v-else class="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+            Download
+          </button>
+        </div>
       </div>
 
       <!-- Table -->
@@ -266,11 +370,18 @@ onMounted(() => {
               </tr>
               
               <tr v-else-if="invoicesStore.invoices.length === 0">
-                <td colspan="9" class="px-6 py-12 text-center text-slate-500">
+                <td colspan="9" class="px-6 py-16 text-center text-slate-500">
                   <div class="flex flex-col items-center justify-center">
                     <svg class="w-12 h-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    <p class="text-base font-medium">No invoices found</p>
-                    <p class="text-sm mt-1">Configure email accounts in Settings to start scanning.</p>
+                    <p class="text-base font-medium text-slate-900">No invoices match your search</p>
+                    <p class="text-sm mt-1 text-slate-500 max-w-sm mb-4">Try adjusting your search terms or clearing the date filters to see more results.</p>
+                    <button
+                      v-if="searchQuery || dateFrom || dateTo"
+                      @click="searchQuery = ''; clearDates()"
+                      class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 transition-colors"
+                    >
+                      Clear Filters
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -290,7 +401,10 @@ onMounted(() => {
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ formatCurrency(invoice.amount) }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(invoice.invoice_date) }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                  <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-slate-100 text-slate-800 border border-slate-200">
+                  <span
+                    class="px-2.5 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full border"
+                    :class="invoice.invoice_type.toLowerCase().includes('增值税专用发票') ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-100 text-slate-700 border-slate-200'"
+                  >
                     {{ invoice.invoice_type }}
                   </span>
                 </td>
@@ -362,6 +476,13 @@ onMounted(() => {
       message="Are you sure you want to delete this invoice? This action cannot be undone."
       confirmText="Delete"
       @confirm="executeDelete"
+    />
+    <ConfirmDialog
+      ref="confirmBatchDeleteDialog"
+      title="Delete Selected Invoices"
+      message="Are you sure you want to delete the selected invoices? This action cannot be undone."
+      confirmText="Delete All"
+      @confirm="executeBatchDelete"
     />
   </AppLayout>
 </template>

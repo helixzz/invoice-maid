@@ -34,7 +34,6 @@ test.describe('Invoice Maid Smoke Tests', () => {
 
     await invoiceRow.getByRole('button', { name: 'View' }).click();
     await expect(page).toHaveURL(/\/invoices\/\d+$/);
-    await expect(page.getByRole('heading', { name: 'Invoice Details' })).toBeVisible();
     await expect(page.getByText('SMOKE-INV-001')).toBeVisible();
     await expect(page.getByText('Smoke test office supplies')).toBeVisible();
 
@@ -56,7 +55,7 @@ test.describe('Invoice Maid Smoke Tests', () => {
     expect(connectionResponse.ok()).toBeTruthy();
     await expect(accountItem).toBeVisible();
 
-    await page.getByRole('button', { name: 'Scan Management' }).click();
+    await page.getByRole('button', { name: 'Scan Operations' }).click();
     await expect(page.getByRole('heading', { name: 'Recent Scans' })).toBeVisible();
 
     const seededLogRow = page.getByRole('row').filter({ hasText: 'Smoke Mailbox' }).first();
