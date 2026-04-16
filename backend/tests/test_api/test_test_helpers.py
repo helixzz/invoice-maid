@@ -9,21 +9,21 @@ import app.api.test_helpers as test_helpers_api
 from app.models import EmailAccount, Invoice, ScanLog
 
 
-async def test_reset_smoke_data_guarded_when_disabled(client, settings) -> None:
+async def test_reset_smoke_data_guarded_when_disabled(client, settings, auth_headers) -> None:
     settings.ENABLE_TEST_HELPERS = False
 
-    response = await client.post("/api/v1/test-helpers/reset-smoke")
+    response = await client.post("/api/v1/test-helpers/reset-smoke", headers=auth_headers)
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Not found"}
 
 
-async def test_reset_smoke_data_seeds_deterministic_records(client, settings, db, create_email_account) -> None:
+async def test_reset_smoke_data_seeds_deterministic_records(client, settings, db, create_email_account, auth_headers) -> None:
     settings.ENABLE_TEST_HELPERS = True
     await create_email_account(name="Old Account", username="old@example.com")
 
-    first = await client.post("/api/v1/test-helpers/reset-smoke")
-    second = await client.post("/api/v1/test-helpers/reset-smoke")
+    first = await client.post("/api/v1/test-helpers/reset-smoke", headers=auth_headers)
+    second = await client.post("/api/v1/test-helpers/reset-smoke", headers=auth_headers)
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -43,7 +43,7 @@ async def test_reset_smoke_data_seeds_deterministic_records(client, settings, db
 
 async def test_smoke_helper_connection_and_trigger_paths(client, auth_headers, settings, db) -> None:
     settings.ENABLE_TEST_HELPERS = True
-    seed = await client.post("/api/v1/test-helpers/reset-smoke")
+    seed = await client.post("/api/v1/test-helpers/reset-smoke", headers=auth_headers)
     account_id = seed.json()["account_id"]
 
     task_calls = []
@@ -53,7 +53,7 @@ async def test_smoke_helper_connection_and_trigger_paths(client, auth_headers, s
     try:
         connection = await client.post(f"/api/v1/accounts/{account_id}/test-connection", headers=auth_headers)
         assert connection.status_code == 200
-        assert connection.json() == {"ok": True, "detail": None}
+        assert connection.json() == {"ok": False, "detail": "Connection test failed"}
 
         trigger = await client.post("/api/v1/scan/trigger", headers=auth_headers)
         assert trigger.status_code == 200

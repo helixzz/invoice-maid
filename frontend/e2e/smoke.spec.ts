@@ -5,7 +5,17 @@ const smokePassword = 'smoke-admin-password';
 
 test.describe('Invoice Maid Smoke Tests', () => {
   test.beforeEach(async ({ request }) => {
-    const response = await request.post(`${backendBaseURL}/api/v1/test-helpers/reset-smoke`);
+    const loginResponse = await request.post(`${backendBaseURL}/api/v1/auth/login`, {
+      data: { password: smokePassword },
+    });
+    expect(loginResponse.ok()).toBeTruthy();
+    const { access_token } = await loginResponse.json();
+
+    const response = await request.post(`${backendBaseURL}/api/v1/test-helpers/reset-smoke`, {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+      },
+    });
     if (!response.ok()) {
       throw new Error(`Smoke seed failed: ${response.status()} ${await response.text()}`);
     }

@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 const smokeRoot = path.join(__dirname, '.playwright');
 const smokeDatabasePath = path.join(smokeRoot, 'smoke.db');
 const smokeStoragePath = path.join(smokeRoot, 'storage');
+const backendPython = path.join(__dirname, '../backend/.venv/bin/python');
 const backendPort = 8010;
 const backendBaseURL = `http://127.0.0.1:${backendPort}`;
 const frontendBaseURL = 'http://127.0.0.1:5173';
@@ -34,7 +35,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `sh -c 'rm -rf "${smokeRoot}" && mkdir -p "${smokeStoragePath}" && "/home/helixzz/invoice-maid/backend/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port ${backendPort}'`,
+      command: `sh -c 'rm -rf "${smokeRoot}" && mkdir -p "${smokeStoragePath}" && "${backendPython}" -m uvicorn app.main:app --host 127.0.0.1 --port ${backendPort}'`,
       cwd: path.join(__dirname, '../backend'),
       url: `${backendBaseURL}/api/v1/health`,
       reuseExistingServer: false,
