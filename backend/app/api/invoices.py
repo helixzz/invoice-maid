@@ -24,6 +24,10 @@ class SemanticSearchRequest(BaseModel):
     query: str
 
 
+class BatchDeleteRequest(BaseModel):
+    ids: list[int]
+
+
 def _serialize_invoice(invoice: Invoice) -> InvoiceResponse:
     return InvoiceResponse(
         id=invoice.id,
@@ -122,3 +126,26 @@ async def semantic_search_invoices(
         page=1,
         size=20,
     )
+
+
+@router.post("/batch-delete", status_code=status.HTTP_204_NO_CONTENT)
+async def batch_delete_invoices(
+    payload: BatchDeleteRequest,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    if not payload.ids:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    file_manager = FileManager(get_settings().STORAGE_PATH)
+    invoices = [await db.get(Invoice, invoice_id) for invoice_id in payload.ids]
+
+    for invoice in invoices:
+        if invoice is None:
+            continue
+        file_path = invoice.file_path
+        await db.delete(invoice)
+        await file_manager.delete_invoice_file(file_path)
+
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
