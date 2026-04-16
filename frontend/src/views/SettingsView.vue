@@ -178,15 +178,17 @@ onMounted(() => {
         <nav class="-mb-px flex space-x-8" aria-label="Tabs">
           <button
             @click="activeTab = 'accounts'"
-            :class="[activeTab === 'accounts' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors']"
+            :class="[activeTab === 'accounts' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center']"
           >
+            <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
             Email Accounts
           </button>
           <button
             @click="activeTab = 'scan'"
-            :class="[activeTab === 'scan' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors']"
+            :class="[activeTab === 'scan' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center']"
           >
-            Scan Management
+            <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            Scan Operations
           </button>
         </nav>
       </div>
@@ -214,10 +216,17 @@ onMounted(() => {
             <li v-if="loadingAccounts" class="p-6 text-center text-slate-500 animate-pulse">
               Loading accounts...
             </li>
-            <li v-else-if="accounts.length === 0" class="p-12 text-center text-slate-500">
-               <svg class="mx-auto h-12 w-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
-               <p class="text-base font-medium text-slate-900">No email accounts configured</p>
-               <p class="mt-1">Add an account to start scanning for invoices.</p>
+            <li v-else-if="accounts.length === 0" class="p-12 text-center">
+               <svg class="mx-auto h-16 w-16 text-blue-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+               <h3 class="text-xl font-bold text-slate-900">Let's set up your first account</h3>
+               <p class="mt-2 text-slate-500 max-w-md mx-auto mb-6">Invoice Maid scans your email inboxes to automatically find and extract invoices. Add an IMAP, POP3, Outlook, or QQ account to begin.</p>
+               <button
+                 @click="openAddModal"
+                 class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+               >
+                 <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                 Add Email Account
+               </button>
             </li>
             <li v-else v-for="account in accounts" :key="account.id" class="p-6 hover:bg-slate-50 transition-colors">
               <div class="flex items-center justify-between">
@@ -298,7 +307,11 @@ onMounted(() => {
                   <td colspan="6" class="px-6 py-12 text-center text-slate-500">No scan logs available</td>
                 </tr>
                 <tr v-else v-for="log in scanLogs" :key="log.id" class="hover:bg-slate-50">
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-medium">{{ accountNameById(log.email_account_id) }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm">
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200 shadow-sm truncate max-w-[150px]" :title="accountNameById(log.email_account_id)">
+                      {{ accountNameById(log.email_account_id) }}
+                    </span>
+                  </td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.started_at) }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.finished_at) }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900">{{ log.emails_scanned }}</td>

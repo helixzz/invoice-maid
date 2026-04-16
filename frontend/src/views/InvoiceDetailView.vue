@@ -110,11 +110,17 @@ onMounted(() => {
       <div v-else-if="invoice" class="bg-white shadow-sm border border-slate-200 rounded-xl overflow-hidden">
         <div class="px-6 py-5 border-b border-slate-200 flex justify-between items-center bg-slate-50">
           <div>
-            <h3 class="text-lg leading-6 font-semibold text-slate-900">
-              Invoice Details
+            <h3 class="text-xl font-bold text-slate-900 flex items-center gap-3">
+              {{ invoice.invoice_no || 'Unknown Invoice' }}
+              <span 
+                class="px-2.5 py-0.5 text-xs font-semibold rounded-full border"
+                :class="invoice.invoice_type.toLowerCase().includes('增值税专用发票') ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-100 text-slate-700 border-slate-200'"
+              >
+                {{ invoice.invoice_type || 'Unknown Type' }}
+              </span>
             </h3>
-            <p class="mt-1 max-w-2xl text-sm text-slate-500">
-              Extracted from email attachment or link.
+            <p class="mt-1 text-sm text-slate-500">
+              Extracted from email on {{ formatDate(invoice.created_at) }}
             </p>
           </div>
           <button
@@ -127,55 +133,61 @@ onMounted(() => {
         </div>
         
         <div class="p-6">
-          <dl class="grid grid-cols-1 gap-x-6 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
-            <div class="sm:col-span-1 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Invoice Number</dt>
-              <dd class="mt-1 text-sm text-slate-900 font-semibold">{{ invoice.invoice_no || '-' }}</dd>
+          <!-- Hero Row -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 pb-8 border-b border-slate-100">
+            <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
+              <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Total Amount</span>
+              <span class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount) }}</span>
             </div>
-            <div class="sm:col-span-1 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Date</dt>
-              <dd class="mt-1 text-sm text-slate-900">{{ formatDate(invoice.invoice_date) }}</dd>
+            <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
+              <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Invoice Date</span>
+              <span class="text-2xl font-semibold text-slate-800">{{ formatDate(invoice.invoice_date) }}</span>
             </div>
-            <div class="sm:col-span-1 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Amount</dt>
-              <dd class="mt-1 text-lg font-bold text-blue-600">{{ formatCurrency(invoice.amount) }}</dd>
+            <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
+              <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-2">AI Confidence</span>
+              <div class="w-full max-w-[12rem]">
+                <div class="flex justify-between text-sm mb-1">
+                  <span :class="{'text-green-600 font-semibold': invoice.confidence > 0.8, 'text-yellow-600 font-semibold': invoice.confidence <= 0.8 && invoice.confidence > 0.5, 'text-red-600 font-semibold': invoice.confidence <= 0.5}">
+                    {{ formatConfidence(invoice.confidence) }}
+                  </span>
+                  <span class="text-slate-400">100%</span>
+                </div>
+                <div class="w-full bg-slate-200 rounded-full h-2.5">
+                  <div 
+                    class="h-2.5 rounded-full" 
+                    :class="{'bg-green-500': invoice.confidence > 0.8, 'bg-yellow-500': invoice.confidence <= 0.8 && invoice.confidence > 0.5, 'bg-red-500': invoice.confidence <= 0.5}"
+                    :style="`width: ${(invoice.confidence * 100).toFixed(0)}%`"
+                  ></div>
+                </div>
+              </div>
             </div>
-            <div class="sm:col-span-1 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
+          </div>
+
+          <!-- Metadata -->
+          <dl class="grid grid-cols-1 gap-x-6 gap-y-8 md:grid-cols-2">
+            <div class="sm:col-span-1">
               <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Buyer</dt>
-              <dd class="mt-1 text-sm text-slate-900">{{ invoice.buyer || '-' }}</dd>
+              <dd class="mt-1 text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[3rem]">{{ invoice.buyer || '-' }}</dd>
             </div>
-            <div class="sm:col-span-1 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
+            <div class="sm:col-span-1">
               <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Seller</dt>
-              <dd class="mt-1 text-sm text-slate-900">{{ invoice.seller || '-' }}</dd>
-            </div>
-            <div class="sm:col-span-1 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Type</dt>
-              <dd class="mt-1 text-sm text-slate-900">
-                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                  {{ invoice.invoice_type || '-' }}
-                </span>
-              </dd>
-            </div>
-            <div class="sm:col-span-2 lg:col-span-3 border border-slate-100 p-4 rounded-lg bg-slate-50/50">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Item Summary</dt>
-              <dd class="mt-1 text-sm text-slate-900">{{ invoice.item_summary || '-' }}</dd>
+              <dd class="mt-1 text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[3rem]">{{ invoice.seller || '-' }}</dd>
             </div>
             
-            <div class="sm:col-span-1">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Format</dt>
-              <dd class="mt-1 text-sm text-slate-900">{{ invoice.source_format || '-' }}</dd>
+            <div class="sm:col-span-2">
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Item Summary</dt>
+              <dd class="mt-1 text-sm text-slate-900 bg-slate-50 p-4 rounded-lg border border-slate-100 min-h-[4rem] leading-relaxed">{{ invoice.item_summary || '-' }}</dd>
             </div>
-            <div class="sm:col-span-1">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Extraction Method</dt>
-              <dd class="mt-1 text-sm text-slate-900 capitalize">{{ invoice.extraction_method || '-' }}</dd>
-            </div>
-            <div class="sm:col-span-1">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">AI Confidence</dt>
-              <dd class="mt-1 text-sm">
-                <span :class="{'text-green-600 font-semibold': invoice.confidence > 0.8, 'text-yellow-600 font-semibold': invoice.confidence <= 0.8 && invoice.confidence > 0.5, 'text-red-600 font-semibold': invoice.confidence <= 0.5}">
-                  {{ formatConfidence(invoice.confidence) }}
-                </span>
-              </dd>
+            
+            <div class="sm:col-span-2 flex flex-wrap gap-4 pt-4 border-t border-slate-100 mt-2">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-medium text-slate-500 uppercase tracking-wide">Format:</span>
+                <span class="px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">{{ invoice.source_format || '-' }}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-medium text-slate-500 uppercase tracking-wide">Method:</span>
+                <span class="px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200 capitalize">{{ invoice.extraction_method || '-' }}</span>
+              </div>
             </div>
           </dl>
         </div>

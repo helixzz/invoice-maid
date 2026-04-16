@@ -71,3 +71,13 @@ export interface ConnectionTestResponse {
   ok: boolean
   detail: string | null
 }
+
+export interface StatsResponse {
+  total_invoices: number
+  total_amount: number
+  invoices_this_month: number
+  amount_this_month: number
+  active_accounts: number
+  last_scan_at: string | null
+  last_scan_found: number | null
+}
