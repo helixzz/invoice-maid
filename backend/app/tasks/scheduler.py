@@ -33,8 +33,10 @@ async def scan_all_accounts() -> None:
         accounts = list(result.scalars().all())
 
         for account in accounts:
+            account_id = account.id
+            account_name = account.name
             log = ScanLog(
-                email_account_id=account.id,
+                email_account_id=account_id,
                 started_at=datetime.now(timezone.utc),
                 emails_scanned=0,
                 invoices_found=0,
@@ -135,7 +137,7 @@ async def scan_all_accounts() -> None:
             except Exception as exc:
                 await db.rollback()
                 log.error_message = str(exc)[:500]
-                logger.exception("Scan failed for account %s (%s)", account.name, account.id)
+                logger.exception("Scan failed for account %s (%s)", account_name, account_id)
             finally:
                 log.finished_at = datetime.now(timezone.utc)
                 db.add(log)
