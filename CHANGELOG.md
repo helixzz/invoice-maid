@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.0] - 2026-04-18
+
+### Added
+- **Concurrent email processing** — emails are now processed 5 at a time via `asyncio.Semaphore`-bounded workers instead of sequentially, providing 3-5x scan throughput improvement
+- **Per-email DB sessions** — each concurrent email worker gets its own database session, eliminating session contention
+- **Thread-safe progress tracking** — `scan_progress.py` now uses `asyncio.Lock` to protect all progress counter updates; added `inc_emails_processed()`, `inc_invoices_found()`, `inc_errors()` atomic increment helpers
+- **IntegrityError handling** — concurrent invoice inserts and LLM cache writes now gracefully handle unique constraint races instead of crashing
+
+### Changed
+- **Scanner pagination limits raised** — all scanners now fetch up to 500 emails on first scan (was 100-200) and have no limit on subsequent incremental scans
+- **Outlook scanner fully paginates** — removed hard 200-email cap; follows `@odata.nextLink` until all messages are fetched or `last_uid` is reached
+- **IMAP scanner unlimited on incremental scans** — `limit=None` when `last_uid` is set, fetching all new mail since last scan
+- **POP3 scanner processes full mailbox** — on incremental scans, processes all messages from newest to oldest until hitting known IDs
+- **CPU-bound parsing off event loop** — `parse_invoice()` now runs via `asyncio.to_thread()` to avoid blocking the async event loop during PDF/QR extraction
+- **Progress functions are now async** — `update_progress()`, `finish_progress()`, `inc_*()` are all `async def` with lock protection
+
+### Fixed
+- **Progress bar stuck at 50%/99% on completion** — `finish_progress()` now sets `current_account_idx` and `current_email_idx` to their maximum values when phase is DONE, ensuring all progress bars reach 100%
+
 ## [0.5.7] - 2026-04-18
 
 ### Fixed
