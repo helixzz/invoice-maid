@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.1] - 2026-04-18
+
+### Fixed
+- **IMAP scanner crash on incremental scans** — `AND()` without parameters raises `ValueError` in imap-tools; replaced with `"ALL"` string criteria
+- **Progress bar emails_processed not reset per-account** — counter now resets when switching accounts, preventing misleading "total decreasing" display
+
+### Added
+- **Full Rescan button** — "Full Rescan" button on Settings page resets `last_scan_uid` for all accounts, triggering a complete re-scan from scratch instead of incremental
+- **`?full=true` query parameter on `POST /scan/trigger`** — API support for full rescan
+
 ## [0.6.0] - 2026-04-18
 
 ### Added
