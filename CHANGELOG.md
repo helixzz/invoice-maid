@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.0] - 2026-04-18
+
+### Added
+- **VAT invoice whitelist gate** — `VALID_INVOICE_TYPES` constant with all valid Chinese tax invoice types; scheduler rejects documents with unrecognised `invoice_type`, logging new `not_vat_invoice` outcome. Hotel receipts (入住凭证), ride itineraries (行程单), payment receipts, and foreign-currency receipts are no longer saved.
+- **LLM rejection field** — `InvoiceExtract.is_valid_tax_invoice: bool`; rewritten `extract_invoice.txt` prompt performs explicit document validation before field extraction
+- **VAT-specific confidence scoring** — weighted field scoring (invoice_no 30%, amount 25%, date 15%, buyer/seller 10% each, valid_type 10%) replaces naive field-count-based scoring
+- **Text heuristic backup** — `_is_vat_document()` rule-based check used when LLM is unavailable (quota exhausted)
+- **AI connection test endpoint** — `POST /settings/ai/test-connection` actually tests chat completion against the selected model instead of listing models
+- **AI connection status indicator** — green/red indicator on Settings AI panel after testing
+
+### Fixed
+- **Doubled characters** (e.g. `霍霍城城` → `霍城`) — pdfplumber now calls `dedupe_chars(tolerance=1)` before text extraction
+- **CID font artifacts** — PDF parser falls back to PyMuPDF when pdfplumber output contains more than 5 `(cid:N)` placeholders
+- **XML legacy formats** — `parse_xml` handles GBK-encoded XMLs (航信/百望 tax-control systems) and recognises 14 additional element names covering 航信, 百望, and 数电票 formats
+- **QR field-order bug** — corrected to STA spec (`parts[3]=invoice_no`, `parts[4]=amount`, `parts[5]=date`)
+- **QR validation** — only QR codes with `parts[0]=="01"` and valid STA type code accepted; 数电票 URL-QR codes skipped cleanly
+- **AI Settings test button** — now tests actual chat completion instead of listing models
+
+### Changed
+- **Confidence threshold 0.5 → 0.6** — stricter save gate; zero/sentinel amounts (< ¥0.10) treated as parse failures
+
 ## [0.6.3] - 2026-04-18
 
 ### Changed
