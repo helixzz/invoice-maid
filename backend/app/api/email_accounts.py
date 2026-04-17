@@ -244,6 +244,12 @@ async def initiate_account_oauth(
 ) -> OAuthInitiateResponse:
     account = await _get_account_or_404(db, account_id)
     _ensure_outlook_account(account)
+
+    if not account.oauth_token_path:
+        account.oauth_token_path = _default_oauth_token_path(account.id)
+        await db.commit()
+        await db.refresh(account)
+
     scanner = OutlookScanner()
 
     if await scanner.has_cached_token_async(account):

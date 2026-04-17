@@ -1030,3 +1030,11 @@ async def test_complete_device_flow_with_path_no_token_path(monkeypatch: pytest.
 
     result = await scanner.complete_device_flow_async_with_path({}, None, "personal")
     assert result["error"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_acquire_token_sync_raises_when_no_token_path(settings) -> None:
+    scanner = OutlookScanner()
+    account = email_scanner.EmailAccount(id=99, name="no-path", type="outlook", username="a@b.com", oauth_token_path=None)
+    with pytest.raises(RuntimeError, match="Outlook authorization required"):
+        scanner._acquire_token_sync(account)
