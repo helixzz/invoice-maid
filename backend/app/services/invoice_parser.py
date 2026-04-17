@@ -29,6 +29,7 @@ class ParsedInvoice:
     source_format: Literal["pdf", "xml", "ofd"] = "pdf"
     extraction_method: Literal["qr", "xml_xpath", "ofd_struct", "llm", "regex"] = "llm"
     confidence: float = 0.0
+    is_vat_document: bool = False
 
 
 PATTERNS = {
@@ -40,6 +41,25 @@ PATTERNS = {
     "total_amount": re.compile(r"价税合计[（(]大写[）)].*?[¥￥]\s*([\d,]+\.\d{2})"),
     "total_amount_alt": re.compile(r"合\s*计.*?[¥￥]\s*([\d,]+\.\d{2})"),
 }
+
+_CID_RE = re.compile(r'\(cid:\d+\)')
+
+_QR_VALID_TYPE_CODES: frozenset[str] = frozenset({"01", "03", "04", "08", "10", "11", "14", "15"})
+
+_VAT_TYPE_MARKERS = [
+    "增值税专用发票", "增值税普通发票", "电子发票（增值税专用发票）", "电子发票（普通发票）",
+    "增值税电子专用发票", "增值税电子普通发票", "全面数字化的电子发票", "数电专票", "数电普票",
+    "机动车销售统一发票",
+]
+_VAT_REQUIRED_MARKERS = ["价税合计", "税率", "税额", "发票号码"]
+_NON_INVOICE_MARKERS = [
+    "入住凭证", "住宿凭证", "结账单", "消费清单", "行程单", "出行记录", "用车凭证",
+    "收款收据", "付款凭证",
+]
+
+
+def _has_cid_artifacts(text: str, threshold: int = 5) -> bool:
+    return len(_CID_RE.findall(text)) > threshold
 
 
 def detect_format(filename: str, content: bytes) -> Literal["pdf", "xml", "ofd"]:
@@ -55,9 +75,6 @@ def detect_format(filename: str, content: bytes) -> Literal["pdf", "xml", "ofd"]
 
     if ext == "pdf" or content[:4] == b"%PDF":
         return "pdf"
-
-    if content[:4] == b"PK\x03\x04" and ext == "ofd":
-        return "ofd"
 
     if b"<?xml" in content[:100]:
         return "xml"
@@ -88,7 +105,8 @@ def _extract_text_from_pdf(content: bytes) -> str:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             texts: list[str] = []
             for page in pdf.pages[:5]:
-                text = page.extract_text(x_tolerance=2, y_tolerance=3)
+                deduped = page.dedupe_chars(tolerance=1, extra_attrs=())
+                text = deduped.extract_text(x_tolerance=2, y_tolerance=3)
                 if text:
                     texts.append(text)
             return "\n".join(texts)
@@ -133,17 +151,19 @@ def _decode_qr_from_pdf(content: bytes) -> dict[str, str | None] | None:
             doc.close()
 
         for barcode in barcodes:
-            data = barcode.data.decode("utf-8", errors="ignore")
+            raw = barcode.data.decode("utf-8", errors="ignore").strip()
+            if raw.startswith("http://") or raw.startswith("https://"):
+                continue
             for sep in [",", "|"]:
-                parts = [part.strip() for part in data.split(sep)]
-                if len(parts) >= 5:
-                    if len(parts) >= 6:
-                        return {
-                            "invoice_code": parts[1] or None,
-                            "invoice_no": parts[2] or None,
-                            "invoice_date_str": parts[3] or None,
-                            "amount_str": parts[4] or None,
-                        }
+                parts = [p.strip() for p in raw.split(sep)]
+                if len(parts) >= 7 and parts[0] == "01" and parts[1] in _QR_VALID_TYPE_CODES:
+                    return {
+                        "invoice_code": parts[2] or None,
+                        "invoice_no": parts[3] or None,
+                        "amount_str": parts[4] or None,
+                        "invoice_date_str": parts[5] or None,
+                    }
+                if len(parts) == 5 and re.match(r'^\d{10,12}$', parts[0]):
                     return {
                         "invoice_code": parts[0] or None,
                         "invoice_no": parts[1] or None,
@@ -200,13 +220,54 @@ def _extract_from_regex(text: str) -> ParsedInvoice:
     if match:
         result.amount = _parse_amount(match.group(1))
 
-    found_count = sum(
-        1
-        for value in [result.invoice_no, result.buyer, result.seller, result.amount, result.invoice_date]
-        if value is not None
+    result.confidence = _vat_confidence(
+        result.invoice_no,
+        result.buyer,
+        result.seller,
+        result.amount,
+        result.invoice_date,
+        result.invoice_type,
     )
-    result.confidence = found_count / 5.0
     return result
+
+
+def _vat_confidence(
+    invoice_no: str | None,
+    buyer: str | None,
+    seller: str | None,
+    amount: Decimal | None,
+    invoice_date: date | None,
+    invoice_type: str | None,
+) -> float:
+    from app.schemas.invoice import VALID_INVOICE_TYPES
+
+    score = 0.0
+    if invoice_no:
+        score += 0.30
+    if amount and amount > 0:
+        score += 0.25
+    if invoice_date:
+        score += 0.15
+    if buyer:
+        score += 0.10
+    if seller:
+        score += 0.10
+    if invoice_type and (
+        invoice_type in VALID_INVOICE_TYPES
+        or any(vt in invoice_type for vt in VALID_INVOICE_TYPES if len(vt) > 3)
+    ):
+        score += 0.10
+    return round(min(score, 1.0), 2)
+
+
+def _is_vat_document(text: str) -> bool:
+    if not text:
+        return False
+    if any(m in text for m in _NON_INVOICE_MARKERS):
+        return False
+    if not any(m in text for m in _VAT_TYPE_MARKERS):
+        return False
+    return sum(1 for m in _VAT_REQUIRED_MARKERS if m in text) >= 2
 
 
 def parse_pdf(content: bytes) -> ParsedInvoice:
@@ -222,7 +283,7 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
         result.confidence = 0.95
 
     text = _extract_text_from_pdf(content)
-    if not text:
+    if not text or _has_cid_artifacts(text):
         logger.info("PDF parser falling back to PyMuPDF text extraction")
         text = _extract_text_pymupdf(content)
     result.raw_text = text
@@ -241,10 +302,12 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
             result.invoice_type = regex_result.invoice_type
         if not result.item_summary:
             result.item_summary = regex_result.item_summary
+        result.is_vat_document = _is_vat_document(result.raw_text)
         logger.debug("Parsed PDF invoice with method qr")
         return result
 
     regex_result = _extract_from_regex(text)
+    regex_result.is_vat_document = _is_vat_document(regex_result.raw_text)
     if regex_result.confidence >= 0.6:
         regex_result.source_format = "pdf"
         logger.debug("Parsed PDF invoice with method regex")
@@ -252,6 +315,7 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
 
     result.extraction_method = "llm"
     result.confidence = 0.0
+    result.is_vat_document = _is_vat_document(result.raw_text)
     logger.error("PDF parsing failed for file: all extraction strategies exhausted")
     return result
 
@@ -263,7 +327,15 @@ def parse_xml(content: bytes) -> ParsedInvoice:
     try:
         etree = importlib.import_module("lxml.etree")
 
-        root = etree.fromstring(content)
+        try:
+            root = etree.fromstring(content)
+        except etree.XMLSyntaxError:
+            try:
+                root = etree.fromstring(content.decode("gbk", errors="replace").encode("utf-8"))
+            except Exception:
+                result.raw_text = content.decode("utf-8", errors="ignore")
+                result.confidence = 0.0
+                return result
         result.raw_text = etree.tostring(root, encoding="unicode", pretty_print=True)
 
         def find_text(tag_names: list[str]) -> str | None:
@@ -277,21 +349,21 @@ def parse_xml(content: bytes) -> ParsedInvoice:
                         return elem.text.strip()
             return None
 
-        result.invoice_no = find_text(["InvoiceNo", "fpHm", "invoiceNumber", "InvoiceNumber"])
-        result.buyer = find_text(["BuyerName", "gmfMc", "buyerName"])
-        result.seller = find_text(["SellerName", "xsfMc", "sellerName"])
-        result.invoice_type = find_text(["InvoiceType", "fplx", "invoiceType"])
+        result.invoice_no = find_text(["InvoiceNo", "fpHm", "invoiceNumber", "InvoiceNumber", "FPHM", "EInvoiceNumber"])
+        result.buyer = find_text(["BuyerName", "gmfMc", "buyerName", "GMF_MC", "Gfmc", "GMFMC", "PayingPartyName"])
+        result.seller = find_text(["SellerName", "xsfMc", "sellerName", "XSF_MC", "XSFMC", "InvoicingPartyName"])
+        result.invoice_type = find_text(["InvoiceType", "fplx", "invoiceType", "FPLX", "KPLX", "EInvoiceName"])
 
-        amount_str = find_text(["TaxInclusiveTotalAmount", "jshj", "totalAmount", "TotalAmount"])
+        amount_str = find_text(["TaxInclusiveTotalAmount", "jshj", "totalAmount", "TotalAmount", "JSHJ", "TotalIncludingTax", "PriceTaxTotal", "价税合计"])
         if amount_str:
             result.amount = _parse_amount(amount_str)
 
-        date_str = find_text(["InvoiceDate", "kprq", "invoiceDate", "IssueDate"])
+        date_str = find_text(["InvoiceDate", "kprq", "invoiceDate", "IssueDate", "KPRQ", "IssueDateTime", "开票日期"])
         if date_str:
             result.invoice_date = _parse_qr_date(date_str)
 
         items: list[str] = []
-        for item_tag in ["GoodsName", "xmmc", "goodsName"]:
+        for item_tag in ["GoodsName", "xmmc", "goodsName", "Spmc", "XMMC", "ItemName"]:
             for elem in root.iter():
                 local_name = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
                 if local_name == item_tag and elem.text:
@@ -299,8 +371,15 @@ def parse_xml(content: bytes) -> ParsedInvoice:
         if items:
             result.item_summary = "; ".join(items[:5])
 
-        found = sum(1 for value in [result.invoice_no, result.buyer, result.seller, result.amount] if value is not None)
-        result.confidence = found / 4.0
+        result.confidence = _vat_confidence(
+            result.invoice_no,
+            result.buyer,
+            result.seller,
+            result.amount,
+            result.invoice_date,
+            result.invoice_type,
+        )
+        result.is_vat_document = _is_vat_document(result.raw_text)
         logger.debug("Parsed XML invoice with method xml_xpath")
     except Exception as exc:
         logger.error("XML parsing failed: %s", exc)
@@ -344,12 +423,19 @@ def parse_ofd(content: bytes) -> ParsedInvoice:
                     result.invoice_date = _parse_qr_date(str(date_str))
 
                 result.raw_text = str(data)
-                found = sum(1 for value in [result.invoice_no, result.buyer, result.seller, result.amount] if value is not None)
-                result.confidence = found / 4.0
+                result.confidence = _vat_confidence(
+                    result.invoice_no,
+                    result.buyer,
+                    result.seller,
+                    result.amount,
+                    result.invoice_date,
+                    result.invoice_type,
+                )
             else:
                 result.confidence = 0.0
         finally:
             ofd.del_data()
+        result.is_vat_document = _is_vat_document(result.raw_text)
         logger.debug("Parsed OFD invoice with method ofd_struct")
     except ImportError:
         logger.warning("easyofd not installed — OFD parsing unavailable")

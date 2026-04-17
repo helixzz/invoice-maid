@@ -28,9 +28,19 @@ def test_detect_format_and_basic_parsers() -> None:
 
 
 def test_extract_text_from_pdf_and_pymupdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DedupedPage:
+        def extract_text(self, **_kwargs):
+            return "page1"
+
+    class Page:
+        def dedupe_chars(self, tolerance, extra_attrs):
+            assert tolerance == 1
+            assert extra_attrs == ()
+            return DedupedPage()
+
     class PdfCtx:
         def __enter__(self):
-            return SimpleNamespace(pages=[SimpleNamespace(extract_text=lambda **kwargs: "page1")])
+            return SimpleNamespace(pages=[Page()])
 
         def __exit__(self, exc_type, exc, tb):
             return False
@@ -38,12 +48,28 @@ def test_extract_text_from_pdf_and_pymupdf(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: SimpleNamespace(open=lambda stream: PdfCtx()) if name == "pdfplumber" else SimpleNamespace())
     assert parser._extract_text_from_pdf(b"pdf") == "page1"
 
+    class MultiDedupedPage:
+        def __init__(self, value):
+            self.value = value
+
+        def extract_text(self, **_kwargs):
+            return self.value
+
+    class MultiPage:
+        def __init__(self, value):
+            self.value = value
+
+        def dedupe_chars(self, tolerance, extra_attrs):
+            assert tolerance == 1
+            assert extra_attrs == ()
+            return MultiDedupedPage(self.value)
+
     class MultiPageCtx:
         def __enter__(self):
             return SimpleNamespace(
                 pages=[
-                    SimpleNamespace(extract_text=lambda **kwargs: "page1"),
-                    SimpleNamespace(extract_text=lambda **kwargs: None),
+                    MultiPage("page1"),
+                    MultiPage(None),
                 ]
             )
 
@@ -92,7 +118,7 @@ def test_decode_qr_from_pdf_paths(monkeypatch: pytest.MonkeyPatch) -> None:
         if name == "PIL.Image":
             return SimpleNamespace(open=lambda stream: "image")
         if name == "pyzbar.pyzbar":
-            return SimpleNamespace(decode=lambda img: [Barcode("x,code,no,20240102,88.88,extra"), Barcode("code|no|88.88|20240102|x")])
+            return SimpleNamespace(decode=lambda img: [Barcode("https://skip.me"), Barcode("01,03,code,no,88.88,20240102,extra")])
         raise AssertionError(name)
 
     monkeypatch.setattr(parser.importlib, "import_module", import_module)
@@ -116,7 +142,7 @@ def test_decode_qr_from_pdf_five_part_path(monkeypatch: pytest.MonkeyPatch) -> N
             return None
 
     class Barcode:
-        data = b"code,no,88.88,20240102,x"
+        data = b"123456789012,no,88.88,20240102,x"
 
     def import_module(name):
         if name == "fitz":
@@ -129,7 +155,7 @@ def test_decode_qr_from_pdf_five_part_path(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(parser.importlib, "import_module", import_module)
     result = parser._decode_qr_from_pdf(b"pdf")
-    assert result == {"invoice_code": "code", "invoice_no": "no", "amount_str": "88.88", "invoice_date_str": "20240102"}
+    assert result == {"invoice_code": "123456789012", "invoice_no": "no", "amount_str": "88.88", "invoice_date_str": "20240102"}
 
 
 def test_decode_qr_from_pdf_returns_none_for_invalid_barcodes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,6 +184,7 @@ def test_decode_qr_from_pdf_returns_none_for_invalid_barcodes(monkeypatch: pytes
 
 def test_extract_from_regex() -> None:
     text = (
+        "增值税电子普通发票\n"
         "发票号码：12345678\n"
         "开票日期：2024年1月2日\n"
         "购买方名称：甲方\n纳税人识别号\n"
@@ -170,7 +197,17 @@ def test_extract_from_regex() -> None:
     assert result.seller == "乙方"
     assert result.amount == Decimal("1234.50")
     assert result.invoice_date == date(2024, 1, 2)
-    assert result.confidence == 1.0
+    assert result.confidence == 0.9
+
+
+def test_has_cid_artifacts_vat_confidence_and_vat_document() -> None:
+    assert parser._has_cid_artifacts("(cid:1)" * 6) is True
+    assert parser._has_cid_artifacts("(cid:1)" * 5) is False
+    assert parser._vat_confidence("12345678", "甲方", "乙方", Decimal("1.00"), date(2024, 1, 2), "增值税电子普通发票") == 1.0
+    assert parser._vat_confidence(None, None, None, None, None, None) == 0.0
+    assert parser._is_vat_document("增值税普通发票 价税合计 税额 发票号码") is True
+    assert parser._is_vat_document("入住凭证 增值税普通发票 价税合计 税额 发票号码") is False
+    assert parser._is_vat_document("普通单据 价税合计 税额 发票号码") is False
 
 
 def test_parse_pdf_qr_regex_and_llm_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,19 +219,20 @@ def test_parse_pdf_qr_regex_and_llm_paths(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(parser.logger, "error", lambda message, *args: error_logs.append(message % args))
 
     monkeypatch.setattr(parser, "_decode_qr_from_pdf", lambda content: {"invoice_no": "001", "amount_str": "88.00", "invoice_date_str": "20240102"})
-    monkeypatch.setattr(parser, "_extract_text_from_pdf", lambda content: "购买方名称：甲方\n纳税人识别号\n销售方名称：乙方\n纳税人识别号")
+    monkeypatch.setattr(parser, "_extract_text_from_pdf", lambda content: "增值税普通发票\n价税合计\n税额\n发票号码\n购买方名称：甲方\n纳税人识别号\n销售方名称：乙方\n纳税人识别号")
     monkeypatch.setattr(parser, "_extract_text_pymupdf", lambda content: "")
     result = parser.parse_pdf(b"pdf")
     assert result.extraction_method == "qr"
     assert result.invoice_no == "001"
     assert result.buyer == "甲方"
+    assert result.is_vat_document is True
     assert debug_logs[-1] == "Parsed PDF invoice with method qr"
 
     monkeypatch.setattr(parser, "_decode_qr_from_pdf", lambda content: None)
     monkeypatch.setattr(
         parser,
         "_extract_text_from_pdf",
-        lambda content: "发票号码：12345678\n购买方名称：甲方\n纳税人识别号\n销售方名称：乙方\n纳税人识别号\n价税合计（大写） ￥1.00",
+        lambda content: "增值税电子普通发票\n发票号码：12345678\n开票日期：2024年1月2日\n购买方名称：甲方\n纳税人识别号\n销售方名称：乙方\n纳税人识别号\n价税合计（大写） ￥1.00",
     )
     regex_result = parser.parse_pdf(b"pdf")
     assert regex_result.extraction_method == "regex"
@@ -208,6 +246,17 @@ def test_parse_pdf_qr_regex_and_llm_paths(monkeypatch: pytest.MonkeyPatch) -> No
     assert llm_result.confidence == 0.0
     assert info_logs[-1] == "PDF parser falling back to PyMuPDF text extraction"
     assert error_logs[-1] == "PDF parsing failed for file: all extraction strategies exhausted"
+
+
+def test_parse_pdf_falls_back_on_cid_artifacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    info_logs: list[str] = []
+    monkeypatch.setattr(parser.logger, "info", lambda message, *args: info_logs.append(message % args))
+    monkeypatch.setattr(parser, "_decode_qr_from_pdf", lambda content: None)
+    monkeypatch.setattr(parser, "_extract_text_from_pdf", lambda content: "(cid:1)" * 6)
+    monkeypatch.setattr(parser, "_extract_text_pymupdf", lambda content: "增值税普通发票 发票号码：12345678 价税合计（大写） ￥1.00")
+    result = parser.parse_pdf(b"pdf")
+    assert result.raw_text == "增值税普通发票 发票号码：12345678 价税合计（大写） ￥1.00"
+    assert info_logs[-1] == "PDF parser falling back to PyMuPDF text extraction"
 
 
 def test_parse_pdf_qr_fills_remaining_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,7 +312,7 @@ def test_parse_xml_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
                 ".//InvoiceNo": SimpleNamespace(text="001"),
                 ".//BuyerName": None,
                 ".//SellerName": None,
-                ".//InvoiceType": SimpleNamespace(text="电子票"),
+                ".//InvoiceType": SimpleNamespace(text="增值税电子普通发票"),
                 ".//TaxInclusiveTotalAmount": SimpleNamespace(text="66.00"),
                 ".//InvoiceDate": SimpleNamespace(text="20240102"),
             }
@@ -278,13 +327,14 @@ def test_parse_xml_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
                 ]
             )
 
-    etree = SimpleNamespace(fromstring=lambda content: Root(), tostring=lambda root, encoding, pretty_print: "<xml />")
+    etree = SimpleNamespace(fromstring=lambda content: Root(), tostring=lambda root, encoding, pretty_print: "增值税电子普通发票 发票号码 价税合计 税额")
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
     result = parser.parse_xml(b"<xml />")
     assert result.invoice_no == "001"
     assert result.buyer == "甲方"
     assert result.seller == "乙方"
     assert result.item_summary == "办公用品"
+    assert result.is_vat_document is True
     assert debug_logs[-1] == "Parsed XML invoice with method xml_xpath"
 
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: (_ for _ in ()).throw(RuntimeError("bad")))
@@ -309,13 +359,67 @@ def test_parse_xml_missing_optional_fields(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.item_summary is None
 
 
+def test_parse_xml_gbk_fallback_and_xmlsyntaxerror(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeXMLSyntaxError(Exception):
+        pass
+
+    calls: list[bytes] = []
+
+    class Root:
+        def find(self, path):
+            mapping = {
+                ".//EInvoiceNumber": SimpleNamespace(text="12345678"),
+                ".//PayingPartyName": SimpleNamespace(text="甲方"),
+                ".//InvoicingPartyName": SimpleNamespace(text="乙方"),
+                ".//EInvoiceName": SimpleNamespace(text="增值税电子普通发票"),
+                ".//TotalIncludingTax": SimpleNamespace(text="88.00"),
+                ".//IssueDateTime": SimpleNamespace(text="2024-01-02"),
+            }
+            return mapping.get(path)
+
+        def iter(self):
+            return iter([SimpleNamespace(tag="ItemName", text="服务费")])
+
+    def fromstring(content):
+        calls.append(content)
+        if len(calls) == 1:
+            raise FakeXMLSyntaxError("bad encoding")
+        return Root()
+
+    etree = SimpleNamespace(
+        XMLSyntaxError=FakeXMLSyntaxError,
+        fromstring=fromstring,
+        tostring=lambda root, encoding, pretty_print: "增值税电子普通发票 发票号码 价税合计 税额",
+    )
+    monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
+    result = parser.parse_xml("中文".encode("gbk"))
+    assert len(calls) == 2
+    assert result.invoice_no == "12345678"
+    assert result.item_summary == "服务费"
+    assert result.is_vat_document is True
+
+
+def test_parse_xml_returns_raw_text_when_gbk_fallback_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeXMLSyntaxError(Exception):
+        pass
+
+    def fromstring(_content):
+        raise FakeXMLSyntaxError("bad")
+
+    etree = SimpleNamespace(XMLSyntaxError=FakeXMLSyntaxError, fromstring=fromstring)
+    monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
+    result = parser.parse_xml(b"<bad />")
+    assert result.raw_text == "<bad />"
+    assert result.confidence == 0.0
+
+
 def test_parse_ofd_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     debug_logs: list[str] = []
     monkeypatch.setattr(parser.logger, "debug", lambda message, *args: debug_logs.append(message % args))
 
     class FakeOFD:
         def __init__(self):
-            self.data = [{"InvoiceNo": "001", "BuyerName": "甲方", "SellerName": "乙方", "TaxInclusiveTotalAmount": "99.00", "InvoiceDate": "20240102"}]
+            self.data = [{"InvoiceNo": "001", "BuyerName": "甲方", "SellerName": "乙方", "InvoiceType": "增值税电子普通发票", "TaxInclusiveTotalAmount": "99.00", "InvoiceDate": "20240102"}]
 
         def read(self, ofd_b64, save_xml=False):
             del ofd_b64, save_xml
@@ -328,6 +432,7 @@ def test_parse_ofd_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     result = parser.parse_ofd(b"ofd")
     assert result.invoice_no == "001"
     assert result.confidence == 1.0
+    assert result.is_vat_document is False
     assert debug_logs[-1] == "Parsed OFD invoice with method ofd_struct"
 
     class EmptyOFD(FakeOFD):
