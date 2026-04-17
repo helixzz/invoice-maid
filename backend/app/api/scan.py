@@ -13,7 +13,7 @@ from starlette.requests import Request
 
 from app.database import get_db
 from app.deps import CurrentUser
-from app.models import ExtractionLog, ScanLog
+from app.models import EmailAccount, ExtractionLog, ScanLog
 from app.services import scan_progress as sp
 from app.tasks.scheduler import scan_all_accounts
 
@@ -86,9 +86,18 @@ def _serialize_extraction(log: ExtractionLog) -> ExtractionLogResponse:
 
 
 @router.post("/trigger", response_model=ScanTriggerResponse)
-async def trigger_scan(_current_user: CurrentUser) -> ScanTriggerResponse:
+async def trigger_scan(
+    _current_user: CurrentUser,
+    full: bool = False,
+    db: AsyncSession = Depends(get_db),
+) -> ScanTriggerResponse:
     if sp.is_scanning():
         raise HTTPException(status_code=409, detail="Scan already in progress")
+    if full:
+        result = await db.execute(select(EmailAccount).where(EmailAccount.is_active.is_(True)))
+        for account in result.scalars().all():
+            account.last_scan_uid = None
+        await db.commit()
     _ = asyncio.create_task(scan_all_accounts())
     return ScanTriggerResponse(status="triggered")
 
