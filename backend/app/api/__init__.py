@@ -2,6 +2,7 @@
 
 from app.api.ai_settings import router as ai_settings_router
 from app.api.auth import router as auth_router
+from app.api.classifier_settings import router as classifier_settings_router
 from app.api.downloads import router as download_router
 from app.api.email_accounts import router as account_router
 from app.api.invoices import router as invoice_router
@@ -14,6 +15,7 @@ __all__ = [
     "account_router",
     "ai_settings_router",
     "auth_router",
+    "classifier_settings_router",
     "download_router",
     "invoice_router",
     "scan_router",
