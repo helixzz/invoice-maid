@@ -23,6 +23,33 @@ class StatsResponse(BaseModel):
     active_accounts: int
     last_scan_at: str | None
     last_scan_found: int | None
+    monthly_spend: list["MonthlySpendPoint"]
+    top_sellers: list["SellerSpendPoint"]
+    by_type: list["TypeCountPoint"]
+    by_method: list["MethodCountPoint"]
+    avg_confidence: float
+
+
+class MonthlySpendPoint(BaseModel):
+    month: str
+    total: float
+    count: int
+
+
+class SellerSpendPoint(BaseModel):
+    seller: str
+    total: float
+    count: int
+
+
+class TypeCountPoint(BaseModel):
+    type: str
+    count: int
+
+
+class MethodCountPoint(BaseModel):
+    method: str
+    count: int
 
 
 def _month_bounds(today: date) -> tuple[date, date]:
@@ -33,6 +60,10 @@ def _month_bounds(today: date) -> tuple[date, date]:
 
 def _to_float(value: Decimal | float | int | None) -> float:
     return float(value or 0)
+
+
+def _rounded_float(value: Decimal | float | int | None, digits: int = 6) -> float:
+    return round(_to_float(value), digits)
 
 
 @router.get("/stats", response_model=StatsResponse)
@@ -72,6 +103,45 @@ async def get_stats(
         await db.execute(select(ScanLog).order_by(ScanLog.started_at.desc(), ScanLog.id.desc()).limit(1))
     ).scalar_one_or_none()
 
+    monthly_spend_rows = (
+        await db.execute(
+            select(
+                func.strftime("%Y-%m", Invoice.invoice_date).label("month"),
+                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
+                func.count(Invoice.id).label("count"),
+            )
+            .group_by("month")
+            .order_by("month")
+        )
+    ).all()
+    top_seller_rows = (
+        await db.execute(
+            select(
+                Invoice.seller.label("seller"),
+                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
+                func.count(Invoice.id).label("count"),
+            )
+            .group_by(Invoice.seller)
+            .order_by(func.sum(Invoice.amount).desc(), func.count(Invoice.id).desc(), Invoice.seller.asc())
+            .limit(10)
+        )
+    ).all()
+    type_rows = (
+        await db.execute(
+            select(Invoice.invoice_type.label("type"), func.count(Invoice.id).label("count"))
+            .group_by(Invoice.invoice_type)
+            .order_by(func.count(Invoice.id).desc())
+        )
+    ).all()
+    method_rows = (
+        await db.execute(
+            select(Invoice.extraction_method.label("method"), func.count(Invoice.id).label("count"))
+            .group_by(Invoice.extraction_method)
+            .order_by(func.count(Invoice.id).desc(), Invoice.extraction_method.asc())
+        )
+    ).all()
+    avg_confidence = (await db.execute(select(func.avg(Invoice.confidence)))).scalar()
+
     return StatsResponse(
         total_invoices=total_invoices,
         total_amount=_to_float(total_amount),
@@ -80,4 +150,18 @@ async def get_stats(
         active_accounts=active_accounts,
         last_scan_at=last_scan.started_at.isoformat() if last_scan else None,
         last_scan_found=last_scan.invoices_found if last_scan else None,
+        monthly_spend=[
+            MonthlySpendPoint(month=row.month, total=_to_float(row.total), count=row.count)
+            for row in monthly_spend_rows
+        ],
+        top_sellers=[
+            SellerSpendPoint(seller=row.seller, total=_to_float(row.total), count=row.count)
+            for row in top_seller_rows
+        ],
+        by_type=[
+            TypeCountPoint(type=row.type, count=row.count)
+            for row in sorted(type_rows, key=lambda row: row.type, reverse=True)
+        ],
+        by_method=[MethodCountPoint(method=row.method, count=row.count) for row in method_rows],
+        avg_confidence=_rounded_float(avg_confidence),
     )

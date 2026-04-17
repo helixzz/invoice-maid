@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     EMBED_DIM: int = 1536
     SCAN_INTERVAL_MINUTES: int = 60
     SQLITE_VEC_ENABLED: bool = True
+    WEBHOOK_URL: str = ""
+    WEBHOOK_SECRET: str = ""
     ENABLE_TEST_HELPERS: bool = False
     sqlite_vec_available: bool = Field(default=False, validation_alias="__runtime_sqlite_vec_available__")
 
