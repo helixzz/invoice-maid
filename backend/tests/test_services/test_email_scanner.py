@@ -707,7 +707,7 @@ def test_pop3_message_id_for_handles_specific_header_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=4, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -758,7 +758,7 @@ async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=9, name="o", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -798,7 +798,7 @@ async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.M
     assert await scanner._fetch_attachments(AttachmentClient(), {}, "") == []
 
 
-def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
     scanner = OutlookScanner()
     token_path = tmp_path / "oauth" / "cache.json"
     account = EmailAccount(id=5, name="outlook", type="outlook", username="client", oauth_token_path=str(token_path))

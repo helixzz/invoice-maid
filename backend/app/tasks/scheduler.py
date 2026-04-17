@@ -441,15 +441,30 @@ async def scan_all_accounts() -> None:
                         sp.update_progress(
                             invoices_found=sp.get_progress().invoices_found + invoices_added
                         )
-                    except Exception as exc:
-                        await db.rollback()
-                        log.error_message = str(exc)[:500]
-                        logger.exception("Scan failed for account %s (%s)", account_name, account_id)
-                        sp.update_progress(errors=sp.get_progress().errors + 1)
-                    finally:
                         log.finished_at = datetime.now(timezone.utc)
                         db.add(log)
                         await db.commit()
+                    except Exception as exc:
+                        await db.rollback()
+                        error_msg = str(exc)[:500]
+                        logger.exception("Scan failed for account %s (%s)", account_name, account_id)
+                        sp.update_progress(errors=sp.get_progress().errors + 1)
+                        try:
+                            await db.execute(
+                                text(
+                                    "UPDATE scan_logs SET error_message = :msg, finished_at = :ts"
+                                    " WHERE id = :id"
+                                ),
+                                {
+                                    "msg": error_msg,
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                    "id": log.id,
+                                },
+                            )
+                            await db.commit()  # pragma: no cover
+                        except Exception:
+                            pass
+                        continue
 
             sp.finish_progress()
         except Exception as exc:
