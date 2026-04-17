@@ -24,8 +24,8 @@ async def test_trigger_scan_and_list_logs(client, auth_headers, db, create_email
     account = await create_email_account()
     log = ScanLog(
         email_account_id=account.id,
-        started_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2024, 1, 1, 0, 1, tzinfo=timezone.utc),
+        started_at=datetime(2024, 1, 1),
+        finished_at=datetime(2024, 1, 1, 0, 1),
         emails_scanned=2,
         invoices_found=1,
         error_message=None,
@@ -38,6 +38,27 @@ async def test_trigger_scan_and_list_logs(client, auth_headers, db, create_email
     payload = response.json()
     assert payload["total"] == 1
     assert payload["items"][0]["emails_scanned"] == 2
+    assert "+00:00" in payload["items"][0]["started_at"]
+    assert "+00:00" in payload["items"][0]["finished_at"]
+
+
+async def test_scan_logs_preserve_timezone_aware_datetimes(client, auth_headers, db, create_email_account) -> None:
+    account = await create_email_account()
+    log = ScanLog(
+        email_account_id=account.id,
+        started_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2024, 6, 15, 12, 5, 0, tzinfo=timezone.utc),
+        emails_scanned=50,
+        invoices_found=3,
+    )
+    db.add(log)
+    await db.commit()
+
+    response = await client.get("/api/v1/scan/logs?page=1&size=10", headers=auth_headers)
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert "2024-06-15T12:00:00" in item["started_at"]
+    assert "2024-06-15T12:05:00" in item["finished_at"]
 
 
 async def test_trigger_scan_returns_409_when_already_running(client, auth_headers, monkeypatch) -> None:
