@@ -59,6 +59,7 @@ from app.models import Base, CorrectionLog, EmailAccount, ExtractionLog, Invoice
 from app.schemas.invoice import InvoiceExtract
 from app.services.auth_service import create_access_token
 from app.services.email_scanner import encrypt_password
+from app.services.email_scanner import oauth_registry
 from app.services.settings_resolver import invalidate_ai_settings_cache
 
 
@@ -159,6 +160,13 @@ async def client(settings: Settings, db: AsyncSession) -> AsyncIterator[AsyncCli
         yield async_client
     limiter.reset()
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def clear_oauth_registry() -> None:
+    oauth_registry._flows.clear()
+    yield
+    oauth_registry._flows.clear()
 
 
 @pytest.fixture

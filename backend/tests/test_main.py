@@ -24,7 +24,7 @@ async def test_health_and_spa_catch_all(
     assert health.status_code == 200
     assert health.json() == {
         "status": "ok",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "db": "ok",
         "scheduler": "running",
         "sqlite_vec": False,
@@ -72,7 +72,7 @@ async def test_health_reports_degraded_on_db_failure(client, monkeypatch: pytest
     assert health.status_code == 200
     assert health.json() == {
         "status": "degraded",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "db": "error",
         "scheduler": "running",
         "sqlite_vec": False,
@@ -155,6 +155,7 @@ async def test_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.asyncio
 async def test_lifespan_skips_scheduler_for_multiple_workers(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    del settings
     engine = type("Engine", (), {"dispose": AsyncMock()})()
     monkeypatch.setattr(main_module, "create_engine_and_session", lambda database_url: (engine, object()))
     monkeypatch.setattr(main_module, "init_db", AsyncMock())

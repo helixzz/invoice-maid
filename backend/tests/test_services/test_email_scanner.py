@@ -17,6 +17,8 @@ import app.services.email_scanner as email_scanner
 from app.models import EmailAccount
 from app.services.email_scanner import (
     ImapScanner,
+    OAuthFlowRegistry,
+    OAuthFlowState,
     OutlookScanner,
     Pop3Scanner,
     ScannerFactory,
@@ -769,6 +771,7 @@ def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_
     scanner = OutlookScanner()
     token_path = tmp_path / "oauth" / "cache.json"
     account = EmailAccount(id=5, name="outlook", type="outlook", username="client", oauth_token_path=str(token_path))
+    token_path.parent.mkdir(parents=True, exist_ok=True)
 
     class FakeCache:
         def __init__(self):
@@ -795,8 +798,10 @@ def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr(email_scanner.msal, "SerializableTokenCache", FakeCache)
     monkeypatch.setattr(email_scanner.msal, "PublicClientApplication", FakeApp)
+    token_path.write_text("persisted", encoding="utf-8")
     cache = scanner._load_cache(account)
     assert isinstance(cache, FakeCache)
+    assert cache.loaded == "persisted"
     scanner._save_cache(account, cache)
     assert token_path.read_text(encoding="utf-8") == "cached"
     result = scanner._acquire_token_sync(account)
@@ -815,7 +820,9 @@ def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_
             return {"access_token": "device-token"}
 
     monkeypatch.setattr(email_scanner.msal, "PublicClientApplication", DeviceFlowApp)
-    assert scanner._acquire_token_sync(account)["access_token"] == "device-token"
+    initiated = scanner._initiate_device_flow_sync(account)
+    assert initiated["user_code"] == "123"
+    assert scanner._complete_device_flow_sync(account, initiated)["access_token"] == "device-token"
 
     class BrokenDeviceFlowApp(DeviceFlowApp):
         def initiate_device_flow(self, scopes):
@@ -824,6 +831,14 @@ def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr(email_scanner.msal, "PublicClientApplication", BrokenDeviceFlowApp)
     with pytest.raises(RuntimeError, match="device flow"):
+        scanner._initiate_device_flow_sync(account)
+
+    class NoSilentApp(FakeApp):
+        def get_accounts(self):
+            return []
+
+    monkeypatch.setattr(email_scanner.msal, "PublicClientApplication", NoSilentApp)
+    with pytest.raises(RuntimeError, match="Outlook authorization required"):
         scanner._acquire_token_sync(account)
 
     no_path_account = EmailAccount(id=6, name="o", type="outlook", username="client", oauth_token_path=None)
@@ -832,6 +847,81 @@ def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_
     cache.has_state_changed = False
     scanner._save_cache(no_path_account, cache)
     scanner._save_cache(account, cache)
+
+    missing_path_account = EmailAccount(id=7, name="o", type="outlook", username="client", oauth_token_path=str(tmp_path / "missing" / "cache.json"))
+    assert scanner._load_cache(missing_path_account).__class__ is FakeCache
+
+
+@pytest.mark.asyncio
+async def test_outlook_has_cached_token_and_async_device_flow_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=10, name="o", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+
+    class Loop:
+        async def run_in_executor(self, executor, func):
+            del executor
+            return func()
+
+    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: Loop())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="abc"))
+    assert await scanner.has_cached_token_async(account) is True
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(side_effect=RuntimeError("missing")))
+    assert await scanner.has_cached_token_async(account) is False
+
+    monkeypatch.setattr(scanner, "_initiate_device_flow_sync", lambda account: {"user_code": "XYZ", "verification_uri": "https://microsoft.com/devicelogin"})
+    monkeypatch.setattr(scanner, "_complete_device_flow_sync", lambda account, flow: {"access_token": "done"})
+    assert (await scanner.initiate_device_flow_async(account))["user_code"] == "XYZ"
+    assert (await scanner.complete_device_flow_async(account, {"user_code": "XYZ"}))["access_token"] == "done"
+
+
+def test_oauth_flow_registry_get_set_remove_and_expiry() -> None:
+    registry = OAuthFlowRegistry()
+    state = OAuthFlowState(status="pending")
+    registry.set(1, state)
+    assert registry.get(1) is state
+    registry.remove(1)
+    assert registry.get(1) is None
+
+    expired_state = OAuthFlowState(
+        status="pending",
+        expires_at=datetime.now(timezone.utc) - email_scanner.timedelta(seconds=1),
+    )
+    registry.set(2, expired_state)
+    loaded = registry.get(2)
+    assert loaded is expired_state
+    assert loaded.status == "expired"
+    assert loaded.detail == "Device code expired"
+
+
+def test_oauth_flow_registry_cancels_pending_tasks_on_expiry_and_remove() -> None:
+    registry = OAuthFlowRegistry()
+
+    class FakeTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def done(self) -> bool:
+            return False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    expiring_task = FakeTask()
+    registry.set(
+        1,
+        OAuthFlowState(
+            status="pending",
+            expires_at=datetime.now(timezone.utc) - email_scanner.timedelta(seconds=1),
+            task=expiring_task,
+        ),
+    )
+    registry.get(1)
+    assert expiring_task.cancelled is True
+
+    remove_task = FakeTask()
+    registry.set(2, OAuthFlowState(status="pending", task=remove_task))
+    registry.remove(2)
+    assert remove_task.cancelled is True
 
 
 def test_scanner_factory_routes_and_rejects_unknown() -> None:

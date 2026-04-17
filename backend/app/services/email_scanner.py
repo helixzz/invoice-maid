@@ -45,6 +45,41 @@ GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 
 @dataclass
+class OAuthFlowState:
+    status: str
+    verification_uri: str = ""
+    user_code: str = ""
+    expires_at: datetime | None = None
+    detail: str | None = None
+    task: asyncio.Task[Any] | None = field(default=None, repr=False)
+
+
+class OAuthFlowRegistry:
+    def __init__(self) -> None:
+        self._flows: dict[int, OAuthFlowState] = {}
+
+    def get(self, account_id: int) -> OAuthFlowState | None:
+        state = self._flows.get(account_id)
+        if state and state.expires_at and datetime.now(timezone.utc) > state.expires_at:
+            state.status = "expired"
+            state.detail = "Device code expired"
+            if state.task and not state.task.done():
+                state.task.cancel()
+        return state
+
+    def set(self, account_id: int, state: OAuthFlowState) -> None:
+        self._flows[account_id] = state
+
+    def remove(self, account_id: int) -> None:
+        state = self._flows.pop(account_id, None)
+        if state and state.task and not state.task.done():
+            state.task.cancel()
+
+
+oauth_registry = OAuthFlowRegistry()
+
+
+@dataclass
 class RawAttachment:
     filename: str
     payload: bytes
@@ -428,6 +463,21 @@ class OutlookScanner(BaseEmailScanner):
             logger.exception("Outlook connection test failed for account %s: %s", account.id, exc)
             return False
 
+    async def has_cached_token_async(self, account: EmailAccount) -> bool:
+        try:
+            await self._acquire_access_token(account)
+        except RuntimeError:
+            return False
+        return True
+
+    async def initiate_device_flow_async(self, account: EmailAccount) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, functools.partial(self._initiate_device_flow_sync, account))
+
+    async def complete_device_flow_async(self, account: EmailAccount, flow: dict[str, Any]) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, functools.partial(self._complete_device_flow_sync, account, flow))
+
     async def _acquire_access_token(self, account: EmailAccount) -> str:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, functools.partial(self._acquire_token_sync, account))
@@ -450,18 +500,33 @@ class OutlookScanner(BaseEmailScanner):
             result = cast(dict[str, Any] | None, app.acquire_token_silent(self.SCOPES, account=accounts[0]))
 
         if not result:
-            flow = app.initiate_device_flow(scopes=self.SCOPES)
-            if "user_code" not in flow:
-                raise RuntimeError("Failed to start Outlook device flow")
-            logger.info(
-                "Outlook auth required. Go to %s and enter code: %s",
-                flow["verification_uri"],
-                flow["user_code"],
-            )
-            result = cast(dict[str, Any], app.acquire_token_by_device_flow(flow))
+            raise RuntimeError("Outlook authorization required. Use the Settings page to authenticate.")
 
         self._save_cache(account, token_cache)
         return result or {}
+
+    def _initiate_device_flow_sync(self, account: EmailAccount) -> dict[str, Any]:
+        token_cache = self._load_cache(account)
+        app = msal.PublicClientApplication(
+            client_id=account.username,
+            authority="https://login.microsoftonline.com/common",
+            token_cache=token_cache,
+        )
+        flow = cast(dict[str, Any], app.initiate_device_flow(scopes=self.SCOPES))
+        if "user_code" not in flow:
+            raise RuntimeError("Failed to start Outlook device flow")
+        return flow
+
+    def _complete_device_flow_sync(self, account: EmailAccount, flow: dict[str, Any]) -> dict[str, Any]:
+        token_cache = self._load_cache(account)
+        app = msal.PublicClientApplication(
+            client_id=account.username,
+            authority="https://login.microsoftonline.com/common",
+            token_cache=token_cache,
+        )
+        result = cast(dict[str, Any], app.acquire_token_by_device_flow(flow))
+        self._save_cache(account, token_cache)
+        return result
 
     async def _fetch_attachments(
         self,
@@ -541,6 +606,8 @@ class ScannerFactory:
 __all__ = [
     "BaseEmailScanner",
     "ImapScanner",
+    "OAuthFlowRegistry",
+    "OAuthFlowState",
     "OutlookScanner",
     "Pop3Scanner",
     "RawAttachment",
@@ -548,4 +615,5 @@ __all__ = [
     "ScannerFactory",
     "decrypt_password",
     "encrypt_password",
+    "oauth_registry",
 ]
