@@ -166,6 +166,70 @@ class SearchService:
 
         return merged_results, max(fts_total, len(merged_results))
 
+    async def fetch_invoices_by_ids(self, db: AsyncSession, invoice_ids: list[int]) -> list[Invoice]:
+        if not invoice_ids:
+            return []
+
+        result = await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
+        invoices_by_id = {invoice.id: invoice for invoice in result.scalars().all()}
+        return [invoices_by_id[invoice_id] for invoice_id in invoice_ids if invoice_id in invoices_by_id]
+
+    async def similar_invoice_ids(self, db: AsyncSession, invoice: Invoice, limit: int = 5) -> list[int]:
+        if self._settings.sqlite_vec_available:
+            try:
+                embedding_result = await db.execute(
+                    text("SELECT embedding FROM invoice_embeddings WHERE rowid = :invoice_id"),
+                    {"invoice_id": invoice.id},
+                )
+                embedding = embedding_result.scalar_one_or_none()
+                if embedding is not None:
+                    result = await db.execute(
+                        text(
+                            """
+                            SELECT rowid, distance
+                            FROM invoice_embeddings
+                            WHERE embedding MATCH :query AND rowid != :invoice_id
+                            ORDER BY distance, rowid DESC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"query": embedding, "invoice_id": invoice.id, "limit": limit},
+                    )
+                    similar_ids = [int(row[0]) for row in result.fetchall()]
+                    if similar_ids:
+                        return similar_ids
+            except Exception as exc:
+                logger.warning("Similar invoice semantic search failed: %s", exc)
+
+        query = self._build_similar_fts_query(invoice)
+        if not query:
+            return []
+
+        result = await db.execute(
+            text(
+                """
+                SELECT rowid
+                FROM invoices_fts
+                WHERE invoices_fts MATCH :query AND rowid != :invoice_id
+                ORDER BY bm25(invoices_fts), rowid DESC
+                LIMIT :limit
+                """
+            ),
+            {"query": query, "invoice_id": invoice.id, "limit": limit},
+        )
+        return [int(row[0]) for row in result.fetchall()]
+
+    def _build_similar_fts_query(self, invoice: Invoice) -> str:
+        terms: list[str] = []
+        if invoice.seller.strip():
+            terms.append(f'seller:{self._quote_fts_value(invoice.seller.strip())}')
+        if invoice.item_summary and invoice.item_summary.strip():
+            terms.append(f'item_summary:{self._quote_fts_value(invoice.item_summary.strip())}')
+        return " OR ".join(terms)
+
+    def _quote_fts_value(self, value: str) -> str:
+        return f'"{value.replace(chr(34), chr(34) * 2)}"'
+
 
 async def store_embedding(db: AsyncSession, invoice_id: int, embedding: list[float]) -> None:
     """Store invoice embedding in sqlite-vec virtual table."""

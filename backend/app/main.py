@@ -27,6 +27,7 @@ from app.api import (
     scan_router,
     stats_router,
     test_helper_router,
+    view_router,
 )
 from app.config import get_settings
 from app.database import create_engine_and_session, get_db, init_db
@@ -97,6 +98,7 @@ app.include_router(account_router, prefix="/api/v1")
 app.include_router(ai_settings_router, prefix="/api/v1")
 app.include_router(scan_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
+app.include_router(view_router, prefix="/api/v1")
 app.include_router(test_helper_router, prefix="/api/v1")
 
 

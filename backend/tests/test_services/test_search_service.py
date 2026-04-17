@@ -237,9 +237,11 @@ async def test_search_merged_results_break_on_size_limit(db, settings, create_in
     service = SearchService(settings)
 
     async def fts_returns_one(*args, **kwargs):
+        del args, kwargs
         return [first], 1
 
     async def semantic_returns_two_extra(db, query_embedding, limit=20):
+        del db, query_embedding, limit
         return [second.id, third.id]
 
     original_execute = db.execute
@@ -260,7 +262,153 @@ async def test_search_merged_results_break_on_size_limit(db, settings, create_in
     monkeypatch.setattr(service, "search_semantic", semantic_returns_two_extra)
     monkeypatch.setattr(db, "execute", patched_execute)
 
-    results, total = await service.search(db, "x", query_embedding=[1.0], size=2)
+    results, _total = await service.search(db, "x", query_embedding=[1.0], size=2)
     assert len(results) == 2
     assert results[0].invoice_no == "INV-LIM1"
     assert results[1].invoice_no == "INV-LIM2"
+
+
+@pytest.mark.asyncio
+async def test_similar_invoice_ids_prefers_sqlite_vec(db, settings, create_invoice, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = await create_invoice(invoice_no="INV-SVC-SIM-0", seller="ACME", item_summary="paper")
+    other = await create_invoice(invoice_no="INV-SVC-SIM-1", seller="ACME", item_summary="paper clips")
+    settings.sqlite_vec_available = True
+    service = SearchService(settings)
+    original_execute = db.execute
+
+    async def patched_execute(statement, params=None, *args, **kwargs):
+        sql = str(statement)
+        if "SELECT embedding FROM invoice_embeddings" in sql:
+            return type("Result", (), {"scalar_one_or_none": lambda self: b"blob"})()
+        if "SELECT rowid, distance" in sql and "rowid != :invoice_id" in sql:
+            return type("Result", (), {"fetchall": lambda self: [(other.id, 0.01), (target.id, 0.99)]})()
+        return await original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", patched_execute)
+
+    result = await service.similar_invoice_ids(db, target, limit=5)
+
+    assert result == [other.id, target.id]
+
+
+@pytest.mark.asyncio
+async def test_similar_invoice_ids_falls_back_to_fts(db, settings, create_invoice, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = await create_invoice(invoice_no="INV-SVC-FTS-0", seller="Fallback", item_summary="red chair")
+    other = await create_invoice(invoice_no="INV-SVC-FTS-1", seller="Fallback", item_summary="red chair cushion")
+    settings.sqlite_vec_available = False
+    service = SearchService(settings)
+    original_execute = db.execute
+
+    async def patched_execute(statement, params=None, *args, **kwargs):
+        sql = str(statement)
+        if "FROM invoices_fts" in sql and "rowid != :invoice_id" in sql:
+            assert params == {"query": 'seller:"Fallback" OR item_summary:"red chair"', "invoice_id": target.id, "limit": 5}
+            return type("Result", (), {"fetchall": lambda self: [(other.id,)]})()
+        return await original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", patched_execute)
+
+    result = await service.similar_invoice_ids(db, target, limit=5)
+
+    assert result == [other.id]
+
+
+@pytest.mark.asyncio
+async def test_similar_invoice_ids_handles_sqlite_vec_failure_and_fetch_by_ids(db, settings, create_invoice, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = await create_invoice(invoice_no="INV-SVC-FAIL-0", seller="Broken", item_summary="desk")
+    other = await create_invoice(invoice_no="INV-SVC-FAIL-1", seller="Broken", item_summary="desk lamp")
+    settings.sqlite_vec_available = True
+    service = SearchService(settings)
+    original_execute = db.execute
+
+    async def patched_execute(statement, params=None, *args, **kwargs):
+        sql = str(statement)
+        if "SELECT embedding FROM invoice_embeddings" in sql:
+            raise RuntimeError("boom")
+        if "FROM invoices_fts" in sql and "rowid != :invoice_id" in sql:
+            return type("Result", (), {"fetchall": lambda self: [(other.id,)]})()
+        return await original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", patched_execute)
+
+    result = await service.similar_invoice_ids(db, target, limit=5)
+    fetched = await service.fetch_invoices_by_ids(db, [other.id, 999999])
+
+    assert result == [other.id]
+    assert [invoice.invoice_no for invoice in fetched] == ["INV-SVC-FAIL-1"]
+
+
+@pytest.mark.asyncio
+async def test_similar_invoice_ids_falls_back_when_embedding_missing_or_knn_empty(
+    db, settings, create_invoice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = await create_invoice(invoice_no="INV-SVC-MISS-0", seller="Fallback", item_summary="mouse")
+    other = await create_invoice(invoice_no="INV-SVC-MISS-1", seller="Fallback", item_summary="mouse pad")
+    settings.sqlite_vec_available = True
+    service = SearchService(settings)
+    original_execute = db.execute
+
+    async def missing_embedding_execute(statement, params=None, *args, **kwargs):
+        sql = str(statement)
+        if "SELECT embedding FROM invoice_embeddings" in sql:
+            return type("Result", (), {"scalar_one_or_none": lambda self: None})()
+        if "FROM invoices_fts" in sql and "rowid != :invoice_id" in sql:
+            return type("Result", (), {"fetchall": lambda self: [(other.id,)]})()
+        return await original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", missing_embedding_execute)
+    assert await service.similar_invoice_ids(db, target, limit=5) == [other.id]
+
+    async def empty_knn_execute(statement, params=None, *args, **kwargs):
+        sql = str(statement)
+        if "SELECT embedding FROM invoice_embeddings" in sql:
+            return type("Result", (), {"scalar_one_or_none": lambda self: b"blob"})()
+        if "SELECT rowid, distance" in sql and "rowid != :invoice_id" in sql:
+            return type("Result", (), {"fetchall": lambda self: []})()
+        if "FROM invoices_fts" in sql and "rowid != :invoice_id" in sql:
+            return type("Result", (), {"fetchall": lambda self: [(other.id,)]})()
+        return await original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", empty_knn_execute)
+    assert await service.similar_invoice_ids(db, target, limit=5) == [other.id]
+
+
+def test_build_similar_fts_query(settings) -> None:
+    service = SearchService(settings)
+    invoice = type("InvoiceStub", (), {"seller": 'A "Seller"', "item_summary": "paper goods"})()
+
+    assert service._build_similar_fts_query(invoice) == 'seller:"A ""Seller""" OR item_summary:"paper goods"'
+
+
+def test_build_similar_fts_query_handles_missing_terms(settings) -> None:
+    service = SearchService(settings)
+
+    seller_missing = type("InvoiceStub", (), {"seller": "   ", "item_summary": "paper goods"})()
+    all_missing = type("InvoiceStub", (), {"seller": "   ", "item_summary": "   "})()
+
+    assert service._build_similar_fts_query(seller_missing) == 'item_summary:"paper goods"'
+    assert service._build_similar_fts_query(all_missing) == ""
+
+
+@pytest.mark.asyncio
+async def test_similar_invoice_ids_returns_empty_when_no_fallback_query(db, settings, create_invoice) -> None:
+    target = await create_invoice(invoice_no="INV-SVC-EMPTY-0", seller="   ", item_summary=None)
+    settings.sqlite_vec_available = False
+    service = SearchService(settings)
+
+    assert await service.similar_invoice_ids(db, target, limit=5) == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_invoices_by_ids_empty(settings, db) -> None:
+    service = SearchService(settings)
+
+    assert await service.fetch_invoices_by_ids(db, []) == []
+
+
+@pytest.mark.asyncio
+async def test_similar_invoice_ids_returns_empty_when_no_query_terms(settings, db) -> None:
+    service = SearchService(settings)
+    invoice = type("InvoiceStub", (), {"id": 1, "seller": "   ", "item_summary": None})()
+
+    assert await service.similar_invoice_ids(db, invoice, limit=5) == []
