@@ -287,7 +287,7 @@ async def test_init_db_seeds_ai_settings_from_environment(tmp_path) -> None:
     assert database_module._session_factory is not None
     async with database_module._session_factory() as session:
         rows = (await session.execute(select(AppSettings).order_by(AppSettings.key))).scalars().all()
-        assert len(rows) == 5
+        assert len(rows) == 7
 
     assert database_module._engine is not None
     await database_module._engine.dispose()

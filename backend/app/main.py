@@ -26,6 +26,7 @@ from app.api import (
     account_router,
     ai_settings_router,
     auth_router,
+    classifier_settings_router,
     download_router,
     invoice_router,
     scan_router,
@@ -107,6 +108,7 @@ app.include_router(invoice_router, prefix="/api/v1")
 app.include_router(download_router, prefix="/api/v1")
 app.include_router(account_router, prefix="/api/v1")
 app.include_router(ai_settings_router, prefix="/api/v1")
+app.include_router(classifier_settings_router, prefix="/api/v1")
 app.include_router(scan_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(view_router, prefix="/api/v1")
