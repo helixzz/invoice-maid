@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import Toast from '@/components/Toast.vue'
+import ScanProgressBar from '@/components/ScanProgressBar.vue'
+import { useScanProgress } from '@/composables/useScanProgress'
 import { api } from '@/api/client'
 import type { 
   EmailAccount, 
@@ -80,6 +82,14 @@ const saveAISettings = async () => {
 
 const accounts = ref<EmailAccount[]>([])
 const loadingAccounts = ref(false)
+
+const {
+  progress: scanProgress,
+  isActive: scanIsActive,
+  statusLine: scanStatusLine,
+  connect: connectScanProgress,
+  disconnect: disconnectScanProgress
+} = useScanProgress()
 
 const scanLogs = ref<ScanLog[]>([])
 const loadingLogs = ref(false)
@@ -253,14 +263,24 @@ const triggerScan = async () => {
   try {
     const res = await api.triggerScan()
     toastRef.value?.addToast(`Scan triggered: ${res.status}`, 'success')
-    setTimeout(fetchLogs, 2000) // refresh logs after a delay
+    // Connection will be handled by the watcher or connectScanProgress if it's already active
+    // We can also let the polling logic kick in. But ideally we just rely on SSE.
+    connectScanProgress()
   } catch (error) {
     console.error('Failed to trigger scan', error)
     toastRef.value?.addToast('Failed to trigger scan', 'error')
-  } finally {
     scanning.value = false
   }
 }
+
+watch(() => scanProgress.value.phase, (newPhase) => {
+  if (newPhase === 'done' || newPhase === 'error') {
+    scanning.value = false
+    fetchLogs()
+  } else if (newPhase === 'scanning') {
+    scanning.value = true
+  }
+})
 
 const testConnection = async (accountId: number) => {
   toastRef.value?.addToast('Connection test initiated...', 'info')
@@ -369,6 +389,7 @@ onMounted(() => {
   fetchAccounts()
   fetchLogs()
   fetchAISettings()
+  connectScanProgress()
 })
 </script>
 
@@ -474,8 +495,11 @@ onMounted(() => {
             <div>
               <h3 class="text-lg leading-6 font-medium text-slate-900">Manual Scan</h3>
               <p class="mt-1 text-sm text-slate-500">Trigger an immediate scan across all active email accounts.</p>
+              <p v-if="scanning" class="mt-2 text-sm font-medium text-blue-600 truncate max-w-lg" :title="scanStatusLine">
+                {{ scanStatusLine }}
+              </p>
             </div>
-            <div class="mt-4 sm:mt-0">
+            <div class="mt-4 sm:mt-0 flex flex-col sm:items-end">
               <button
                 @click="triggerScan"
                 :disabled="scanning"
@@ -491,6 +515,8 @@ onMounted(() => {
             </div>
           </div>
         </div>
+
+        <ScanProgressBar :progress="scanProgress" v-if="scanProgress.phase !== 'idle'" />
 
         <div class="bg-white shadow-sm overflow-hidden sm:rounded-xl border border-slate-200">
           <div class="px-6 py-5 border-b border-slate-200 bg-slate-50">
