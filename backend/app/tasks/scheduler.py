@@ -31,7 +31,7 @@ from app.services import scan_progress as sp
 
 logger = logging.getLogger(__name__)
 
-EMAIL_CONCURRENCY = 5
+EMAIL_CONCURRENCY = 50
 _email_semaphore = asyncio.Semaphore(EMAIL_CONCURRENCY)
 
 
