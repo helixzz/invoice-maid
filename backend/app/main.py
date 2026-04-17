@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -137,6 +137,14 @@ async def health(db: AsyncSession = Depends(get_db)) -> dict[str, str | bool | i
 
 if FRONTEND_ASSETS.exists():  # pragma: no cover
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_ASSETS)), name="assets")
+
+if FRONTEND_DIST.exists():  # pragma: no cover
+    @app.get("/favicon.png", include_in_schema=False)
+    async def serve_favicon():
+        favicon_path = FRONTEND_DIST / "favicon.png"
+        if favicon_path.exists():
+            return FileResponse(str(favicon_path), media_type="image/png")
+        return Response(status_code=404)
 
 
 @app.get("/{full_path:path}", include_in_schema=False)
