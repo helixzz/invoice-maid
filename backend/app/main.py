@@ -82,7 +82,14 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="Invoice Maid", version="0.2.1", lifespan=lifespan)
+from importlib.metadata import version as _pkg_version
+
+try:
+    _APP_VERSION = _pkg_version("invoice-maid")
+except Exception:  # pragma: no cover
+    _APP_VERSION = "0.3.0"
+
+app = FastAPI(title="Invoice Maid", version=_APP_VERSION, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -112,7 +119,7 @@ async def health(db: AsyncSession = Depends(get_db)) -> dict[str, str | bool | i
     scheduler_status = "running" if scheduler is not None and scheduler.running else "stopped"
     response: dict[str, str | bool | int | None] = {
         "status": "ok",
-        "version": "0.2.1",
+        "version": _APP_VERSION,
         "db": "ok",
         "scheduler": scheduler_status,
         "sqlite_vec": get_settings().sqlite_vec_available,

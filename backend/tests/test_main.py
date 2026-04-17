@@ -24,7 +24,7 @@ async def test_health_and_spa_catch_all(
     assert health.status_code == 200
     assert health.json() == {
         "status": "ok",
-        "version": "0.2.1",
+        "version": main_module._APP_VERSION,
         "db": "ok",
         "scheduler": "running",
         "sqlite_vec": False,
@@ -72,7 +72,7 @@ async def test_health_reports_degraded_on_db_failure(client, monkeypatch: pytest
     assert health.status_code == 200
     assert health.json() == {
         "status": "degraded",
-        "version": "0.2.1",
+        "version": main_module._APP_VERSION,
         "db": "error",
         "scheduler": "running",
         "sqlite_vec": False,
