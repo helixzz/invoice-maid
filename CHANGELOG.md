@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.4] - 2026-04-17
+
+### Added
+- **Richer scan progress detail** — Scan Operations progress panel now shows:
+  - Classification tier badge (T1 free-local / T2 scored / **T3·LLM** in amber to indicate an LLM call)
+  - Current download link URL + live outcome (downloading / saved / failed)
+  - Extraction method badge (QR / XML / OFD / LLM / Regex)
+  - File format badge (PDF / XML / OFD)
+  - Completion summary shows email count alongside invoice count
+- **Known issues documented** in ROADMAP.md:
+  - Email tracking pixels (e.g. linktrace.triggerdelivery.com) fetched as fake PDFs — parse fails gracefully, fix planned
+  - Nuonuo/JSScloud invoice links redirect to CDN HTML pages not direct PDFs — anti-crawl protection blocks server-side download
+
 ## [0.5.3] - 2026-04-17
 
 ### Fixed

@@ -27,6 +27,11 @@ class ScanProgress:
     total_attachments: int = 0
     current_attachment_idx: int = 0
     current_attachment_name: str = ""
+    current_attachment_url: str = ""
+    current_download_outcome: str = ""
+    current_parse_method: str = ""
+    current_parse_format: str = ""
+    last_classification_tier: int = 0
     emails_processed: int = 0
     invoices_found: int = 0
     errors: int = 0
