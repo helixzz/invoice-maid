@@ -20,6 +20,7 @@ AI_SETTINGS_KEY_MAP = {
 }
 AI_SETTINGS_DB_KEYS = tuple(AI_SETTINGS_KEY_MAP)
 AI_SEEDED_LLM_DB_KEYS = tuple(key for key in AI_SETTINGS_DB_KEYS if key.startswith("llm_"))
+AI_SETTINGS_ENV_TO_DB_KEY = {env_key: db_key for db_key, env_key in AI_SETTINGS_KEY_MAP.items()}
 
 
 class ResolvedAISettings(TypedDict):
@@ -80,3 +81,16 @@ async def resolve_ai_settings(db: AsyncSession) -> ResolvedAISettings:
     _ai_settings_cache = resolved.copy()
     _ai_settings_cache_deadline = now + AI_SETTINGS_TTL_SECONDS
     return resolved
+
+
+class SettingsResolver:
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
+
+    async def get(self, key: str) -> str | int:
+        resolved = await resolve_ai_settings(self._db)
+        db_key = AI_SETTINGS_ENV_TO_DB_KEY.get(key)
+        if db_key is None:
+            settings = get_settings()
+            return getattr(settings, key)
+        return resolved[db_key]
