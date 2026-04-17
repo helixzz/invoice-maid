@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.3] - 2026-04-18
+
+### Changed
+- **Email concurrency raised from 5 to 50** — significantly faster scan throughput for large mailboxes
+
+### Fixed
+- **Overall progress percentage stuck at 5%** — formula now correctly uses `emails_processed / total_emails` and weights completed accounts properly, providing smooth 0-100% progression across all accounts
+
 ## [0.6.2] - 2026-04-18
 
 ### Fixed
