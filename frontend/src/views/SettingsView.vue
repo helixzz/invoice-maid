@@ -23,10 +23,14 @@ import type {
 const activeTab = ref('accounts')
 
 // OAuth status map for Outlook accounts
-const oauthStatusMap = ref<Record<number, 'authorized' | 'none' | 'pending' | 'expired' | 'error'>>({})
+const oauthStatusMap = ref<Record<number, 'authorized' | 'none' | 'pending' | 'expired' | 'error' | 'loading'>>({})
 
 const refreshOAuthStatuses = async (accountList: EmailAccount[]) => {
-  for (const acct of accountList.filter(a => a.type === 'outlook')) {
+  const outlookAccounts = accountList.filter(a => a.type === 'outlook')
+  for (const acct of outlookAccounts) {
+    oauthStatusMap.value[acct.id] = 'loading'
+  }
+  for (const acct of outlookAccounts) {
     try {
       const status = await api.getOAuthStatus(acct.id)
       oauthStatusMap.value[acct.id] = status.status as 'authorized' | 'none' | 'pending' | 'expired' | 'error'
@@ -546,17 +550,23 @@ onMounted(() => {
                       :class="account.outlook_account_type === 'personal' ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-blue-50 text-blue-700 border-blue-200'">
                       {{ account.outlook_account_type === 'personal' ? 'Personal' : 'Organizational' }}
                     </span>
-                    <span v-if="account.type === 'outlook'" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border"
+                    <span v-if="account.type === 'outlook'" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border transition-colors"
                       :class="oauthStatusMap[account.id] === 'authorized'
                         ? 'bg-green-50 text-green-700 border-green-200'
-                        : 'bg-amber-50 text-amber-700 border-amber-200'">
+                        : oauthStatusMap[account.id] === 'loading' || oauthStatusMap[account.id] === undefined
+                          ? 'bg-slate-100 text-slate-400 border-slate-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'">
                       <svg v-if="oauthStatusMap[account.id] === 'authorized'" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                      </svg>
+                      <svg v-else-if="oauthStatusMap[account.id] === 'loading' || oauthStatusMap[account.id] === undefined" class="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                       </svg>
                       <svg v-else class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                       </svg>
-                      {{ oauthStatusMap[account.id] === 'authorized' ? 'Authenticated' : 'Not authenticated' }}
+                      <span v-if="oauthStatusMap[account.id] === 'loading' || oauthStatusMap[account.id] === undefined">Checking...</span>
+                      <span v-else>{{ oauthStatusMap[account.id] === 'authorized' ? 'Authenticated' : 'Not authenticated' }}</span>
                     </span>
                   </div>
                   <div class="text-sm text-slate-500">
@@ -573,9 +583,14 @@ onMounted(() => {
                     class="text-sm transition-colors hidden sm:inline-block px-3 py-1 rounded font-medium border"
                     :class="oauthStatusMap[account.id] === 'authorized'
                       ? 'text-slate-600 hover:text-slate-900 border-slate-300 hover:bg-slate-50'
-                      : 'text-white bg-blue-600 hover:bg-blue-700 border-blue-600 hover:border-blue-700'"
+                      : oauthStatusMap[account.id] === 'loading' || oauthStatusMap[account.id] === undefined
+                        ? 'text-slate-400 border-slate-200 cursor-wait'
+                        : 'text-white bg-blue-600 hover:bg-blue-700 border-blue-600 hover:border-blue-700'"
+                    :disabled="oauthStatusMap[account.id] === 'loading' || oauthStatusMap[account.id] === undefined"
                   >
-                    {{ oauthStatusMap[account.id] === 'authorized' ? 'Re-authenticate' : 'Authenticate' }}
+                    <span v-if="oauthStatusMap[account.id] === 'loading' || oauthStatusMap[account.id] === undefined">Checking...</span>
+                    <span v-else-if="oauthStatusMap[account.id] === 'authorized'">Re-authenticate</span>
+                    <span v-else>Authenticate</span>
                   </button>
                   <button @click="testConnection(account.id)" class="text-sm text-green-600 hover:text-green-900 transition-colors hidden sm:inline-block border border-green-200 px-3 py-1 rounded hover:bg-green-50 font-medium">Test Connection</button>
                   <button @click="openEditModal(account)" class="text-sm text-blue-600 hover:text-blue-900 transition-colors font-medium">Edit</button>

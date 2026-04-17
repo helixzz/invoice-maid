@@ -64,6 +64,19 @@ async def lifespan(app: FastAPI):
     engine, _ = create_engine_and_session(settings.DATABASE_URL)
     await init_db(settings.DATABASE_URL)
 
+    async for db in get_db():
+        await db.execute(
+            text(
+                "UPDATE scan_logs SET finished_at = :ts, error_message = :msg"
+                " WHERE finished_at IS NULL AND error_message IS NULL"
+            ),
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "msg": "Scan interrupted — service was restarted while scan was running",
+            },
+        )
+        await db.commit()
+
     from app.tasks.scheduler import start_scheduler, stop_scheduler
 
     scheduler_started = False
