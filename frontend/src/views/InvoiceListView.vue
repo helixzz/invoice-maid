@@ -102,15 +102,20 @@ const downloadInvoice = async (id: number) => {
       }
     })
     
-    if (!response.ok) throw new Error('Failed to download PDF')
+    if (!response.ok) throw new Error('Failed to download invoice')
+    
+    const invoice = invoicesStore.invoices.find(i => i.id === id)
+    const ext = invoice ? api.invoiceExtension(invoice.source_format) : '.pdf'
+    const fallbackFilename = invoice 
+      ? `${invoice.buyer || 'buyer'}_${invoice.seller || 'seller'}_${invoice.invoice_no || 'invoice'}${ext}` 
+      : `invoice_${id}${ext}`
+    
+    const filename = api.extractFilename(response, fallbackFilename)
     
     const blob = await response.blob()
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    
-    const invoice = invoicesStore.invoices.find(i => i.id === id)
-    const filename = invoice ? `${invoice.buyer || 'buyer'}_${invoice.seller || 'seller'}_${invoice.invoice_no || 'invoice'}.pdf` : `invoice_${id}.pdf`
     
     a.download = filename
     document.body.appendChild(a)
