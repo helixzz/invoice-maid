@@ -524,9 +524,7 @@ async def scan_all_accounts() -> None:
                             account.last_scan_uid = last_uid
 
                         log.invoices_found = invoices_added
-                        await db.commit()
                         log.finished_at = datetime.now(timezone.utc)
-                        db.add(log)
                         await db.commit()
                     except Exception as exc:
                         await db.rollback()
