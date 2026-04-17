@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.1-blue" alt="v0.2.1">
+  <img src="https://img.shields.io/badge/version-0.4.1-blue" alt="v0.4.1">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
@@ -60,6 +60,7 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 ### Email ingestion
 - **Automated Email Scanning** — IMAP, POP3, QQ Mail (via auth code), Microsoft Outlook (OAuth2 device code flow)
 - **Scheduled Processing** — configurable scan intervals via APScheduler
+- **Tiered Email Classification** — free heuristics first, cheap metadata second, LLM fallback only for ambiguous cases
 - **Body Link Downloads** — follows download links in email body to retrieve invoices
 - **Extraction Audit Log** — per-email tracking of why each message was saved, skipped, or failed
 
@@ -193,6 +194,16 @@ uvicorn app.main:app --reload
 ```
 
 Open `http://localhost:8000`, log in, then configure your email accounts and AI model from the Settings page.
+
+### Docker Quick Start
+```bash
+cp backend/.env.example backend/.env
+# Edit backend/.env with your settings
+docker compose up -d
+# Visit http://localhost:8000
+```
+
+For backend hot-reload, copy `docker-compose.override.yml.example` to `docker-compose.override.yml` and use `docker compose up`. Frontend source changes still need `cd frontend && npm run build` or a separate `npm run dev` workflow.
 
 ---
 

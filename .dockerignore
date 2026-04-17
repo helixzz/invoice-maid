@@ -1,0 +1,11 @@
+.git
+backend/.venv
+backend/data
+backend/__pycache__
+frontend/node_modules
+frontend/dist
+*.db
+.env
+backend/.env
+IDEA.md
+.sisyphus

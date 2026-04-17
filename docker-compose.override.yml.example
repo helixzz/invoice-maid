@@ -1,0 +1,9 @@
+services:
+  api:
+    # Development only: backend hot-reload via uvicorn.
+    # Frontend changes still need `npm run build` or a separate `npm run dev` workflow.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - invoice-maid-data:/app/backend/data
