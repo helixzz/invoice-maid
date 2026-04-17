@@ -35,11 +35,17 @@ def test_scan_progress_properties_return_zero_without_totals() -> None:
     assert progress.overall_pct == 0.0
 
 
-def test_reset_update_and_finish_progress() -> None:
+@pytest.mark.asyncio
+async def test_reset_update_and_finish_progress() -> None:
     sp.reset_progress(total_accounts=3)
     initial_updated_at = sp.get_progress().updated_at
 
-    sp.update_progress(current_account_idx=1, current_account_name="Inbox", invoices_found=2)
+    await sp.update_progress(
+        current_account_idx=1,
+        current_account_name="Inbox",
+        invoices_found=2,
+        total_emails=5,
+    )
     progress = sp.get_progress()
     assert progress.phase is sp.ScanPhase.SCANNING
     assert progress.total_accounts == 3
@@ -48,11 +54,31 @@ def test_reset_update_and_finish_progress() -> None:
     assert progress.invoices_found == 2
     assert progress.updated_at >= initial_updated_at
 
-    sp.finish_progress()
-    assert sp.get_progress().phase is sp.ScanPhase.DONE
+    await sp.finish_progress()
+    progress = sp.get_progress()
+    assert progress.phase is sp.ScanPhase.DONE
+    assert progress.current_account_idx == 3
+    assert progress.current_email_idx == 5
+    assert progress.emails_processed == 5
 
-    sp.finish_progress(error="boom")
+    await sp.finish_progress(error="boom")
     assert sp.get_progress().phase is sp.ScanPhase.ERROR
+
+
+@pytest.mark.asyncio
+async def test_progress_counters_increment_atomically() -> None:
+    sp.reset_progress(total_accounts=1)
+
+    await asyncio.gather(
+        *(sp.inc_emails_processed() for _ in range(25)),
+        *(sp.inc_invoices_found() for _ in range(7)),
+        *(sp.inc_errors() for _ in range(3)),
+    )
+
+    progress = sp.get_progress()
+    assert progress.emails_processed == 25
+    assert progress.invoices_found == 7
+    assert progress.errors == 3
 
 
 @pytest.mark.asyncio

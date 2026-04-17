@@ -76,6 +76,7 @@ class ScanProgress:
 _progress = ScanProgress()
 _subscribers: list[asyncio.Queue[str]] = []
 _scan_lock = asyncio.Lock()
+_progress_lock = asyncio.Lock()
 
 
 def get_progress() -> ScanProgress:
@@ -96,18 +97,47 @@ def reset_progress(total_accounts: int) -> None:
     )
 
 
-def update_progress(**kwargs: Any) -> None:
-    progress = _progress
-    for key, value in kwargs.items():
-        setattr(progress, key, value)
-    progress.touch()
-    _broadcast(progress.to_json())
+async def update_progress(**kwargs: Any) -> None:
+    async with _progress_lock:
+        progress = _progress
+        for key, value in kwargs.items():
+            setattr(progress, key, value)
+        progress.touch()
+        _broadcast(progress.to_json())
 
 
-def finish_progress(error: str | None = None) -> None:
-    _progress.phase = ScanPhase.ERROR if error else ScanPhase.DONE
-    _progress.touch()
-    _broadcast(_progress.to_json())
+async def inc_emails_processed(n: int = 1) -> None:
+    async with _progress_lock:
+        _progress.emails_processed += n
+        _progress.touch()
+        _broadcast(_progress.to_json())
+
+
+async def inc_invoices_found(n: int = 1) -> None:
+    async with _progress_lock:
+        _progress.invoices_found += n
+        _progress.touch()
+        _broadcast(_progress.to_json())
+
+
+async def inc_errors(n: int = 1) -> None:
+    async with _progress_lock:
+        _progress.errors += n
+        _progress.touch()
+        _broadcast(_progress.to_json())
+
+
+async def finish_progress(error: str | None = None) -> None:
+    async with _progress_lock:
+        if error:
+            _progress.phase = ScanPhase.ERROR
+        else:
+            _progress.phase = ScanPhase.DONE
+            _progress.current_account_idx = _progress.total_accounts
+            _progress.current_email_idx = _progress.total_emails
+            _progress.emails_processed = _progress.total_emails
+        _progress.touch()
+        _broadcast(_progress.to_json())
 
 
 def _broadcast(payload: str) -> None:
