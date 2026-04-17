@@ -260,9 +260,12 @@ async def scan_all_accounts() -> None:
                                     )
                                 )
                                 sp.update_progress(
-                                    emails_processed=sp.get_progress().emails_processed + 1
+                                    last_classification_tier=classification_tier,
+                                    emails_processed=sp.get_progress().emails_processed + 1,
                                 )
                                 continue
+
+                            sp.update_progress(last_classification_tier=classification_tier)
 
                             raw_items: list[tuple[str, bytes]] = [
                                 (att.filename, att.payload) for att in email.attachments
@@ -272,9 +275,16 @@ async def scan_all_accounts() -> None:
                                 if link in seen_links:
                                     continue
                                 seen_links.add(link)
+                                sp.update_progress(
+                                    current_attachment_url=link[:120],
+                                    current_download_outcome="downloading",
+                                )
                                 downloaded = await _download_linked_invoice(link)
                                 if downloaded is not None:
                                     raw_items.append(downloaded)
+                                    sp.update_progress(current_download_outcome="saved")
+                                else:
+                                    sp.update_progress(current_download_outcome="failed")
 
                             sp.update_progress(
                                 total_attachments=len(raw_items),
@@ -302,6 +312,12 @@ async def scan_all_accounts() -> None:
 
                                 try:
                                     parsed = parse_invoice(filename, payload)
+                                    sp.update_progress(
+                                        current_parse_method=parsed.extraction_method,
+                                        current_parse_format=parsed.source_format,
+                                        current_attachment_url="",
+                                        current_download_outcome="",
+                                    )
 
                                     if parsed.confidence < 0.5 and parsed.raw_text:
                                         extracted = await ai.extract_invoice_fields(db, parsed.raw_text)
@@ -383,6 +399,10 @@ async def scan_all_accounts() -> None:
                                     )
                                     db.add(invoice)
                                     await db.flush()
+                                    sp.update_progress(
+                                        invoices_found=sp.get_progress().invoices_found + 1,
+                                        current_download_outcome="saved",
+                                    )
                                     db.add(
                                         _record_extraction_log(
                                             scan_log_id=log.id,
@@ -438,9 +458,6 @@ async def scan_all_accounts() -> None:
 
                         log.invoices_found = invoices_added
                         await db.commit()
-                        sp.update_progress(
-                            invoices_found=sp.get_progress().invoices_found + invoices_added
-                        )
                         log.finished_at = datetime.now(timezone.utc)
                         db.add(log)
                         await db.commit()

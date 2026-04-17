@@ -12,6 +12,11 @@ export interface ScanProgressData {
   total_attachments: number
   current_attachment_idx: number
   current_attachment_name: string
+  current_attachment_url: string
+  current_download_outcome: string
+  current_parse_method: string
+  current_parse_format: string
+  last_classification_tier: number
   emails_processed: number
   invoices_found: number
   errors: number
@@ -31,6 +36,11 @@ const defaultProgress: ScanProgressData = {
   total_attachments: 0,
   current_attachment_idx: 0,
   current_attachment_name: '',
+  current_attachment_url: '',
+  current_download_outcome: '',
+  current_parse_method: '',
+  current_parse_format: '',
+  last_classification_tier: 0,
   emails_processed: 0,
   invoices_found: 0,
   errors: 0,

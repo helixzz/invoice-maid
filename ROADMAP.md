@@ -64,9 +64,43 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ## v0.5.0+ — Future
 
-Ideas under consideration (not committed):
+### Known Issues
 
-### Real-time scan progress transparency (P0 for v0.3.0)
+| Issue | Notes |
+|-------|-------|
+| **Email tracking pixel URLs downloaded as fake PDFs** | The body-link scanner follows all URLs in invoice-related emails, including email tracking pixels (e.g. `linktrace.triggerdelivery.com`). These return HTML/images, not PDFs. Parser fails with "No /Root object" and moves on. Fix: v0.6.0 URL pre-filter should check Content-Type header before attempting PDF parse. |
+| **Nuonuo e-invoice download links return QR-code HTML pages** | Chinese e-invoice platforms (`nnfp.jss.com.cn`, `fp.nuonuo.com`) serve invoice download links that redirect to interactive QR-code web pages, not direct PDF/XML downloads. The CDN/anti-crawl protection on these platforms blocks server-side download. Fix: document that Outlook scanning for this platform family requires the PDF to be attached to the email, not just linked. Alternatively, explore a browser-based fetch path or nuonuo open API. |
+
+### Planned improvements
+
+#### Enhanced scan progress transparency (P0 for v0.6.0)
+
+Current state: the scan progress SSE shows account/email/attachment counters but misses meaningful state information:
+
+| Signal | Currently shown | Proposed |
+|--------|----------------|----------|
+| Classification decision | ❌ | "Classified as invoice (Tier 1 — keyword match)" |
+| Download URL + outcome | ❌ | "Downloading link 3/5 … saved / parse_error / skipped" |
+| Extraction method | ❌ | "Parsing PDF via QR code extraction (confidence 97%)" |
+| Invoice save confirmation | ❌ | "Saved: 诺诺科技_发票_2024.pdf (¥1,234.56)" |
+| Classification tier used | ❌ | Tier 1/2/3 indicator next to email subject |
+
+Five new fields to add to `ScanProgress` dataclass:
+- `current_attachment_url` — URL currently being downloaded
+- `current_download_outcome` — downloading / saved / parse_error / skipped
+- `current_parse_method` — qr / xml_xpath / ofd_struct / llm / regex
+- `current_parse_format` — pdf / xml / ofd
+- `last_classification_tier` — 1 / 2 / 3
+
+Exact insertion points in `scheduler.py` already mapped:
+- Line 249: emit tier after classification
+- Line 275-277: emit URL + outcome after `_download_linked_invoice()`
+- Line 304-316: emit extraction_method + source_format after `parse_invoice()`
+- Line 385-414: emit save confirmation with filename + amount after `db.flush()`
+
+Frontend: `ScanProgressBar` extended to show these details inline.
+
+
 
 Currently, triggering a manual scan shows only a brief "Scanning..." spinner, then nothing until the scan finishes (or fails). There is no way to know:
 - Whether the scan is actually running
