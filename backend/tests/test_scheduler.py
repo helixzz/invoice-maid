@@ -161,6 +161,7 @@ async def test_scan_all_accounts_rollback_on_scanner_error(
 @pytest.mark.asyncio
 async def test_scan_all_accounts_marks_progress_error_and_reraises_on_outer_failure(
     monkeypatch: pytest.MonkeyPatch,
+    settings,  # ensures get_settings() has required env vars in CI
 ) -> None:
     class BrokenDBIterator:
         def __aiter__(self):
