@@ -8,11 +8,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from app.models.email_account import EmailAccount
+    from app.models.extraction_log import ExtractionLog
 
 
-def utcnow() -> datetime:
+def utcnow() -> datetime:  # pragma: no cover
     return datetime.now(timezone.utc)
 
 
@@ -28,3 +29,6 @@ class ScanLog(Base):
     error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
     email_account: Mapped[EmailAccount] = relationship(back_populates="scan_logs")
+    extraction_logs: Mapped[list["ExtractionLog"]] = relationship(
+        back_populates="scan_log", cascade="all, delete-orphan"
+    )

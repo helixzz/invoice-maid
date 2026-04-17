@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import httpx
@@ -12,7 +17,7 @@ from sqlalchemy import select
 
 from app.config import Settings, get_settings
 from app.database import get_db
-from app.models import EmailAccount, Invoice, ScanLog
+from app.models import EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
 from app.services.ai_service import AIService
 from app.services.email_scanner import ScannerFactory
 from app.services.file_manager import FileManager
@@ -51,6 +56,109 @@ async def _download_linked_invoice(url: str) -> tuple[str, bytes] | None:
         return None
 
 
+def _truncate_error_detail(error_detail: str | None) -> str | None:
+    if error_detail is None:
+        return None
+    return error_detail[:2000]
+
+
+def _record_extraction_log(
+    *,
+    scan_log_id: int,
+    email_uid: str | None,
+    email_subject: str,
+    attachment_filename: str | None,
+    outcome: str,
+    invoice_no: str | None = None,
+    confidence: float | None = None,
+    error_detail: str | None = None,
+) -> ExtractionLog:
+    return ExtractionLog(
+        scan_log_id=scan_log_id,
+        email_uid=email_uid,
+        email_subject=email_subject,
+        attachment_filename=attachment_filename,
+        outcome=outcome,
+        invoice_no=invoice_no,
+        confidence=confidence,
+        error_detail=_truncate_error_detail(error_detail),
+    )
+
+
+async def _was_attachment_seen(db: Any, email_uid: str | None, filename: str) -> bool:
+    if not email_uid:
+        return False
+
+    result = await db.execute(
+        select(ExtractionLog.id)
+        .where(ExtractionLog.email_uid == email_uid, ExtractionLog.attachment_filename == filename)
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+def _serialize_webhook_amount(amount: Decimal | int | float) -> str:
+    return str(amount)
+
+
+def _build_webhook_payload(invoice: Invoice) -> dict[str, str | float]:
+    return {
+        "event": "invoice.created",
+        "invoice_no": invoice.invoice_no,
+        "buyer": invoice.buyer,
+        "seller": invoice.seller,
+        "amount": _serialize_webhook_amount(invoice.amount),
+        "invoice_date": invoice.invoice_date.isoformat(),
+        "invoice_type": invoice.invoice_type,
+        "confidence": invoice.confidence,
+    }
+
+
+def _sign_webhook_payload(payload: dict[str, str | float], secret: str) -> str:
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+async def _send_invoice_webhook(db, settings: Settings, invoice: Invoice) -> None:
+    if not settings.WEBHOOK_URL:
+        return
+
+    payload = _build_webhook_payload(invoice)
+    headers = {"X-Signature-256": _sign_webhook_payload(payload, settings.WEBHOOK_SECRET)}
+    status_code: int | None = None
+    success = False
+    error_detail: str | None = None
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(settings.WEBHOOK_URL, json=payload, headers=headers)
+        status_code = response.status_code
+        success = response.is_success
+        if not success:
+            error_detail = response.text[:2000]
+            logger.warning(
+                "Webhook delivery failed for invoice %s with status %s",
+                invoice.invoice_no,
+                status_code,
+            )
+    except Exception as exc:
+        error_detail = str(exc)[:2000]
+        logger.warning("Webhook delivery failed for invoice %s: %s", invoice.invoice_no, exc)
+
+    db.add(
+        WebhookLog(
+            event="invoice.created",
+            invoice_no=invoice.invoice_no,
+            url=settings.WEBHOOK_URL,
+            status_code=status_code,
+            success=success,
+            error_detail=error_detail,
+        )
+    )
+    await db.commit()
+
+
 async def scan_all_accounts() -> None:
     """Iterate active email accounts and ingest new invoices."""
     settings = get_settings()
@@ -70,6 +178,9 @@ async def scan_all_accounts() -> None:
                 emails_scanned=0,
                 invoices_found=0,
             )
+            db.add(log)
+            await db.commit()
+            await db.refresh(log)
 
             try:
                 scanner = ScannerFactory.get_scanner(account.type)
@@ -82,6 +193,15 @@ async def scan_all_accounts() -> None:
                 for email in emails:
                     is_invoice = await ai.classify_email(db, email.subject, email.body_text)
                     if not is_invoice:
+                        db.add(
+                            _record_extraction_log(
+                                scan_log_id=log.id,
+                                email_uid=email.uid,
+                                email_subject=email.subject,
+                                attachment_filename=None,
+                                outcome="not_invoice",
+                            )
+                        )
                         continue
 
                     raw_items: list[tuple[str, bytes]] = [(att.filename, att.payload) for att in email.attachments]
@@ -95,6 +215,18 @@ async def scan_all_accounts() -> None:
                             raw_items.append(downloaded)
 
                     for filename, payload in raw_items:
+                        if await _was_attachment_seen(db, email.uid, filename):
+                            db.add(
+                                _record_extraction_log(
+                                    scan_log_id=log.id,
+                                    email_uid=email.uid,
+                                    email_subject=email.subject,
+                                    attachment_filename=filename,
+                                    outcome="skipped_seen",
+                                )
+                            )
+                            continue
+
                         try:
                             parsed = parse_invoice(filename, payload)
 
@@ -110,13 +242,36 @@ async def scan_all_accounts() -> None:
                                 parsed.extraction_method = "llm"
                                 parsed.confidence = extracted.confidence
 
-                            if not parsed.invoice_no:
+                            if parsed.confidence < 0.5 or not parsed.invoice_no:
+                                db.add(
+                                    _record_extraction_log(
+                                        scan_log_id=log.id,
+                                        email_uid=email.uid,
+                                        email_subject=email.subject,
+                                        attachment_filename=filename,
+                                        outcome="low_confidence",
+                                        invoice_no=parsed.invoice_no,
+                                        confidence=parsed.confidence,
+                                        error_detail=None if parsed.invoice_no else "invoice_no missing",
+                                    )
+                                )
                                 continue
 
                             existing = await db.execute(
                                 select(Invoice).where(Invoice.invoice_no == parsed.invoice_no)
                             )
                             if existing.scalar_one_or_none() is not None:
+                                db.add(
+                                    _record_extraction_log(
+                                        scan_log_id=log.id,
+                                        email_uid=email.uid,
+                                        email_subject=email.subject,
+                                        attachment_filename=filename,
+                                        outcome="duplicate",
+                                        invoice_no=parsed.invoice_no,
+                                        confidence=parsed.confidence,
+                                    )
+                                )
                                 continue
 
                             ext = (
@@ -150,6 +305,17 @@ async def scan_all_accounts() -> None:
                             )
                             db.add(invoice)
                             await db.flush()
+                            db.add(
+                                _record_extraction_log(
+                                    scan_log_id=log.id,
+                                    email_uid=email.uid,
+                                    email_subject=email.subject,
+                                    attachment_filename=filename,
+                                    outcome="saved",
+                                    invoice_no=parsed.invoice_no,
+                                    confidence=parsed.confidence,
+                                )
+                            )
 
                             if settings.sqlite_vec_available:
                                 try:
@@ -162,8 +328,20 @@ async def scan_all_accounts() -> None:
                                     )
 
                             invoices_added += 1
+                            await db.commit()
+                            await _send_invoice_webhook(db, settings, invoice)
                         except Exception as exc:
                             logger.error("Failed to process invoice payload %s: %s", filename, exc)
+                            db.add(
+                                _record_extraction_log(
+                                    scan_log_id=log.id,
+                                    email_uid=email.uid,
+                                    email_subject=email.subject,
+                                    attachment_filename=filename,
+                                    outcome="parse_error",
+                                    error_detail=str(exc),
+                                )
+                            )
 
                     if email.uid and (not last_uid or email.uid > last_uid):
                         last_uid = email.uid

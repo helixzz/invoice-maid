@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -8,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 import app.tasks.scheduler as scheduler
-from app.models import Invoice, ScanLog
+from app.models import ExtractionLog, Invoice, ScanLog, WebhookLog
 from app.services.email_scanner import RawAttachment, RawEmail
 from app.services.invoice_parser import ParsedInvoice
 
@@ -61,10 +64,12 @@ async def test_scan_all_accounts_happy_path_with_embedding(
 
     invoices = (await db.execute(select(Invoice))).scalars().all()
     logs = (await db.execute(select(ScanLog))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert len(invoices) == 1
     assert invoices[0].invoice_no == "INV-SCHED-1"
     assert account.last_scan_uid == "2"
     assert logs[0].invoices_found == 1
+    assert extraction_logs[0].outcome == "saved"
 
 
 @pytest.mark.asyncio
@@ -119,10 +124,12 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
 
     invoices = (await db.execute(select(Invoice).order_by(Invoice.id))).scalars().all()
     logs = (await db.execute(select(ScanLog))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog).order_by(ExtractionLog.id))).scalars().all()
     assert len(invoices) == 2
     assert invoices[-1].invoice_no == mock_ai_service.extract_invoice_fields.return_value.invoice_no
     assert invoices[-1].extraction_method == "llm"
     assert logs[0].invoices_found == 1
+    assert [item.outcome for item in extraction_logs] == ["duplicate", "saved", "parse_error"]
 
 
 @pytest.mark.asyncio
@@ -290,8 +297,11 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
     await scheduler.scan_all_accounts()
 
     logs = (await db.execute(select(ScanLog))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog).order_by(ExtractionLog.id))).scalars().all()
     assert logs[0].emails_scanned == 2
     assert logs[0].invoices_found == 0
+    assert [item.outcome for item in extraction_logs] == ["not_invoice", "low_confidence"]
+    assert extraction_logs[1].error_detail == "invoice_no missing"
 
 
 @pytest.mark.asyncio
@@ -445,3 +455,384 @@ async def test_scan_all_accounts_skips_failed_link_download(
     assert parse_calls == []
     assert logs[0].emails_scanned == 1
     assert logs[0].invoices_found == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_skips_seen_email_uid_and_attachment_pair(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    _account = await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-seen-1",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="repeat.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="INV-SEEN-1",
+        buyer="Buyer",
+        seller="Seller",
+        amount=Decimal("10.00"),
+        invoice_date=date(2024, 1, 1),
+        invoice_type="电子普通发票",
+        raw_text="raw",
+        source_format="pdf",
+        extraction_method="regex",
+        confidence=0.9,
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice).order_by(Invoice.id.asc()))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog).order_by(ExtractionLog.id.asc()))).scalars().all()
+    assert len(invoices) == 1
+    assert [item.outcome for item in extraction_logs] == ["saved", "skipped_seen"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_logs_low_confidence_even_after_llm_enrichment(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    _account = await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-low-1",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="low.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(invoice_no="INV-LOW-1", raw_text="needs llm", confidence=0.1)
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={"invoice_no": "INV-LOW-1", "confidence": 0.2}
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert invoices == []
+    assert extraction_logs[0].outcome == "low_confidence"
+    assert extraction_logs[0].confidence == 0.2
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_sends_webhook_with_signature(
+    db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    settings.WEBHOOK_URL = "https://example.com/webhook"
+    settings.WEBHOOK_SECRET = "secret-key"
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="webhook-1",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="INV-WEBHOOK-1",
+        buyer="Buyer",
+        seller="Seller",
+        amount=Decimal("10.00"),
+        invoice_date=date(2024, 1, 1),
+        invoice_type="电子普通发票",
+        item_summary="办公用品",
+        raw_text="raw",
+        source_format="pdf",
+        extraction_method="regex",
+        confidence=0.92,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    class FakeResponse:
+        status_code = 202
+        is_success = True
+        text = "ok"
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return FakeResponse()
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    await scheduler.scan_all_accounts()
+
+    payload = captured["json"]
+    assert captured["url"] == settings.WEBHOOK_URL
+    assert payload == {
+        "event": "invoice.created",
+        "invoice_no": "INV-WEBHOOK-1",
+        "buyer": "Buyer",
+        "seller": "Seller",
+        "amount": "10.00",
+        "invoice_date": "2024-01-01",
+        "invoice_type": "电子普通发票",
+        "confidence": 0.92,
+    }
+    expected_signature = "sha256=" + hmac.new(
+        settings.WEBHOOK_SECRET.encode("utf-8"),
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    assert captured["headers"] == {"X-Signature-256": expected_signature}
+
+    webhook_logs = (await db.execute(select(WebhookLog))).scalars().all()
+    assert len(webhook_logs) == 1
+    assert webhook_logs[0].invoice_no == "INV-WEBHOOK-1"
+    assert webhook_logs[0].status_code == 202
+    assert webhook_logs[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_webhook_failure_logs_warning_and_continues(
+    db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    settings.WEBHOOK_URL = "https://example.com/webhook"
+    settings.WEBHOOK_SECRET = "secret-key"
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="webhook-fail-1",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="INV-WEBHOOK-FAIL",
+        buyer="Buyer",
+        seller="Seller",
+        amount=Decimal("11.00"),
+        invoice_date=date(2024, 1, 2),
+        invoice_type="电子普通发票",
+        item_summary="办公用品",
+        raw_text="raw",
+        source_format="pdf",
+        extraction_method="regex",
+        confidence=0.92,
+    )
+    warnings: list[str] = []
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json=None, headers=None):
+            del url, json, headers
+            raise scheduler.httpx.HTTPError("webhook boom")
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(scheduler.logger, "warning", lambda message, *args: warnings.append(message % args))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    webhook_logs = (await db.execute(select(WebhookLog))).scalars().all()
+    scan_logs = (await db.execute(select(ScanLog))).scalars().all()
+    assert len(invoices) == 1
+    assert len(webhook_logs) == 1
+    assert webhook_logs[0].success is False
+    assert webhook_logs[0].status_code is None
+    assert webhook_logs[0].error_detail == "webhook boom"
+    assert scan_logs[0].invoices_found == 1
+    assert any("Webhook delivery failed for invoice INV-WEBHOOK-FAIL" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_webhook_non_success_response_logs_warning(
+    db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    settings.WEBHOOK_URL = "https://example.com/webhook"
+    settings.WEBHOOK_SECRET = "secret-key"
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="webhook-422-1",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="INV-WEBHOOK-422",
+        buyer="Buyer",
+        seller="Seller",
+        amount=Decimal("11.50"),
+        invoice_date=date(2024, 1, 2),
+        invoice_type="电子普通发票",
+        item_summary="办公用品",
+        raw_text="raw",
+        source_format="pdf",
+        extraction_method="regex",
+        confidence=0.92,
+    )
+    warnings: list[str] = []
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    class FakeResponse:
+        status_code = 422
+        is_success = False
+        text = "invalid payload"
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json=None, headers=None):
+            del url, json, headers
+            return FakeResponse()
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(scheduler.logger, "warning", lambda message, *args: warnings.append(message % args))
+
+    await scheduler.scan_all_accounts()
+
+    webhook_logs = (await db.execute(select(WebhookLog))).scalars().all()
+    assert len(webhook_logs) == 1
+    assert webhook_logs[0].status_code == 422
+    assert webhook_logs[0].success is False
+    assert webhook_logs[0].error_detail == "invalid payload"
+    assert any("Webhook delivery failed for invoice INV-WEBHOOK-422 with status 422" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_skips_webhook_when_disabled(
+    db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    settings.WEBHOOK_URL = ""
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="webhook-off-1",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="INV-WEBHOOK-OFF",
+        buyer="Buyer",
+        seller="Seller",
+        amount=Decimal("12.00"),
+        invoice_date=date(2024, 1, 3),
+        invoice_type="电子普通发票",
+        item_summary="办公用品",
+        raw_text="raw",
+        source_format="pdf",
+        extraction_method="regex",
+        confidence=0.92,
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    post_mock = AsyncMock()
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    monkeypatch.setattr(scheduler.httpx.AsyncClient, "post", post_mock, raising=False)
+
+    await scheduler.scan_all_accounts()
+
+    webhook_logs = (await db.execute(select(WebhookLog))).scalars().all()
+    assert webhook_logs == []
+    post_mock.assert_not_awaited()

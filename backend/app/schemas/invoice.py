@@ -41,6 +41,7 @@ class InvoiceResponse(BaseModel):
     source_format: str
     extraction_method: str
     confidence: float
+    is_manually_corrected: bool
     created_at: str
 
 
