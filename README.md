@@ -40,6 +40,7 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 ## Table of Contents
 
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
@@ -67,6 +68,50 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 - **Advanced Search**: Full-text search via SQLite FTS5 and optional semantic search using vector embeddings.
 - **Web UI**: Modern dashboard for invoice searching, date filtering, PDF previews, and batch ZIP downloads.
 - **Secure Access**: Single-user admin authentication with JWT.
+
+---
+
+## Screenshots
+
+### Login
+
+A clean split-screen login page with product features on the left and a simple sign-in form on the right.
+
+<p align="center">
+  <img src="assets/screenshots/01-login.png" alt="Login page" width="900">
+</p>
+
+### Invoice Dashboard
+
+After login, the main invoices page shows summary stats at the top, a search bar with date filters, and the invoice table with bulk actions. Select invoices, download them as a ZIP, or open individual details.
+
+<p align="center">
+  <img src="assets/screenshots/02-invoices.png" alt="Invoice dashboard" width="900">
+</p>
+
+### Invoice Detail
+
+Click any invoice to see its full structured data: buyer, seller, amount, date, type, confidence score, and a PDF preview. Non-PDF formats show a download prompt instead.
+
+<p align="center">
+  <img src="assets/screenshots/03-invoice-detail.png" alt="Invoice detail" width="900">
+</p>
+
+### Email Account Settings
+
+Configure email accounts for automatic scanning. Each account shows its protocol, scan interval, and last scan time. Add, edit, or delete accounts from the same page.
+
+<p align="center">
+  <img src="assets/screenshots/04-settings.png" alt="Email account settings" width="900">
+</p>
+
+### Scan Operations
+
+Trigger a full scan manually, or review recent scan logs with per-account status, email counts, and invoice yield.
+
+<p align="center">
+  <img src="assets/screenshots/05-scan-operations.png" alt="Scan operations" width="900">
+</p>
 
 ---
 
