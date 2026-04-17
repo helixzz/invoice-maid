@@ -4,7 +4,17 @@ import AppLayout from '@/components/AppLayout.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import Toast from '@/components/Toast.vue'
 import { api } from '@/api/client'
-import type { EmailAccount, AccountCreate, AccountUpdate, ScanLog, AISettingsResponse, AISettingsUpdate, ExtractionLog } from '@/types'
+import type { 
+  EmailAccount, 
+  AccountCreate, 
+  AccountUpdate, 
+  ScanLog, 
+  AISettingsResponse, 
+  AISettingsUpdate, 
+  ExtractionLog,
+  OAuthInitiateResponse,
+  OAuthStatusResponse
+} from '@/types'
 
 const activeTab = ref('accounts')
 
@@ -122,6 +132,97 @@ const accountNameById = (accountId: number) => {
   return accounts.value.find((account) => account.id === accountId)?.name || `#${accountId}`
 }
 
+// OAuth Flow State
+const showOAuthModal = ref(false)
+const oauthInitiateData = ref<OAuthInitiateResponse | null>(null)
+const oauthStatusData = ref<OAuthStatusResponse | null>(null)
+const oauthAccountId = ref<number | null>(null)
+const oauthPollingInterval = ref<number | null>(null)
+const oauthTimeRemaining = ref<number>(0)
+const oauthCountdownInterval = ref<number | null>(null)
+
+const stopOAuthPolling = () => {
+  if (oauthPollingInterval.value) {
+    clearInterval(oauthPollingInterval.value)
+    oauthPollingInterval.value = null
+  }
+  if (oauthCountdownInterval.value) {
+    clearInterval(oauthCountdownInterval.value)
+    oauthCountdownInterval.value = null
+  }
+}
+
+const closeOAuthModal = () => {
+  showOAuthModal.value = false
+  stopOAuthPolling()
+}
+
+const updateOAuthCountdown = () => {
+  if (oauthInitiateData.value?.expires_at) {
+    const expiresAt = new Date(oauthInitiateData.value.expires_at).getTime()
+    const now = Date.now()
+    oauthTimeRemaining.value = Math.max(0, Math.floor((expiresAt - now) / 1000))
+  }
+}
+
+const formatTimeRemaining = (seconds: number) => {
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+const copyDeviceCode = () => {
+  if (oauthInitiateData.value?.user_code) {
+    navigator.clipboard.writeText(oauthInitiateData.value.user_code)
+    toastRef.value?.addToast('Device code copied to clipboard', 'info')
+  }
+}
+
+const pollOAuthStatus = async (accountId: number) => {
+  try {
+    const status = await api.getOAuthStatus(accountId)
+    oauthStatusData.value = status
+    
+    if (status.status === 'authorized') {
+      stopOAuthPolling()
+      toastRef.value?.addToast('Authorization successful!', 'success')
+      setTimeout(() => {
+        closeOAuthModal()
+        // Optionally auto test connection
+        testConnection(accountId)
+      }, 2000)
+    } else if (status.status === 'expired' || status.status === 'error') {
+      stopOAuthPolling()
+    }
+  } catch (error) {
+    console.error('Failed to poll OAuth status', error)
+  }
+}
+
+const startOAuthFlow = async (accountId: number) => {
+  try {
+    oauthAccountId.value = accountId
+    oauthStatusData.value = null
+    const res = await api.initiateOAuth(accountId)
+    oauthInitiateData.value = res
+    
+    if (res.status === 'authorized') {
+      toastRef.value?.addToast('Account is already authorized', 'success')
+    } else if (res.status === 'pending') {
+      showOAuthModal.value = true
+      updateOAuthCountdown()
+      
+      oauthCountdownInterval.value = window.setInterval(updateOAuthCountdown, 1000)
+      
+      // Poll every 3 seconds
+      oauthPollingInterval.value = window.setInterval(() => pollOAuthStatus(accountId), 3000)
+    }
+  } catch (error) {
+    console.error('Failed to initiate OAuth', error)
+    toastRef.value?.addToast('Failed to start authorization flow', 'error')
+  }
+}
+
 const fetchAccounts = async () => {
   loadingAccounts.value = true
   try {
@@ -169,10 +270,17 @@ const testConnection = async (accountId: number) => {
       toastRef.value?.addToast('Connection successful!', 'success')
     } else {
       toastRef.value?.addToast(response.detail || 'Connection failed', 'error')
+      if (response.detail?.toLowerCase().includes('outlook authorization required')) {
+        startOAuthFlow(accountId)
+      }
     }
   } catch (error: any) {
     console.error('Failed to test connection', error)
-    toastRef.value?.addToast(error?.response?.data?.detail || 'Connection test failed', 'error')
+    const detail = error?.response?.data?.detail
+    toastRef.value?.addToast(detail || 'Connection test failed', 'error')
+    if (detail?.toLowerCase().includes('outlook authorization required')) {
+      startOAuthFlow(accountId)
+    }
   }
 }
 
@@ -208,11 +316,19 @@ const saveAccount = async () => {
       if (accountForm.value.password) {
         updateData.password = accountForm.value.password
       }
-      await api.updateAccount(editingAccountId.value, updateData)
+      const updatedAccount = await api.updateAccount(editingAccountId.value, updateData)
       toastRef.value?.addToast('Account updated successfully', 'success')
+      
+      if (updatedAccount.type === 'outlook') {
+        startOAuthFlow(updatedAccount.id)
+      }
     } else {
-      await api.createAccount(accountForm.value)
+      const newAccount = await api.createAccount(accountForm.value)
       toastRef.value?.addToast('Account created successfully', 'success')
+      
+      if (newAccount.type === 'outlook') {
+        startOAuthFlow(newAccount.id)
+      }
     }
     showAccountModal.value = false
     fetchAccounts()
@@ -340,7 +456,8 @@ onMounted(() => {
                   </div>
                 </div>
                 <div class="flex items-center space-x-4">
-                  <button @click="testConnection(account.id)" class="text-sm text-slate-500 hover:text-slate-700 transition-colors hidden sm:inline-block border border-slate-200 px-3 py-1 rounded hover:bg-slate-50">Test Connection</button>
+                  <button v-if="account.type === 'outlook'" @click="startOAuthFlow(account.id)" class="text-sm text-blue-600 hover:text-blue-900 transition-colors hidden sm:inline-block border border-blue-200 px-3 py-1 rounded hover:bg-blue-50 font-medium">{{ account.last_scan_uid ? 'Re-authenticate' : 'Authenticate' }}</button>
+                  <button @click="testConnection(account.id)" class="text-sm text-green-600 hover:text-green-900 transition-colors hidden sm:inline-block border border-green-200 px-3 py-1 rounded hover:bg-green-50 font-medium">Test Connection</button>
                   <button @click="openEditModal(account)" class="text-sm text-blue-600 hover:text-blue-900 transition-colors font-medium">Edit</button>
                   <button @click="confirmDeleteAccount(account.id)" class="text-sm text-red-600 hover:text-red-900 transition-colors font-medium">Delete</button>
                 </div>
@@ -633,8 +750,11 @@ onMounted(() => {
                     </div>
 
                     <div>
-                      <label class="block text-sm font-medium text-slate-700">Username / Email</label>
-                      <input type="email" v-model="accountForm.username" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="user@example.com">
+                      <label class="block text-sm font-medium text-slate-700">
+                        {{ accountForm.type === 'outlook' ? 'Azure App Client ID' : 'Username / Email' }}
+                      </label>
+                      <input type="text" v-model="accountForm.username" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" :placeholder="accountForm.type === 'outlook' ? 'e.g. 12345678-1234-1234-1234-1234567890ab' : 'user@example.com'">
+                      <p v-if="accountForm.type === 'outlook'" class="mt-1 text-xs text-slate-500">Enter the Application (client) ID from your Azure App Registration</p>
                     </div>
 
                     <div v-if="accountForm.type !== 'outlook'">
@@ -657,6 +777,80 @@ onMounted(() => {
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- OAuth Flow Modal -->
+    <div v-if="showOAuthModal" class="fixed inset-0 z-10 overflow-y-auto" aria-labelledby="oauth-modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-slate-500 bg-opacity-75 transition-opacity" aria-hidden="true" @click="closeOAuthModal"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div class="inline-block align-bottom bg-white rounded-xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+          <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+            <div class="sm:flex sm:items-start">
+              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10">
+                <svg class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </div>
+              <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
+                <h3 class="text-lg leading-6 font-medium text-slate-900" id="oauth-modal-title">
+                  Outlook Authorization Required
+                </h3>
+                <div class="mt-4 space-y-4">
+                  <p class="text-sm text-slate-500">
+                    Open the following URL in your browser and enter the code below:
+                  </p>
+                  
+                  <div v-if="oauthInitiateData?.verification_uri" class="mt-2 text-center">
+                    <a :href="oauthInitiateData.verification_uri" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center justify-center gap-1">
+                      {{ oauthInitiateData.verification_uri }}
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                    </a>
+                  </div>
+                  
+                  <div class="bg-slate-50 p-4 rounded-lg border border-slate-200 mt-4 text-center">
+                    <div class="text-3xl font-mono tracking-widest text-slate-800 font-bold select-all flex items-center justify-center gap-3">
+                      {{ oauthInitiateData?.user_code }}
+                      <button @click="copyDeviceCode" type="button" class="text-slate-400 hover:text-blue-600 transition-colors" title="Copy to clipboard">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div v-if="oauthStatusData?.status === 'authorized'" class="mt-4 p-3 bg-green-50 text-green-700 rounded-md border border-green-100 flex items-center">
+                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    ✓ Authorization successful!
+                  </div>
+                  <div v-else-if="oauthStatusData?.status === 'error' || oauthStatusData?.status === 'expired' || oauthTimeRemaining <= 0" class="mt-4 p-3 bg-red-50 text-red-700 rounded-md border border-red-100 flex items-center justify-between">
+                    <div class="flex items-center">
+                      <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                      {{ oauthStatusData?.status === 'expired' || oauthTimeRemaining <= 0 ? 'Code expired.' : (oauthStatusData?.detail || 'Authorization failed.') }}
+                    </div>
+                    <button @click="startOAuthFlow(oauthAccountId!)" type="button" class="text-sm font-medium underline text-red-700 hover:text-red-900">Try Again</button>
+                  </div>
+                  <div v-else class="mt-4 flex flex-col items-center space-y-2">
+                    <div class="flex items-center text-sm text-slate-500">
+                      <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Waiting for authorization...
+                    </div>
+                    <div class="text-xs font-medium" :class="oauthTimeRemaining < 60 ? 'text-orange-600' : 'text-slate-400'">
+                      Code expires in: {{ formatTimeRemaining(oauthTimeRemaining) }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="bg-slate-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+            <button type="button" @click="closeOAuthModal" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm transition-colors">
+              {{ oauthStatusData?.status === 'authorized' ? 'Close' : 'Cancel' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
