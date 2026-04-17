@@ -12,7 +12,7 @@ let nextId = 0
 
 const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info', duration?: number) => {
   const id = nextId++
-  const defaultDuration = type === 'error' ? 7000 : type === 'success' ? 4000 : 5000
+  const defaultDuration = type === 'error' ? 10000 : type === 'success' ? 5000 : 7000
   toasts.value.push({ id, message, type })
   setTimeout(() => {
     removeToast(id)
@@ -30,7 +30,7 @@ defineExpose({ addToast })
 </script>
 
 <template>
-  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-3" style="min-width: 360px; max-width: min(520px, calc(100vw - 2rem))">
+  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-3" style="min-width: 440px; max-width: min(600px, calc(100vw - 2rem))">
     <transition-group name="toast" tag="div">
       <div
         v-for="toast in toasts"
@@ -56,7 +56,7 @@ defineExpose({ addToast })
               </svg>
             </div>
             <div class="ml-3 w-0 flex-1 pt-0.5">
-              <p class="text-sm font-medium text-slate-900">
+              <p class="text-sm font-medium text-slate-900 leading-snug">
                 {{ toast.message }}
               </p>
             </div>
