@@ -36,7 +36,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libzbar0 libzbar-dev libmupdf-dev mupdf-tools zip rsync
+          sudo apt-get install -y libzbar0 libzbar-dev zip rsync
 
       - name: Build backend environment
         working-directory: backend
