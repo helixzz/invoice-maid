@@ -13,6 +13,8 @@ import type {
   ScanLog, 
   AISettingsResponse, 
   AISettingsUpdate, 
+  ClassifierSettingsResponse,
+  ClassifierSettingsUpdate,
   ExtractionLog,
   OAuthInitiateResponse,
   OAuthStatusResponse
@@ -28,6 +30,43 @@ const savingAISettings = ref(false)
 const availableModels = ref<string[]>([])
 const loadingModels = ref(false)
 const modelsFetchFailed = ref(false)
+
+// Classifier Settings
+const classifierSettings = ref<ClassifierSettingsResponse | null>(null)
+const classifierSettingsForm = ref<ClassifierSettingsUpdate>({})
+const loadingClassifierSettings = ref(false)
+const savingClassifierSettings = ref(false)
+
+const fetchClassifierSettings = async () => {
+  loadingClassifierSettings.value = true
+  try {
+    const res = await api.getClassifierSettings()
+    classifierSettings.value = res
+    classifierSettingsForm.value = {
+      trusted_senders: res.trusted_senders,
+      extra_keywords: res.extra_keywords,
+    }
+  } catch (error) {
+    console.error('Failed to fetch Classifier settings', error)
+    toastRef.value?.addToast('Failed to fetch Classifier settings', 'error')
+  } finally {
+    loadingClassifierSettings.value = false
+  }
+}
+
+const saveClassifierSettings = async () => {
+  savingClassifierSettings.value = true
+  try {
+    await api.updateClassifierSettings(classifierSettingsForm.value)
+    toastRef.value?.addToast('Classifier settings saved successfully', 'success')
+    await fetchClassifierSettings()
+  } catch (error) {
+    console.error('Failed to save Classifier settings', error)
+    toastRef.value?.addToast('Failed to save Classifier settings', 'error')
+  } finally {
+    savingClassifierSettings.value = false
+  }
+}
 
 const fetchAISettings = async () => {
   loadingAISettings.value = true
@@ -389,6 +428,7 @@ onMounted(() => {
   fetchAccounts()
   fetchLogs()
   fetchAISettings()
+  fetchClassifierSettings()
   connectScanProgress()
 })
 </script>
@@ -418,6 +458,13 @@ onMounted(() => {
           >
             <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
             AI 模型
+          </button>
+          <button
+            @click="activeTab = 'classifier'"
+            :class="[activeTab === 'classifier' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center']"
+          >
+            <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+            分类规则
           </button>
         </nav>
       </div>
@@ -721,6 +768,62 @@ onMounted(() => {
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
                 {{ savingAISettings ? 'Saving...' : 'Save Settings' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Classifier Settings Tab -->
+      <div v-if="activeTab === 'classifier'" class="space-y-6">
+        <div class="sm:flex sm:items-center sm:justify-between bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+          <div>
+            <h3 class="text-lg leading-6 font-medium text-slate-900">Email Classification Rules</h3>
+            <p class="mt-1 max-w-2xl text-sm text-slate-500">Configure how emails are identified as containing invoices.</p>
+          </div>
+        </div>
+
+        <div class="bg-white shadow-sm sm:rounded-xl border border-slate-200 p-6">
+          <div v-if="loadingClassifierSettings" class="p-6 text-center text-slate-500 animate-pulse">
+            Loading settings...
+          </div>
+          <form v-else @submit.prevent="saveClassifierSettings" class="space-y-8">
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-1">
+                Trusted Sender Domains / Addresses
+              </label>
+              <p class="text-sm text-slate-500 mb-3">Emails from these senders are immediately classified as invoice-related without LLM. One per line. Example: tax.gov.cn, einvoice@company.com</p>
+              <textarea v-model="classifierSettingsForm.trusted_senders" rows="5" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="tax.gov.cn&#10;einvoice@company.com"></textarea>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-1">
+                Extra Invoice Keywords
+              </label>
+              <p class="text-sm text-slate-500 mb-3">Additional keywords (beyond the built-in list) that identify invoice emails. One per line. Example: 财务, billing</p>
+              <textarea v-model="classifierSettingsForm.extra_keywords" rows="4" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="财务&#10;billing"></textarea>
+            </div>
+
+            <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
+              <h4 class="text-sm font-medium text-slate-700 mb-2">Built-in keywords (always active)</h4>
+              <div class="flex flex-wrap gap-2">
+                <span v-for="keyword in ['发票', 'invoice', '开票', '报销', '税务', 'fapiao', 'receipt', 'vat', '增值税', '电子发票', '数电票']" :key="keyword" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-800">
+                  {{ keyword }}
+                </span>
+              </div>
+            </div>
+
+            <div class="pt-5 border-t border-slate-200 flex justify-end">
+              <button
+                type="submit"
+                :disabled="savingClassifierSettings"
+                class="inline-flex items-center justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
+              >
+                <svg v-if="savingClassifierSettings" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                {{ savingClassifierSettings ? 'Saving...' : 'Save' }}
               </button>
             </div>
           </form>
