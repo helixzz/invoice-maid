@@ -22,7 +22,14 @@ from app.schemas.email_account import (
     OAuthInitiateResponse,
     OAuthStatusResponse,
 )
-from app.services.email_scanner import OAuthFlowState, OutlookScanner, ScannerFactory, encrypt_password, oauth_registry
+from app.services.email_scanner import (
+    OAuthFlowState,
+    OutlookScanner,
+    ScannerFactory,
+    _is_personal_microsoft_account,
+    encrypt_password,
+    oauth_registry,
+)
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -40,6 +47,7 @@ def _serialize_account(account: EmailAccount) -> EmailAccountResponse:
         host=account.host,
         port=account.port,
         username=account.username,
+        outlook_account_type=account.outlook_account_type,
         is_active=account.is_active,
         last_scan_uid=account.last_scan_uid,
         created_at=account.created_at.isoformat(),
@@ -121,12 +129,19 @@ async def create_account(
     db: AsyncSession = Depends(get_db),
 ) -> EmailAccountResponse:
     settings = get_settings()
+    outlook_account_type = payload.outlook_account_type
+    if payload.type == "outlook" and outlook_account_type == "personal":
+        outlook_account_type = (
+            "personal" if _is_personal_microsoft_account(payload.username) else "organizational"
+        )
+
     account = EmailAccount(
         name=payload.name,
         type=payload.type,
         host=payload.host,
         port=payload.port,
         username=payload.username,
+        outlook_account_type=outlook_account_type,
         password_encrypted=encrypt_password(payload.password, settings.JWT_SECRET) if payload.password else None,
         oauth_token_path=payload.oauth_token_path,
         is_active=payload.is_active,
@@ -161,6 +176,8 @@ async def update_account(
         account.port = payload.port
     if payload.username is not None:
         account.username = payload.username
+    if payload.outlook_account_type is not None:
+        account.outlook_account_type = payload.outlook_account_type
     if payload.password is not None:
         account.password_encrypted = encrypt_password(payload.password, settings.JWT_SECRET)
     if payload.is_active is not None:

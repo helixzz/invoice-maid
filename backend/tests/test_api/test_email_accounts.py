@@ -148,6 +148,74 @@ async def test_outlook_account_creation_auto_assigns_oauth_token_path(client, au
     assert account.oauth_token_path == str((Path(settings.STORAGE_PATH).parent / "oauth" / f"account_{account_id}_token.json").resolve())
 
 
+async def test_create_outlook_account_auto_detects_personal(client, auth_headers) -> None:
+    response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "Personal Outlook",
+            "type": "outlook",
+            "username": "person@outlook.com",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["outlook_account_type"] == "personal"
+
+
+async def test_create_outlook_account_auto_detects_organizational(client, auth_headers) -> None:
+    response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "Work Outlook",
+            "type": "outlook",
+            "username": "person@company.com",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["outlook_account_type"] == "organizational"
+
+
+async def test_create_outlook_account_respects_explicit_account_type(client, auth_headers) -> None:
+    response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "Forced Work Outlook",
+            "type": "outlook",
+            "username": "person@outlook.com",
+            "outlook_account_type": "organizational",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["outlook_account_type"] == "organizational"
+
+
+async def test_update_outlook_account_type(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(type="outlook", username="person@outlook.com", outlook_account_type="personal")
+
+    response = await client.put(
+        f"/api/v1/accounts/{account.id}",
+        headers=auth_headers,
+        json={"outlook_account_type": "organizational"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["outlook_account_type"] == "organizational"
+
+
+async def test_email_account_response_includes_outlook_account_type(client, auth_headers, create_email_account) -> None:
+    await create_email_account(type="outlook", username="person@company.com", outlook_account_type="organizational")
+
+    response = await client.get("/api/v1/accounts", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["outlook_account_type"] == "organizational"
+
+
 async def test_email_account_test_connection_outlook_requires_auth_message(client, auth_headers, create_email_account, monkeypatch) -> None:
     account = await create_email_account(type="outlook")
     scanner = SimpleNamespace(

@@ -72,3 +72,17 @@ def test_settings_log_level_accepts_override() -> None:
         LOG_LEVEL="DEBUG",
     )
     assert settings.LOG_LEVEL == "DEBUG"
+
+
+def test_settings_outlook_client_id_defaults() -> None:
+    settings = Settings(
+        _env_file=None,
+        DATABASE_URL="sqlite+aiosqlite:///./test.db",
+        ADMIN_PASSWORD_HASH="hashed:testpass",
+        JWT_SECRET="test-secret",
+        LLM_BASE_URL="https://llm.invalid/v1",
+        LLM_API_KEY="test-key",
+    )
+
+    assert settings.OUTLOOK_PERSONAL_CLIENT_ID == "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+    assert settings.OUTLOOK_AAD_CLIENT_ID == "d3590ed6-52b3-4102-aeff-aad2292ab01c"

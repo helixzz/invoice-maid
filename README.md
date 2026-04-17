@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.1-blue" alt="v0.4.1">
+  <img src="https://img.shields.io/badge/version-0.4.4-blue" alt="v0.4.4">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
@@ -226,6 +226,8 @@ For backend hot-reload, copy `docker-compose.override.yml.example` to `docker-co
 | `WEBHOOK_URL` | Outbound webhook endpoint | `https://example.com/hook` | No |
 | `WEBHOOK_SECRET` | HMAC-SHA256 signing key for webhooks | `your-secret` | No |
 | `LOG_LEVEL` | App log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` | No |
+| `OUTLOOK_PERSONAL_CLIENT_ID` | Microsoft public client ID for personal Outlook/Live/Hotmail accounts | `04b07795-8ddb-461a-bbee-02f9e1bf7b46` | No |
+| `OUTLOOK_AAD_CLIENT_ID` | Microsoft public client ID for work/school Azure AD accounts | `d3590ed6-52b3-4102-aeff-aad2292ab01c` | No |
 
 AI model settings can also be managed from the **Settings > AI 模型** page in the web UI. Database-stored values override `.env` defaults.
 
@@ -242,7 +244,7 @@ Use your provider's server address, port, username, and password/app password.
 3. Generate a **16-character Authorization Code** and use it as the password
 
 ### Microsoft Outlook
-Invoice Maid uses **OAuth2 Device Code Flow** via the Settings page. For Outlook accounts, set the **username** field to your Azure App **Client ID** and use the account email/mailbox in the dedicated email field exposed by the app flow. Authentication is initiated explicitly and scans/test-connection only use cached tokens.
+Invoice Maid uses **OAuth2 Device Code Flow** via the Settings page. For Outlook accounts, set **username** to the mailbox email address. Invoice Maid automatically detects personal Microsoft domains like `@outlook.com` and `@hotmail.com`, stores the account type, and uses the matching Microsoft authority/client ID for personal vs work/school accounts. Authentication is initiated explicitly and scans/test-connection only use cached tokens.
 
 ---
 

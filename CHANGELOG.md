@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.4] - 2026-04-17
+
+### Added
+- Outlook accounts now store `outlook_account_type` so Invoice Maid can distinguish personal Microsoft accounts from organizational Azure AD mailboxes
+
+### Changed
+- Outlook OAuth now selects the correct Microsoft public client ID and authority tenant for personal (`consumers`) vs organizational (`common`) accounts
+- New Outlook accounts auto-detect account type from the mailbox domain while still allowing explicit organizational override
+
 ## [0.4.3] - 2026-04-17
 
 ### Fixed
@@ -13,8 +22,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - `OUTLOOK_CLIENT_ID` environment variable (default: Microsoft Office well-known ID) to override for work/school Azure AD accounts
-
-### Added
 - `deploy/install.sh` — idempotent one-command production installer: creates system user, clones repo, builds venv, hashes admin password, writes `/etc/invoice-maid/invoice-maid.env`, runs Alembic migrations, installs systemd service, and optionally starts it. Supports headless (`--yes`), dry-run, random password, and version pinning flags.
 - `deploy/invoice-maid-upgrade` — upgrade driver installed to `/usr/local/sbin/`: fetch latest tag, optional pre-backup, `pip install --upgrade`, `alembic upgrade head`, service restart, health probe with retries.
 - Docker deployment support with a multi-stage root `Dockerfile`, `docker-compose.yml`, `.dockerignore`, and a development hot-reload compose override example

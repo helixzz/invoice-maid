@@ -226,6 +226,7 @@ async def create_email_account(
             "host": "imap.example.com",
             "port": 993,
             "username": "user@example.com",
+            "outlook_account_type": "personal",
             "password_encrypted": encrypt_password(password, settings.JWT_SECRET),
             "oauth_token_path": None,
             "is_active": True,

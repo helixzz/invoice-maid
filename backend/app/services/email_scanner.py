@@ -42,6 +42,21 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"\']+')
 TAG_PATTERN = re.compile(r"<[^>]+>")
 INVOICE_EXTENSIONS = {".pdf", ".xml", ".ofd"}
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+OUTLOOK_PERSONAL_DOMAINS = frozenset(
+    {
+        "outlook.com",
+        "hotmail.com",
+        "live.com",
+        "live.cn",
+        "live.co.uk",
+        "live.fr",
+        "live.de",
+        "live.it",
+        "live.jp",
+        "msn.com",
+        "passport.com",
+    }
+)
 
 
 @dataclass
@@ -392,9 +407,20 @@ class Pop3Scanner(BaseEmailScanner):
         return f"pop3-{digest}"
 
 
-def _get_outlook_client_id() -> str:
+def _is_personal_microsoft_account(email: str) -> bool:
+    domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+    return domain in OUTLOOK_PERSONAL_DOMAINS
+
+
+def _get_outlook_msal_params(account: EmailAccount) -> tuple[str, str]:
+    """Returns (client_id, authority) for MSAL based on account type."""
     from app.config import get_settings
-    return get_settings().OUTLOOK_CLIENT_ID
+
+    settings = get_settings()
+    account_type = getattr(account, "outlook_account_type", "personal")
+    if account_type == "organizational":
+        return settings.OUTLOOK_AAD_CLIENT_ID, "https://login.microsoftonline.com/common"
+    return settings.OUTLOOK_PERSONAL_CLIENT_ID, "https://login.microsoftonline.com/consumers"
 
 
 class OutlookScanner(BaseEmailScanner):
@@ -497,9 +523,10 @@ class OutlookScanner(BaseEmailScanner):
 
     def _acquire_token_sync(self, account: EmailAccount) -> dict[str, Any]:
         token_cache = self._load_cache(account)
+        client_id, authority = _get_outlook_msal_params(account)
         app = msal.PublicClientApplication(
-            client_id=_get_outlook_client_id(),
-            authority="https://login.microsoftonline.com/common",
+            client_id=client_id,
+            authority=authority,
             token_cache=token_cache,
         )
 
@@ -516,9 +543,10 @@ class OutlookScanner(BaseEmailScanner):
 
     def _initiate_device_flow_sync(self, account: EmailAccount) -> dict[str, Any]:
         token_cache = self._load_cache(account)
+        client_id, authority = _get_outlook_msal_params(account)
         app = msal.PublicClientApplication(
-            client_id=_get_outlook_client_id(),
-            authority="https://login.microsoftonline.com/common",
+            client_id=client_id,
+            authority=authority,
             token_cache=token_cache,
         )
         flow = cast(dict[str, Any], app.initiate_device_flow(scopes=self.SCOPES))
@@ -528,9 +556,10 @@ class OutlookScanner(BaseEmailScanner):
 
     def _complete_device_flow_sync(self, account: EmailAccount, flow: dict[str, Any]) -> dict[str, Any]:
         token_cache = self._load_cache(account)
+        client_id, authority = _get_outlook_msal_params(account)
         app = msal.PublicClientApplication(
-            client_id=_get_outlook_client_id(),
-            authority="https://login.microsoftonline.com/common",
+            client_id=client_id,
+            authority=authority,
             token_cache=token_cache,
         )
         result = cast(dict[str, Any], app.acquire_token_by_device_flow(flow))
@@ -622,6 +651,8 @@ __all__ = [
     "RawAttachment",
     "RawEmail",
     "ScannerFactory",
+    "_get_outlook_msal_params",
+    "_is_personal_microsoft_account",
     "decrypt_password",
     "encrypt_password",
     "oauth_registry",
