@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -22,6 +22,8 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 class SemanticSearchRequest(BaseModel):
     query: str
+    page: int = Field(default=1, ge=1)
+    size: int = Field(default=20, ge=1, le=100)
 
 
 class BatchDeleteRequest(BaseModel):
@@ -112,19 +114,19 @@ async def semantic_search_invoices(
     settings = get_settings()
     ai_service = AIService(settings)
     search_service = SearchService(settings)
-    embedding = await ai_service.embed_text(payload.query)
+    embedding = await ai_service.embed_text(payload.query, db)
     invoices, total = await search_service.search(
         db=db,
         query=payload.query,
         query_embedding=embedding,
-        page=1,
-        size=20,
+        page=payload.page,
+        size=payload.size,
     )
     return InvoiceListResponse(
         items=[_serialize_invoice(invoice) for invoice in invoices],
         total=total,
-        page=1,
-        size=20,
+        page=payload.page,
+        size=payload.size,
     )
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 
@@ -11,6 +11,7 @@ async def test_list_get_delete_and_search_invoices(
     client, auth_headers, create_invoice, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     invoice = await create_invoice(invoice_no="INV-API", buyer="Alpha Buyer", raw_text="Alpha Buyer")
+    semantic_search_calls: list[dict[str, object]] = []
 
     list_response = await client.get("/api/v1/invoices?q=Alpha", headers=auth_headers)
     assert list_response.status_code == 200
@@ -24,8 +25,8 @@ async def test_list_get_delete_and_search_invoices(
         def __init__(self, settings):
             del settings
 
-        async def embed_text(self, text: str):
-            del text
+        async def embed_text(self, text: str, db=None):
+            del text, db
             return [0.1, 0.2, 0.3]
 
     class FakeSearchService:
@@ -37,7 +38,7 @@ async def test_list_get_delete_and_search_invoices(
             return [invoice], 1
 
         async def search(self, **kwargs):
-            del kwargs
+            semantic_search_calls.append(kwargs)
             return [invoice], 1
 
     monkeypatch.setattr(invoices_api, "AIService", FakeAIService)
@@ -51,10 +52,21 @@ async def test_list_get_delete_and_search_invoices(
     semantic_response = await client.post(
         "/api/v1/invoices/search",
         headers=auth_headers,
-        json={"query": "Alpha"},
+        json={"query": "Alpha", "page": 3, "size": 5},
     )
     assert semantic_response.status_code == 200
     assert semantic_response.json()["items"][0]["invoice_no"] == "INV-API"
+    assert semantic_response.json()["page"] == 3
+    assert semantic_response.json()["size"] == 5
+    assert semantic_search_calls == [
+        {
+            "db": ANY,
+            "query": "Alpha",
+            "query_embedding": [0.1, 0.2, 0.3],
+            "page": 3,
+            "size": 5,
+        }
+    ]
 
     delete_response = await client.delete(f"/api/v1/invoices/{invoice.id}", headers=auth_headers)
     assert delete_response.status_code == 204
@@ -65,6 +77,26 @@ async def test_invoice_not_found_paths(client, auth_headers) -> None:
     assert get_response.status_code == 404
     delete_response = await client.delete("/api/v1/invoices/999", headers=auth_headers)
     assert delete_response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("page", "size"),
+    [
+        (0, 5),
+        (-1, 5),
+        (1, 0),
+        (1, -1),
+        (1, 101),
+    ],
+)
+async def test_semantic_search_rejects_invalid_pagination(client, auth_headers, page: int, size: int) -> None:
+    response = await client.post(
+        "/api/v1/invoices/search",
+        headers=auth_headers,
+        json={"query": "Alpha", "page": page, "size": size},
+    )
+
+    assert response.status_code == 422
 
 
 async def test_batch_delete_invoices(client, auth_headers, create_invoice, monkeypatch: pytest.MonkeyPatch) -> None:
