@@ -4,8 +4,10 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
 
 import app.database as database
+import app.config as config_module
 
 
 def test_load_sqlite_vec_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,11 +67,19 @@ async def test_init_db_uses_env_database_url(monkeypatch: pytest.MonkeyPatch, tm
     database._session_factory = None
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'env.db'}"
     monkeypatch.setenv("DATABASE_URL", db_url)
+    settings = config_module.get_settings()
+    settings.SQLITE_VEC_ENABLED = False
 
     await database.init_db()
 
     assert database._engine is not None
     assert database._session_factory is not None
+    assert settings.sqlite_vec_available is False
+
+    async with database._engine.begin() as conn:
+        result = await conn.execute(text("PRAGMA table_info(invoice_embeddings)"))
+        columns = [row[1] for row in result.fetchall()]
+        assert columns == ["rowid", "embedding"]
     await database._engine.dispose()
 
 
@@ -86,6 +96,8 @@ async def test_init_db_requires_database_url_when_missing(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_get_db_yields_session_and_init_db_explicit_url(tmp_path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'explicit.db'}"
+    settings = config_module.get_settings()
+    settings.SQLITE_VEC_ENABLED = False
     await database.init_db(db_url)
     sessions = []
     async for session in database.get_db():
@@ -97,8 +109,34 @@ async def test_get_db_yields_session_and_init_db_explicit_url(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_init_db_uses_existing_engine_path(tmp_path) -> None:
     engine, _ = database.create_engine_and_session(f"sqlite+aiosqlite:///{tmp_path / 'existing.db'}")
+    settings = config_module.get_settings()
+    settings.SQLITE_VEC_ENABLED = False
     await database.init_db()
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_embedding_objects_falls_back_when_vec_table_fails(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    engine, _ = database.create_engine_and_session(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
+
+    original_sql_builder = database._invoice_embeddings_table_sql
+
+    def fake_sql_builder(embed_dim: int, sqlite_vec_enabled: bool) -> str:
+        if sqlite_vec_enabled:
+            return "CREATE VIRTUAL TABLE invoice_embeddings USING definitely_missing_module(embedding FLOAT[3])"
+        return original_sql_builder(embed_dim, sqlite_vec_enabled)
+
+    monkeypatch.setattr(database, "_invoice_embeddings_table_sql", fake_sql_builder)
+
+    try:
+        available = await database.create_embedding_objects(engine, embed_dim=3, sqlite_vec_requested=True)
+        assert available is False
+        async with engine.begin() as conn:
+            result = await conn.execute(text("PRAGMA table_info(invoice_embeddings)"))
+            columns = [row[1] for row in result.fetchall()]
+            assert columns == ["rowid", "embedding"]
+    finally:
+        await engine.dispose()
 
 
 def test_install_sqlite_hooks_non_sqlite_connection() -> None:
@@ -106,7 +144,7 @@ def test_install_sqlite_hooks_non_sqlite_connection() -> None:
     try:
         class Cursor:
             def execute(self, statement: str) -> None:
-                pass
+                del statement
 
             def close(self) -> None:
                 pass
@@ -128,3 +166,57 @@ def test_get_sqlite_connection_with_nested_driver_non_sqlite() -> None:
 
     fake2 = SimpleNamespace(driver_connection="not-a-connection")
     assert database._get_sqlite_connection(fake2) is None
+
+
+def test_invoice_embeddings_table_sql_uses_vec0_when_enabled() -> None:
+    sql = database._invoice_embeddings_table_sql(1536, True)
+
+    assert "CREATE VIRTUAL TABLE IF NOT EXISTS invoice_embeddings" in sql
+    assert "USING vec0" in sql
+    assert "embedding FLOAT[1536]" in sql
+
+
+@pytest.mark.asyncio
+async def test_create_embedding_objects_returns_true_when_requested_table_succeeds(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, _ = database.create_engine_and_session(f"sqlite+aiosqlite:///{tmp_path / 'vec-success.db'}")
+
+    original_sql_builder = database._invoice_embeddings_table_sql
+
+    def fake_sql_builder(embed_dim: int, sqlite_vec_enabled: bool) -> str:
+        if sqlite_vec_enabled:
+            return """
+            CREATE TABLE IF NOT EXISTS invoice_embeddings (
+                rowid INTEGER PRIMARY KEY,
+                embedding BLOB NOT NULL
+            )
+            """
+        return original_sql_builder(embed_dim, sqlite_vec_enabled)
+
+    monkeypatch.setattr(database, "_invoice_embeddings_table_sql", fake_sql_builder)
+
+    try:
+        available = await database.create_embedding_objects(engine, embed_dim=8, sqlite_vec_requested=True)
+        assert available is True
+        async with engine.begin() as conn:
+            result = await conn.execute(text("PRAGMA table_info(invoice_embeddings)"))
+            columns = [row[1] for row in result.fetchall()]
+            assert columns == ["rowid", "embedding"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_embedding_objects_returns_false_when_sqlite_vec_not_requested(tmp_path) -> None:
+    engine, _ = database.create_engine_and_session(f"sqlite+aiosqlite:///{tmp_path / 'blob-only.db'}")
+
+    try:
+        available = await database.create_embedding_objects(engine, embed_dim=8, sqlite_vec_requested=False)
+        assert available is False
+        async with engine.begin() as conn:
+            result = await conn.execute(text("PRAGMA table_info(invoice_embeddings)"))
+            columns = [row[1] for row in result.fetchall()]
+            assert columns == ["rowid", "embedding"]
+    finally:
+        await engine.dispose()

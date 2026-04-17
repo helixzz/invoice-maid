@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import get_settings
 from app.models import Base
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,36 @@ async def create_fts5_objects(engine: AsyncEngine) -> None:
             await connection.execute(text(statement))
 
 
+def _invoice_embeddings_table_sql(embed_dim: int, sqlite_vec_enabled: bool) -> str:
+    if sqlite_vec_enabled:
+        return f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS invoice_embeddings
+        USING vec0(
+            embedding FLOAT[{embed_dim}]
+        )
+        """
+    return """
+    CREATE TABLE IF NOT EXISTS invoice_embeddings (
+        rowid INTEGER PRIMARY KEY,
+        embedding BLOB NOT NULL
+    )
+    """
+
+
+async def create_embedding_objects(engine: AsyncEngine, embed_dim: int, sqlite_vec_requested: bool) -> bool:
+    if sqlite_vec_requested:
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text(_invoice_embeddings_table_sql(embed_dim, True)))
+            return True
+        except Exception as exc:
+            logger.warning("sqlite-vec embedding table unavailable: %s. Falling back to BLOB storage.", exc)
+
+    async with engine.begin() as connection:
+        await connection.execute(text(_invoice_embeddings_table_sql(embed_dim, False)))
+    return False
+
+
 async def init_db(database_url: str | None = None) -> None:
     engine = _engine
     if database_url is not None:
@@ -142,3 +173,10 @@ async def init_db(database_url: str | None = None) -> None:
         await connection.run_sync(Base.metadata.create_all)
 
     await create_fts5_objects(engine)
+
+    settings = get_settings()
+    settings.sqlite_vec_available = await create_embedding_objects(
+        engine,
+        embed_dim=settings.EMBED_DIM,
+        sqlite_vec_requested=settings.SQLITE_VEC_ENABLED,
+    )
