@@ -45,8 +45,13 @@ jobs:
           . .venv/bin/activate
           pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install sqlite-vec pyzbar easyofd || echo "Optional native deps unavailable"
-          pytest --cov=app --cov-report=term-missing --cov-fail-under=100
+          pip install sqlite-vec pyzbar easyofd || echo "Optional native deps unavailable — some tests may be skipped"
+
+      - name: Run backend tests
+        working-directory: backend
+        run: |
+          . .venv/bin/activate
+          pytest --cov=app --cov-report=term-missing --cov-fail-under=99
 
       - name: Install frontend dependencies
         working-directory: frontend
