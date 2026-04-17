@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.1] - 2026-04-17
+
+### Added
+- Docker deployment support with a multi-stage root `Dockerfile`, `docker-compose.yml`, `.dockerignore`, and a development hot-reload compose override example
+
+## [0.4.0] - 2026-04-17
+
+### Added
+- Tiered email classification pipeline with zero-LLM Tier 1/2 heuristics and enriched Tier 3 LLM fallback
+- `classification_tier` audit field on `ExtractionLog` plus Alembic migration `0003_v040_classifier_tier`
+- Seeded `AppSettings` keys for classifier trusted senders and extra keywords
+
+### Changed
+- Scheduler scan pipeline now loads classifier settings once per run and only calls `ai.classify_email()` for ambiguous emails
+
 ## [0.3.0] - 2026-04-17
 
 ### Added
