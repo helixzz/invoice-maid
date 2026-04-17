@@ -392,6 +392,11 @@ class Pop3Scanner(BaseEmailScanner):
         return f"pop3-{digest}"
 
 
+def _get_outlook_client_id() -> str:
+    from app.config import get_settings
+    return get_settings().OUTLOOK_CLIENT_ID
+
+
 class OutlookScanner(BaseEmailScanner):
     SCOPES = ["Mail.Read"]
 
@@ -493,7 +498,7 @@ class OutlookScanner(BaseEmailScanner):
     def _acquire_token_sync(self, account: EmailAccount) -> dict[str, Any]:
         token_cache = self._load_cache(account)
         app = msal.PublicClientApplication(
-            client_id=account.username,
+            client_id=_get_outlook_client_id(),
             authority="https://login.microsoftonline.com/common",
             token_cache=token_cache,
         )
@@ -512,7 +517,7 @@ class OutlookScanner(BaseEmailScanner):
     def _initiate_device_flow_sync(self, account: EmailAccount) -> dict[str, Any]:
         token_cache = self._load_cache(account)
         app = msal.PublicClientApplication(
-            client_id=account.username,
+            client_id=_get_outlook_client_id(),
             authority="https://login.microsoftonline.com/common",
             token_cache=token_cache,
         )
@@ -524,7 +529,7 @@ class OutlookScanner(BaseEmailScanner):
     def _complete_device_flow_sync(self, account: EmailAccount, flow: dict[str, Any]) -> dict[str, Any]:
         token_cache = self._load_cache(account)
         app = msal.PublicClientApplication(
-            client_id=account.username,
+            client_id=_get_outlook_client_id(),
             authority="https://login.microsoftonline.com/common",
             token_cache=token_cache,
         )

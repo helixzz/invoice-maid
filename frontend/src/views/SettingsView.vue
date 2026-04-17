@@ -880,10 +880,10 @@ onMounted(() => {
 
                     <div>
                       <label class="block text-sm font-medium text-slate-700">
-                        {{ accountForm.type === 'outlook' ? 'Azure App Client ID' : 'Username / Email' }}
+                        {{ accountForm.type === 'outlook' ? 'Microsoft Account Email' : 'Username / Email' }}
                       </label>
-                      <input type="text" v-model="accountForm.username" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" :placeholder="accountForm.type === 'outlook' ? 'e.g. 12345678-1234-1234-1234-1234567890ab' : 'user@example.com'">
-                      <p v-if="accountForm.type === 'outlook'" class="mt-1 text-xs text-slate-500">Enter the Application (client) ID from your Azure App Registration</p>
+                      <input type="text" v-model="accountForm.username" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" :placeholder="accountForm.type === 'outlook' ? 'you@outlook.com or you@live.cn' : 'user@example.com'">
+                      <p v-if="accountForm.type === 'outlook'" class="mt-1 text-xs text-slate-500">Enter your Microsoft account email address. OAuth2 authentication happens after saving.</p>
                     </div>
 
                     <div v-if="accountForm.type !== 'outlook'">
