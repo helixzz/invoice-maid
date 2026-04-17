@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.0] - 2026-04-17
+
+### Added
+- Login rate limiting at 10 requests per minute per IP with `Retry-After` support on 429 responses
+- Rich health reporting for database status, scheduler state, sqlite-vec availability, invoice totals, and last scan time
+
 ## [0.1.0] - 2026-04-17
 
 ### Added
