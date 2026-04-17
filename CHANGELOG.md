@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.1] - 2026-04-17
+
+### Fixed
+- **OAuth login loop (root cause)** — `oauth_token_path` was NULL for Outlook accounts created before v0.2.1, causing the token to be silently discarded after every successful Microsoft authentication. Fixed by:
+  - `POST /accounts/{id}/oauth/initiate` now auto-assigns `oauth_token_path` when it is NULL before starting the device flow
+  - `_acquire_token_sync` raises immediately with a clear error when `oauth_token_path` is NULL, rather than silently loading an empty cache that always fails
+  - Alembic migration `0005_backfill_oauth_token_path` backfills `oauth_token_path` for all existing Outlook accounts on next upgrade
+
 ## [0.5.0] - 2026-04-17
 
 ### Fixed

@@ -524,6 +524,8 @@ class OutlookScanner(BaseEmailScanner):
         return str(access_token)
 
     def _acquire_token_sync(self, account: EmailAccount) -> dict[str, Any]:
+        if not account.oauth_token_path:
+            raise RuntimeError("Outlook authorization required. Use the Settings page to authenticate.")
         token_cache = self._load_cache(account)
         client_id, authority = _get_outlook_msal_params(account)
         app = msal.PublicClientApplication(
