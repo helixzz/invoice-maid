@@ -34,6 +34,8 @@ from app.models import EmailAccount
 
 logger = logging.getLogger(__name__)
 
+FIRST_SCAN_LIMIT = 500
+
 IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError)
 POP3_CONNECTION_ERRORS = (OSError, ssl.SSLError, poplib.error_proto)
 OUTLOOK_CONNECTION_ERRORS = (OSError, httpx.HTTPError, MsalServiceError)
@@ -198,7 +200,7 @@ class ImapScanner(BaseEmailScanner):
 
         with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
             criteria = AND(seen=False) if last_uid is None else AND()
-            limit = 100 if last_uid is None else 200
+            limit = FIRST_SCAN_LIMIT if last_uid is None else None
 
             for msg in mailbox.fetch(criteria, limit=limit, reverse=True):
                 if last_uid and not _is_uid_newer(getattr(msg, "uid", None), last_uid):
@@ -267,7 +269,7 @@ class Pop3Scanner(BaseEmailScanner):
             mailbox.user(account.username)
             mailbox.pass_(password)
             total_messages = len(mailbox.list()[1])
-            start_index = max(1, total_messages - 199)
+            start_index = max(1, total_messages - FIRST_SCAN_LIMIT + 1) if last_uid is None else 1
 
             for index in range(total_messages, start_index - 1, -1):
                 _, lines, _ = mailbox.retr(index)
@@ -275,7 +277,7 @@ class Pop3Scanner(BaseEmailScanner):
                 msg = email.message_from_bytes(raw_message, policy=policy.default)
                 message_id = self._message_id_for(msg, index)
                 if message_id in known_ids:
-                    continue
+                    break
 
                 attachments: list[RawAttachment] = []
                 body_text_parts: list[str] = []
@@ -432,7 +434,7 @@ class OutlookScanner(BaseEmailScanner):
         access_token = await self._acquire_access_token(account)
         headers = {"Authorization": f"Bearer {access_token}"}
         params: dict[str, str] = {
-            "$top": "100",
+            "$top": "200",
             "$orderby": "receivedDateTime desc",
             "$select": "id,internetMessageId,subject,body,from,receivedDateTime,hasAttachments",
         }
@@ -441,9 +443,10 @@ class OutlookScanner(BaseEmailScanner):
 
         emails: list[RawEmail] = []
         next_url = f"{GRAPH_BASE_URL}/me/mailFolders/inbox/messages"
+        email_limit = FIRST_SCAN_LIMIT if last_uid is None else None
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            while next_url and len(emails) < 200:
+            while next_url and (email_limit is None or len(emails) < email_limit):
                 response = await client.get(next_url, headers=headers, params=params if next_url.endswith("/messages") else None)
                 response.raise_for_status()
                 payload = response.json()
@@ -476,7 +479,7 @@ class OutlookScanner(BaseEmailScanner):
                         )
                     )
 
-                    if len(emails) >= 200:
+                    if email_limit is not None and len(emails) >= email_limit:
                         break
 
                 next_url = cast(str | None, payload.get("@odata.nextLink"))
