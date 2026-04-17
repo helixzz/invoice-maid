@@ -320,11 +320,11 @@ const fetchLogs = async () => {
   }
 }
 
-const triggerScan = async () => {
+const triggerScan = async (full: boolean = false) => {
   scanning.value = true
   try {
-    const res = await api.triggerScan()
-    toastRef.value?.addToast(`Scan triggered: ${res.status}`, 'success')
+    const res = await api.triggerScan(full)
+    toastRef.value?.addToast(`${full ? 'Full rescan' : 'Scan'} triggered: ${res.status}`, 'success')
     // Connection will be handled by the watcher or connectScanProgress if it's already active
     // We can also let the polling logic kick in. But ideally we just rely on SSE.
     connectScanProgress()
@@ -614,9 +614,16 @@ onMounted(() => {
                 {{ scanStatusLine }}
               </p>
             </div>
-            <div class="mt-4 sm:mt-0 flex flex-col sm:items-end">
+            <div class="mt-4 sm:mt-0 flex flex-col sm:flex-row sm:items-center gap-2">
               <button
-                @click="triggerScan"
+                @click="triggerScan(true)"
+                :disabled="scanning"
+                class="inline-flex items-center px-4 py-3 border border-slate-300 rounded-lg shadow-sm text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Full Rescan
+              </button>
+              <button
+                @click="triggerScan(false)"
                 :disabled="scanning"
                 class="inline-flex items-center px-6 py-3 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
