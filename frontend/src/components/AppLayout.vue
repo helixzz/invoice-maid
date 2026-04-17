@@ -17,6 +17,7 @@ const handleLogout = () => {
         <div class="flex justify-between h-16">
           <div class="flex">
             <div class="flex-shrink-0 flex items-center">
+              <img src="/favicon.png" alt="" width="28" height="28" class="mr-2">
               <span class="text-xl font-bold text-slate-800">Invoice Maid</span>
             </div>
             <div class="hidden sm:-my-px sm:ml-6 sm:flex sm:space-x-8">

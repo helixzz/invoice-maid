@@ -81,3 +81,20 @@ export interface StatsResponse {
   last_scan_at: string | null
   last_scan_found: number | null
 }
+
+export interface AISettingsResponse {
+  llm_base_url: string
+  llm_api_key_masked: string
+  llm_model: string
+  llm_embed_model: string
+  embed_dim: number
+  source: 'database' | 'environment'
+}
+
+export interface AISettingsUpdate {
+  llm_base_url?: string
+  llm_api_key?: string
+  llm_model?: string
+  llm_embed_model?: string
+  embed_dim?: number
+}
