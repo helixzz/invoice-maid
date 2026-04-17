@@ -489,6 +489,7 @@ async def scan_all_accounts() -> None:
                         current_account_idx=account_idx + 1,
                         current_account_name=account_name,
                         total_emails=0,
+                        emails_processed=0,
                     )
                     log = ScanLog(
                         email_account_id=account_id,

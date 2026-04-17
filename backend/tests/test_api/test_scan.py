@@ -49,6 +49,24 @@ async def test_trigger_scan_returns_409_when_already_running(client, auth_header
     assert response.json() == {"detail": "Scan already in progress"}
 
 
+async def test_trigger_full_rescan_resets_last_scan_uid(client, auth_headers, db, create_email_account, monkeypatch) -> None:
+    task_calls: list[object] = []
+    monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
+
+    account = await create_email_account()
+    account.last_scan_uid = "12345"
+    await db.commit()
+
+    response = await client.post("/api/v1/scan/trigger?full=true", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json() == {"status": "triggered"}
+
+    await db.refresh(account)
+    assert account.last_scan_uid is None
+    for coro in task_calls:
+        coro.close()
+
+
 async def test_progress_snapshot_accepts_query_token_and_returns_progress(client, auth_token) -> None:
     sp.reset_progress(total_accounts=2)
     await sp.update_progress(current_account_idx=1, current_account_name="Inbox")
