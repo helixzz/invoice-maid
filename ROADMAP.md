@@ -56,7 +56,13 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
-## v0.4.0+ — Future
+## v0.4.0 — Released
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.5.0+ — Future
 
 Ideas under consideration (not committed):
 
