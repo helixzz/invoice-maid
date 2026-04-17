@@ -25,7 +25,8 @@ const handleSubmit = async () => {
 
 <template>
   <div class="min-h-screen bg-slate-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-    <div class="sm:mx-auto sm:w-full sm:max-w-md">
+    <div class="sm:mx-auto sm:w-full sm:max-w-md flex flex-col items-center">
+      <img src="/favicon.png" alt="Invoice Maid" width="64" height="64" class="mb-4">
       <h2 class="mt-6 text-center text-3xl font-extrabold text-slate-900">
         Invoice Maid
       </h2>

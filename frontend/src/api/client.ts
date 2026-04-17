@@ -9,7 +9,9 @@ import type {
   ScanLog,
   ScanLogListResponse,
   ConnectionTestResponse,
-  StatsResponse
+  StatsResponse,
+  AISettingsResponse,
+  AISettingsUpdate
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -144,6 +146,20 @@ export const api = {
 
   async getScanLogs(params?: {page?: number, size?: number}): Promise<ScanLogListResponse> {
     const res = await apiClient.get('/scan/logs', { params })
+    return res.data
+  },
+
+  async getAISettings(): Promise<AISettingsResponse> {
+    const res = await apiClient.get('/settings/ai')
+    return res.data
+  },
+
+  async updateAISettings(data: AISettingsUpdate): Promise<void> {
+    await apiClient.put('/settings/ai', data)
+  },
+
+  async getAIModels(): Promise<{ models: string[] }> {
+    const res = await apiClient.get('/settings/ai/models')
     return res.data
   }
 }
