@@ -10,6 +10,8 @@ export interface Invoice {
   source_format: string
   extraction_method: string
   confidence: number
+  is_manually_corrected: boolean
+  correction_history?: CorrectionLog[]
   created_at: string
 }
 
@@ -97,4 +99,39 @@ export interface AISettingsUpdate {
   llm_model?: string
   llm_embed_model?: string
   embed_dim?: number
+}
+
+export interface CorrectionLog {
+  id: number
+  field_name: string
+  old_value: string | null
+  new_value: string | null
+  corrected_at: string
+}
+
+export interface ExtractionLog {
+  id: number
+  email_uid: string
+  email_subject: string
+  attachment_filename: string | null
+  outcome: string
+  invoice_no: string | null
+  confidence: number | null
+  error_detail: string | null
+  created_at: string
+}
+
+export interface SavedView {
+  id: number
+  name: string
+  filter_json: string
+  created_at: string
+}
+
+export interface StatsAnalytics {
+  monthly_spend: {month: string; total: number; count: number}[]
+  top_sellers: {seller: string; total: number; count: number}[]
+  by_type: {type: string; count: number}[]
+  by_method: {method: string; count: number}[]
+  avg_confidence: number
 }

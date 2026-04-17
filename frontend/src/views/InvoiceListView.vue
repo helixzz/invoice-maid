@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AppLayout from '@/components/AppLayout.vue'
 import { api } from '@/api/client'
-import type { StatsResponse } from '@/types'
+import type { StatsResponse, SavedView } from '@/types'
 
 const router = useRouter()
 const invoicesStore = useInvoicesStore()
@@ -15,6 +15,109 @@ const authStore = useAuthStore()
 
 const stats = ref<StatsResponse | null>(null)
 const loadingStats = ref(true)
+
+const savedViews = ref<SavedView[]>([])
+const loadingViews = ref(false)
+const activeViewId = ref<number | null>(null)
+const showSaveViewModal = ref(false)
+const newViewName = ref('')
+const isSavingView = ref(false)
+
+const fetchSavedViews = async () => {
+  loadingViews.value = true
+  try {
+    savedViews.value = await api.getSavedViews()
+  } catch (error) {
+    console.error('Failed to load saved views', error)
+  } finally {
+    loadingViews.value = false
+  }
+}
+
+const applySavedView = (viewId: number | '') => {
+  if (!viewId) {
+    activeViewId.value = null
+    searchQuery.value = ''
+    dateFrom.value = ''
+    dateTo.value = ''
+    return
+  }
+
+  const view = savedViews.value.find(v => v.id === viewId)
+  if (view) {
+    try {
+      const filters = JSON.parse(view.filter_json)
+      searchQuery.value = filters.q || ''
+      dateFrom.value = filters.date_from || ''
+      dateTo.value = filters.date_to || ''
+      activeViewId.value = view.id
+    } catch (e) {
+      console.error('Failed to parse saved view filters', e)
+    }
+  }
+}
+
+const saveCurrentView = async () => {
+  if (!newViewName.value.trim()) return
+  
+  isSavingView.value = true
+  const filterJson = JSON.stringify({
+    q: searchQuery.value,
+    date_from: dateFrom.value,
+    date_to: dateTo.value
+  })
+
+  try {
+    const view = await api.createSavedView(newViewName.value, filterJson)
+    savedViews.value.push(view)
+    activeViewId.value = view.id
+    showSaveViewModal.value = false
+    newViewName.value = ''
+  } catch (error) {
+    console.error('Failed to save view', error)
+    alert('Failed to save view')
+  } finally {
+    isSavingView.value = false
+  }
+}
+
+const deleteSavedView = async (id: number) => {
+  try {
+    await api.deleteSavedView(id)
+    savedViews.value = savedViews.value.filter(v => v.id !== id)
+    if (activeViewId.value === id) {
+      activeViewId.value = null
+    }
+  } catch (error) {
+    console.error('Failed to delete view', error)
+  }
+}
+
+const isExporting = ref(false)
+const exportCSV = async () => {
+  isExporting.value = true
+  try {
+    const blob = await api.exportInvoicesCSV({
+      q: searchQuery.value || undefined,
+      date_from: dateFrom.value || undefined,
+      date_to: dateTo.value || undefined
+    })
+    
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoices_export_${new Date().toISOString().split('T')[0]}.csv`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  } catch (error) {
+    console.error('Failed to export CSV', error)
+    alert('Failed to export CSV')
+  } finally {
+    isExporting.value = false
+  }
+}
 
 const fetchStats = async () => {
   try {
@@ -204,6 +307,7 @@ const clearDates = () => {
 onMounted(() => {
   fetchStats()
   fetchInvoices()
+  fetchSavedViews()
 })
 </script>
 
@@ -256,41 +360,83 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-else class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-        <div class="relative w-full sm:w-96">
-          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <svg class="h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
-            </svg>
+      <div v-else class="flex flex-col gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 w-full">
+          <div class="flex items-center gap-3 w-full sm:w-auto">
+            <select
+              :value="activeViewId || ''"
+              @change="e => applySavedView(Number((e.target as HTMLSelectElement).value) || '')"
+              class="block w-full sm:w-48 pl-3 pr-8 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white transition-colors"
+            >
+              <option value="">All Invoices</option>
+              <option v-for="view in savedViews" :key="view.id" :value="view.id">{{ view.name }}</option>
+            </select>
+            <button
+              v-if="searchQuery || dateFrom || dateTo"
+              @click="showSaveViewModal = true"
+              class="text-sm font-medium text-blue-600 hover:text-blue-800 whitespace-nowrap"
+            >
+              Save View
+            </button>
+            <button
+              v-if="activeViewId"
+              @click="deleteSavedView(activeViewId)"
+              class="p-2 text-slate-400 hover:text-red-600 transition-colors rounded-full hover:bg-red-50"
+              title="Delete View"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+            </button>
           </div>
-          <input
-            type="text"
-            v-model="searchQuery"
-            class="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-500 focus:outline-none focus:placeholder-slate-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
-            placeholder="Search invoices..."
-          />
+
+          <div class="flex items-center justify-end w-full sm:w-auto">
+            <button
+              @click="exportCSV"
+              :disabled="isExporting"
+              class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
+            >
+              <svg v-if="isExporting" class="animate-spin -ml-1 mr-2 h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+              <svg v-else class="-ml-1 mr-2 h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+              {{ isExporting ? 'Exporting...' : 'Export CSV' }}
+            </button>
+          </div>
         </div>
 
-        <div class="flex items-center gap-2 w-full sm:w-auto">
-          <input
-            type="date"
-            v-model="dateFrom"
-            class="block w-full sm:w-auto pl-3 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
-          />
-          <span class="text-slate-500">-</span>
-          <input
-            type="date"
-            v-model="dateTo"
-            class="block w-full sm:w-auto pl-3 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
-          />
-          <button
-            v-if="dateFrom || dateTo"
-            @click="clearDates"
-            class="p-2 text-slate-400 hover:text-slate-600 transition-colors rounded-full hover:bg-slate-100"
-            title="Clear dates"
-          >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-          </button>
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div class="relative w-full sm:w-96">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <svg class="h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
+              </svg>
+            </div>
+            <input
+              type="text"
+              v-model="searchQuery"
+              class="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-500 focus:outline-none focus:placeholder-slate-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
+              placeholder="Search invoices..."
+            />
+          </div>
+
+          <div class="flex items-center gap-2 w-full sm:w-auto">
+            <input
+              type="date"
+              v-model="dateFrom"
+              class="block w-full sm:w-auto pl-3 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
+            />
+            <span class="text-slate-500">-</span>
+            <input
+              type="date"
+              v-model="dateTo"
+              class="block w-full sm:w-auto pl-3 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
+            />
+            <button
+              v-if="dateFrom || dateTo"
+              @click="clearDates"
+              class="p-2 text-slate-400 hover:text-slate-600 transition-colors rounded-full hover:bg-slate-100"
+              title="Clear dates"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -489,5 +635,45 @@ onMounted(() => {
       confirmText="Delete All"
       @confirm="executeBatchDelete"
     />
+
+    <!-- Save View Modal -->
+    <div v-if="showSaveViewModal" class="fixed inset-0 z-10 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-slate-500 bg-opacity-75 transition-opacity" aria-hidden="true" @click="showSaveViewModal = false"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div class="inline-block align-bottom bg-white rounded-xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+          <form @submit.prevent="saveCurrentView">
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+              <div class="sm:flex sm:items-start">
+                <div class="mt-3 text-center sm:mt-0 sm:text-left w-full">
+                  <h3 class="text-lg leading-6 font-medium text-slate-900" id="modal-title">
+                    Save Current View
+                  </h3>
+                  <div class="mt-4">
+                    <label class="block text-sm font-medium text-slate-700 mb-1">View Name</label>
+                    <input type="text" v-model="newViewName" required class="focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="e.g. Q3 Expenses">
+                  </div>
+                  <div class="mt-4 bg-slate-50 p-3 rounded text-sm text-slate-600">
+                    <p class="font-medium mb-1">Saved Filters:</p>
+                    <ul class="list-disc pl-5 space-y-1">
+                      <li v-if="searchQuery">Search: "{{ searchQuery }}"</li>
+                      <li v-if="dateFrom || dateTo">Date: {{ dateFrom || 'Any' }} to {{ dateTo || 'Any' }}</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="bg-slate-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+              <button type="submit" :disabled="isSavingView || !newViewName.trim()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 transition-colors">
+                {{ isSavingView ? 'Saving...' : 'Save View' }}
+              </button>
+              <button type="button" @click="showSaveViewModal = false" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm transition-colors">
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </AppLayout>
 </template>

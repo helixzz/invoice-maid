@@ -15,6 +15,50 @@ const loading = ref(true)
 const error = ref('')
 const previewUrl = ref('')
 
+const isEditing = ref(false)
+const editForm = ref<Partial<Invoice>>({})
+const isSaving = ref(false)
+const showHistory = ref(false)
+
+const startEdit = () => {
+  if (!invoice.value) return
+  editForm.value = {
+    buyer: invoice.value.buyer,
+    seller: invoice.value.seller,
+    amount: invoice.value.amount,
+    invoice_date: invoice.value.invoice_date,
+    invoice_type: invoice.value.invoice_type,
+    item_summary: invoice.value.item_summary,
+    invoice_no: invoice.value.invoice_no
+  }
+  isEditing.value = true
+}
+
+const cancelEdit = () => {
+  isEditing.value = false
+  editForm.value = {}
+}
+
+const saveEdit = async () => {
+  if (!invoice.value) return
+  isSaving.value = true
+  try {
+    const updated = await api.updateInvoice(invoice.value.id, editForm.value)
+    invoice.value = updated
+    isEditing.value = false
+  } catch (err) {
+    console.error('Failed to update invoice', err)
+    alert('Failed to update invoice')
+  } finally {
+    isSaving.value = false
+  }
+}
+
+const formatDateTime = (dateString: string | undefined) => {
+  if (!dateString) return '-'
+  return new Date(dateString).toLocaleString()
+}
+
 const fetchInvoice = async () => {
   loading.value = true
   const id = Number(route.params.id)
@@ -130,28 +174,61 @@ onMounted(() => {
       </div>
 
       <div v-else-if="invoice" class="bg-white shadow-sm border border-slate-200 rounded-xl overflow-hidden">
-        <div class="px-6 py-5 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+        <div class="px-6 py-5 border-b border-slate-200 flex flex-col sm:flex-row sm:justify-between sm:items-center bg-slate-50 gap-4">
           <div>
-            <h3 class="text-xl font-bold text-slate-900 flex items-center gap-3">
-              {{ invoice.invoice_no || 'Unknown Invoice' }}
-              <span 
-                class="px-2.5 py-0.5 text-xs font-semibold rounded-full border"
-                :class="invoice.invoice_type.toLowerCase().includes('增值税专用发票') ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-100 text-slate-700 border-slate-200'"
-              >
-                {{ invoice.invoice_type || 'Unknown Type' }}
-              </span>
-            </h3>
-            <p class="mt-1 text-sm text-slate-500">
+            <div class="flex items-center gap-3 mb-1">
+              <h3 v-if="!isEditing" class="text-xl font-bold text-slate-900 flex items-center gap-3">
+                {{ invoice.invoice_no || 'Unknown Invoice' }}
+                <span 
+                  class="px-2.5 py-0.5 text-xs font-semibold rounded-full border"
+                  :class="invoice.invoice_type.toLowerCase().includes('增值税专用发票') ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-100 text-slate-700 border-slate-200'"
+                >
+                  {{ invoice.invoice_type || 'Unknown Type' }}
+                </span>
+                <span v-if="invoice.is_manually_corrected" class="px-2.5 py-0.5 text-xs font-semibold rounded-full border bg-amber-50 text-amber-700 border-amber-200" title="Manually Corrected">
+                  Corrected
+                </span>
+              </h3>
+              <input v-else v-model="editForm.invoice_no" type="text" class="text-xl font-bold text-slate-900 border border-slate-300 rounded px-2 py-1 focus:ring-blue-500 focus:border-blue-500 w-48" placeholder="Invoice No">
+            </div>
+            <p class="text-sm text-slate-500">
               Extracted from email on {{ formatDate(invoice.created_at) }}
             </p>
           </div>
-          <button
-            @click="downloadInvoice"
-            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-          >
-            <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-            Download Original
-          </button>
+          <div class="flex items-center gap-3">
+            <template v-if="isEditing">
+              <button
+                @click="cancelEdit"
+                class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                :disabled="isSaving"
+              >
+                Cancel
+              </button>
+              <button
+                @click="saveEdit"
+                class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                :disabled="isSaving"
+              >
+                {{ isSaving ? 'Saving...' : 'Save Changes' }}
+              </button>
+            </template>
+            <template v-else>
+              <button
+                @click="startEdit"
+                class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+              >
+                <svg class="-ml-1 mr-2 h-5 w-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                Edit Details
+              </button>
+              <button
+                @click="downloadInvoice"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+              >
+                <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                Download Original
+              </button>
+            </template>
+          </div>
         </div>
         
         <div class="p-6">
@@ -159,11 +236,13 @@ onMounted(() => {
           <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 pb-8 border-b border-slate-100">
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
               <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Total Amount</span>
-              <span class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount) }}</span>
+              <span v-if="!isEditing" class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount) }}</span>
+              <input v-else v-model.number="editForm.amount" type="number" step="0.01" class="text-2xl font-bold text-blue-600 border border-slate-300 rounded px-2 py-1 text-center w-32 focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
               <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Invoice Date</span>
-              <span class="text-2xl font-semibold text-slate-800">{{ formatDate(invoice.invoice_date) }}</span>
+              <span v-if="!isEditing" class="text-2xl font-semibold text-slate-800">{{ formatDate(invoice.invoice_date) }}</span>
+              <input v-else v-model="editForm.invoice_date" type="date" class="text-xl font-semibold text-slate-800 border border-slate-300 rounded px-2 py-1 focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
               <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-2">AI Confidence</span>
@@ -188,17 +267,24 @@ onMounted(() => {
           <!-- Metadata -->
           <dl class="grid grid-cols-1 gap-x-6 gap-y-8 md:grid-cols-2">
             <div class="sm:col-span-1">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Buyer</dt>
-              <dd class="mt-1 text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[3rem]">{{ invoice.buyer || '-' }}</dd>
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Buyer</dt>
+              <dd v-if="!isEditing" class="text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[3rem]">{{ invoice.buyer || '-' }}</dd>
+              <input v-else v-model="editForm.buyer" type="text" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-3 w-full focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div class="sm:col-span-1">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Seller</dt>
-              <dd class="mt-1 text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[3rem]">{{ invoice.seller || '-' }}</dd>
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Seller</dt>
+              <dd v-if="!isEditing" class="text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[3rem]">{{ invoice.seller || '-' }}</dd>
+              <input v-else v-model="editForm.seller" type="text" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-3 w-full focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <div class="sm:col-span-1" v-if="isEditing">
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Invoice Type</dt>
+              <input v-model="editForm.invoice_type" type="text" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-3 w-full focus:ring-blue-500 focus:border-blue-500">
             </div>
             
-            <div class="sm:col-span-2">
-              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide">Item Summary</dt>
-              <dd class="mt-1 text-sm text-slate-900 bg-slate-50 p-4 rounded-lg border border-slate-100 min-h-[4rem] leading-relaxed">{{ invoice.item_summary || '-' }}</dd>
+            <div :class="['sm:col-span-2', isEditing ? 'mt-2' : '']">
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Item Summary</dt>
+              <dd v-if="!isEditing" class="text-sm text-slate-900 bg-slate-50 p-4 rounded-lg border border-slate-100 min-h-[4rem] leading-relaxed">{{ invoice.item_summary || '-' }}</dd>
+              <textarea v-else v-model="editForm.item_summary" rows="3" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-4 w-full focus:ring-blue-500 focus:border-blue-500"></textarea>
             </div>
             
             <div class="sm:col-span-2 flex flex-wrap gap-4 pt-4 border-t border-slate-100 mt-2">
@@ -212,6 +298,26 @@ onMounted(() => {
               </div>
             </div>
           </dl>
+
+          <!-- Correction History -->
+          <div v-if="invoice.correction_history && invoice.correction_history.length > 0" class="mt-8 border-t border-slate-100 pt-6">
+            <button @click="showHistory = !showHistory" class="flex items-center text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors">
+              <svg class="mr-2 h-5 w-5 transition-transform" :class="{ 'rotate-90': showHistory }" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+              Correction History ({{ invoice.correction_history.length }})
+            </button>
+            <div v-if="showHistory" class="mt-4 pl-7 space-y-4">
+              <div v-for="log in invoice.correction_history" :key="log.id" class="text-sm border-l-2 border-slate-200 pl-4 py-1">
+                <p class="text-slate-500 mb-1">
+                  <span class="font-medium text-slate-700 capitalize">{{ log.field_name.replace('_', ' ') }}</span> changed on {{ formatDateTime(log.corrected_at) }}
+                </p>
+                <div class="flex items-center gap-3">
+                  <span class="line-through text-red-400 bg-red-50 px-2 py-0.5 rounded">{{ log.old_value || 'empty' }}</span>
+                  <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                  <span class="text-green-600 bg-green-50 px-2 py-0.5 rounded">{{ log.new_value || 'empty' }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="px-6 py-5 border-t border-slate-200">

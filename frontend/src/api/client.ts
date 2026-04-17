@@ -11,7 +11,10 @@ import type {
   ConnectionTestResponse,
   StatsResponse,
   AISettingsResponse,
-  AISettingsUpdate
+  AISettingsUpdate,
+  ExtractionLog,
+  SavedView,
+  StatsAnalytics
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -86,6 +89,16 @@ export const api = {
     return res.data
   },
 
+  async updateInvoice(id: number, data: Partial<Invoice>): Promise<Invoice> {
+    const res = await apiClient.put(`/invoices/${id}`, data)
+    return res.data
+  },
+
+  async getSimilarInvoices(id: number): Promise<Invoice[]> {
+    const res = await apiClient.get(`/invoices/${id}/similar`)
+    return res.data
+  },
+
   async deleteInvoice(id: number): Promise<void> {
     await apiClient.delete(`/invoices/${id}`)
   },
@@ -111,6 +124,29 @@ export const api = {
   async getStats(): Promise<StatsResponse> {
     const res = await apiClient.get('/stats')
     return res.data
+  },
+
+  async getAnalytics(): Promise<StatsAnalytics> {
+    const res = await apiClient.get('/stats/analytics')
+    return res.data
+  },
+
+  exportInvoicesCSV(params?: {q?: string, date_from?: string, date_to?: string}): Promise<Blob> {
+    return apiClient.get('/invoices/export/csv', { params, responseType: 'blob' }).then(res => res.data)
+  },
+
+  async getSavedViews(): Promise<SavedView[]> {
+    const res = await apiClient.get('/invoices/views')
+    return res.data
+  },
+
+  async createSavedView(name: string, filterJson: string): Promise<SavedView> {
+    const res = await apiClient.post('/invoices/views', { name, filter_json: filterJson })
+    return res.data
+  },
+
+  async deleteSavedView(id: number): Promise<void> {
+    await apiClient.delete(`/invoices/views/${id}`)
   },
 
   // Accounts
@@ -146,6 +182,11 @@ export const api = {
 
   async getScanLogs(params?: {page?: number, size?: number}): Promise<ScanLogListResponse> {
     const res = await apiClient.get('/scan/logs', { params })
+    return res.data
+  },
+
+  async getExtractionLogs(scanLogId: number): Promise<ExtractionLog[]> {
+    const res = await apiClient.get(`/scan/logs/${scanLogId}/extractions`)
     return res.data
   },
 
