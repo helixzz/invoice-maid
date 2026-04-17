@@ -54,6 +54,37 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 Ideas under consideration (not committed):
 
+### Real-time scan progress transparency (P0 for v0.3.0)
+
+Currently, triggering a manual scan shows only a brief "Scanning..." spinner, then nothing until the scan finishes (or fails). There is no way to know:
+- Whether the scan is actually running
+- How many emails have been processed vs remaining
+- Which account is being scanned right now
+- Whether a slow scan is making progress or stuck
+
+v0.3.0 should implement **real-time scan progress** visible in the UI:
+
+**Backend: In-process progress bus**
+- Module-level `ScanProgress` singleton updated at each loop boundary in `scan_all_accounts()`
+- 20 identified signal points: account start/finish, email classification, attachment parsing, download links, webhook delivery
+- SSE endpoint `GET /scan/progress/stream` pushes state changes to connected browsers
+- Polling fallback `GET /scan/progress` for environments where SSE is blocked
+- Concurrent scan guard (asyncio lock) prevents duplicate runs from scheduler + manual trigger
+
+**Frontend: Nested progress display**
+- `ScanProgressBar` component with 3 nested bars: overall → per-account → per-email
+- Real-time status line: "Parsing invoice_2024.pdf" / "Email: 发票通知 (45/120)" / "Account 2/3: work@outlook.com"
+- Counters: emails processed, invoices found, errors
+- Done/error banners with summary
+- `useScanProgress()` composable connecting via SSE with polling fallback
+
+**Infrastructure:**
+- `X-Accel-Buffering: no` in nginx config for SSE endpoint
+- JWT auth via query param for `EventSource` (native `EventSource` can't set headers)
+- Heartbeat pings every 30s to keep connections alive through proxies
+
+**Estimated effort:** L (3–5 days)
+
 ### Tiered email classification pipeline (P0 for v0.3.0)
 
 The current approach sends every email through the LLM API for classification — expensive and slow when scanning thousands of emails. v0.3.0 should implement a 3-tier classification pipeline that eliminates >90% of LLM calls:
