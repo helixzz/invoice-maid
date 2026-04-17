@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
+from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 from pydantic import Field
 
@@ -21,11 +21,11 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-    DATABASE_URL: str = cast(str, Field(...))
-    ADMIN_PASSWORD_HASH: str = cast(str, Field(...))
-    JWT_SECRET: str = cast(str, Field(...))
-    LLM_BASE_URL: str = cast(str, Field(...))
-    LLM_API_KEY: str = cast(str, Field(...))
+    DATABASE_URL: str
+    ADMIN_PASSWORD_HASH: str
+    JWT_SECRET: str
+    LLM_BASE_URL: str
+    LLM_API_KEY: str
     STORAGE_PATH: str = "./data/invoices"
     JWT_EXPIRE_MINUTES: int = 1440
     LLM_MODEL: str = "gpt-4o-mini"
