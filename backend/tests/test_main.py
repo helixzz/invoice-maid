@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import app.main as main_module
 from app.models import ScanLog
+
+
+async def _async_gen(value):
+    yield value
 
 
 async def test_health_and_spa_catch_all(
@@ -141,6 +146,8 @@ async def test_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPat
     engine = type("Engine", (), {"dispose": AsyncMock()})()
     monkeypatch.setattr(main_module, "create_engine_and_session", lambda database_url: (engine, object()))
     monkeypatch.setattr(main_module, "init_db", AsyncMock())
+    mock_db = AsyncMock()
+    monkeypatch.setattr(main_module, "get_db", lambda: _async_gen(mock_db))
     start = []
     stop = []
     monkeypatch.setattr("app.tasks.scheduler.start_scheduler", lambda settings: start.append(settings))
@@ -159,6 +166,8 @@ async def test_lifespan_skips_scheduler_for_multiple_workers(monkeypatch: pytest
     engine = type("Engine", (), {"dispose": AsyncMock()})()
     monkeypatch.setattr(main_module, "create_engine_and_session", lambda database_url: (engine, object()))
     monkeypatch.setattr(main_module, "init_db", AsyncMock())
+    mock_db = AsyncMock()
+    monkeypatch.setattr(main_module, "get_db", lambda: _async_gen(mock_db))
     start = []
     stop = []
     warnings: list[str] = []

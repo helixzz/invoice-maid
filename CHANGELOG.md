@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.3] - 2026-04-17
+
+### Fixed
+- **Outlook auth badge no longer flickers on page load** — badge and button now show a neutral gray "Checking..." spinner while the status is being fetched, then transition smoothly to the real state. No more jarring amber→green flash.
+- **Stale "Running" scan log entries after service restart** — on startup the backend now marks any scan log that has no `finished_at` and no `error_message` as "Scan interrupted — service was restarted while scan was running". These previously showed as permanently "Running" in the Scan Operations tab.
+
 ## [0.5.2] - 2026-04-17
 
 ### Changed
