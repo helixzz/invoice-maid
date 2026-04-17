@@ -4,7 +4,7 @@ import AppLayout from '@/components/AppLayout.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import Toast from '@/components/Toast.vue'
 import { api } from '@/api/client'
-import type { EmailAccount, AccountCreate, AccountUpdate, ScanLog, AISettingsResponse, AISettingsUpdate } from '@/types'
+import type { EmailAccount, AccountCreate, AccountUpdate, ScanLog, AISettingsResponse, AISettingsUpdate, ExtractionLog } from '@/types'
 
 const activeTab = ref('accounts')
 
@@ -74,6 +74,30 @@ const loadingAccounts = ref(false)
 const scanLogs = ref<ScanLog[]>([])
 const loadingLogs = ref(false)
 const scanning = ref(false)
+const expandedLogId = ref<number | null>(null)
+const extractionLogs = ref<Record<number, ExtractionLog[]>>({})
+const loadingExtractionLogs = ref<Record<number, boolean>>({})
+
+const toggleLogExpansion = async (logId: number) => {
+  if (expandedLogId.value === logId) {
+    expandedLogId.value = null
+    return
+  }
+  
+  expandedLogId.value = logId
+  
+  if (!extractionLogs.value[logId]) {
+    loadingExtractionLogs.value[logId] = true
+    try {
+      extractionLogs.value[logId] = await api.getExtractionLogs(logId)
+    } catch (error) {
+      console.error('Failed to load extraction logs', error)
+      toastRef.value?.addToast('Failed to load extraction details', 'error')
+    } finally {
+      loadingExtractionLogs.value[logId] = false
+    }
+  }
+}
 
 const toastRef = ref<InstanceType<typeof Toast> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
@@ -374,15 +398,19 @@ onMounted(() => {
                 <tr v-else-if="scanLogs.length === 0">
                   <td colspan="6" class="px-6 py-12 text-center text-slate-500">No scan logs available</td>
                 </tr>
-                <tr v-else v-for="log in scanLogs" :key="log.id" class="hover:bg-slate-50">
-                  <td class="px-6 py-4 whitespace-nowrap text-sm">
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200 shadow-sm truncate max-w-[150px]" :title="accountNameById(log.email_account_id)">
-                      {{ accountNameById(log.email_account_id) }}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.started_at) }}</td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.finished_at) }}</td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900">{{ log.emails_scanned }}</td>
+                <template v-else v-for="log in scanLogs" :key="log.id">
+                  <tr @click="toggleLogExpansion(log.id)" class="hover:bg-slate-50 cursor-pointer transition-colors" :class="{'bg-blue-50/30': expandedLogId === log.id}">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                      <div class="flex items-center">
+                        <svg class="w-4 h-4 mr-2 text-slate-400 transition-transform" :class="{'rotate-90': expandedLogId === log.id}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200 shadow-sm truncate max-w-[150px]" :title="accountNameById(log.email_account_id)">
+                          {{ accountNameById(log.email_account_id) }}
+                        </span>
+                      </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.started_at) }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(log.finished_at) }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900">{{ log.emails_scanned }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">{{ log.invoices_found }}</td>
                   <td class="px-6 py-4 text-sm text-slate-500">
                     <span v-if="log.error_message" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" :title="log.error_message">
@@ -396,6 +424,56 @@ onMounted(() => {
                     </span>
                   </td>
                 </tr>
+                <!-- Extraction Logs Detail Row -->
+                <tr v-if="expandedLogId === log.id" :key="`detail-${log.id}`" class="bg-slate-50 border-t border-slate-100">
+                  <td colspan="6" class="px-6 py-4">
+                    <div v-if="loadingExtractionLogs[log.id]" class="text-sm text-slate-500 py-2 animate-pulse">
+                      Loading extraction details...
+                    </div>
+                    <div v-else-if="!extractionLogs[log.id] || extractionLogs[log.id].length === 0" class="text-sm text-slate-500 py-2">
+                      No emails processed in this scan.
+                    </div>
+                    <div v-else class="space-y-3">
+                      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Extraction Details</div>
+                      <div v-for="ext in extractionLogs[log.id]" :key="ext.id" class="bg-white border border-slate-200 rounded-lg p-3 text-sm flex flex-col gap-2 shadow-sm">
+                        <div class="flex items-center justify-between gap-4">
+                          <div class="flex-1 font-medium text-slate-800 truncate" :title="ext.email_subject">{{ ext.email_subject || 'No Subject' }}</div>
+                          <div class="flex items-center gap-2">
+                            <span 
+                              class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border"
+                              :class="{
+                                'bg-green-50 text-green-700 border-green-200': ext.outcome === 'success',
+                                'bg-slate-100 text-slate-700 border-slate-200': ext.outcome === 'skipped' || ext.outcome === 'no_invoice',
+                                'bg-red-50 text-red-700 border-red-200': ext.outcome === 'error' || ext.outcome === 'failed'
+                              }"
+                            >
+                              {{ ext.outcome }}
+                            </span>
+                            <span v-if="ext.confidence" class="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200" title="Confidence Score">
+                              {{ (ext.confidence * 100).toFixed(0) }}%
+                            </span>
+                          </div>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-600 mt-1">
+                          <div v-if="ext.attachment_filename" class="flex items-center gap-1 truncate" :title="ext.attachment_filename">
+                            <svg class="w-3.5 h-3.5 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                            {{ ext.attachment_filename }}
+                          </div>
+                          <div v-if="ext.invoice_no" class="flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            {{ ext.invoice_no }}
+                          </div>
+                        </div>
+                        
+                        <div v-if="ext.error_detail" class="mt-1 text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100">
+                          {{ ext.error_detail }}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+                </template>
               </tbody>
             </table>
           </div>
