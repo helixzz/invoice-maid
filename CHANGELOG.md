@@ -4,12 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.5.5] - 2026-04-17
+## [0.5.7] - 2026-04-18
 
 ### Fixed
-- **Scan progress panel never appeared** — root cause: the SSE composable used `onmessage` which only fires for unnamed events, but the backend emits named `event: "progress"` events. Fixed by adding `addEventListener('progress', handler)` alongside `onmessage` as fallback
-- **Progress state not visible on connect** — composable now polls `GET /scan/progress` immediately on `connect()` so the current backend state renders instantly (before the first SSE push arrives)
-- **App automatically switches to Scan tab when a scan starts** — so users always see the progress bar whether the scan was triggered manually or by the scheduler
+- **Scan log invoice count always zero** — `invoices_found` and `finished_at` are now set in a single commit instead of two separate commits that caused the value to be lost due to SQLAlchemy session expiration between commits
+
+### Changed
+- **Release workflow includes changelog** — GitHub Releases now include the matching CHANGELOG.md section instead of only an auto-generated diff link
+- **CHANGELOG ordering corrected** — entries now strictly follow reverse-chronological order; removed duplicate v0.5.0/v0.4.5 block
 
 ## [0.5.6] - 2026-04-17
 
@@ -17,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **LLM-first email analysis pipeline** — scan classification now uses only hard Tier 1 negatives/strong attachment positives plus a single structured LLM analysis call for everything else.
 - **Single targeted link download** — Tier 3 scanning no longer blindly downloads every body link. The backend now asks the LLM to classify the email, choose one best invoice URL, return extraction hints, and only downloads that highest-confidence link.
 - **PDF-first processing order** — attachments/downloads are prioritized as PDF → OFD → XML, with LLM format hints able to confirm PDF-first ordering.
+
+## [0.5.5] - 2026-04-17
+
+### Fixed
+- **Scan progress panel never appeared** — root cause: the SSE composable used `onmessage` which only fires for unnamed events, but the backend emits named `event: "progress"` events. Fixed by adding `addEventListener('progress', handler)` alongside `onmessage` as fallback
+- **Progress state not visible on connect** — composable now polls `GET /scan/progress` immediately on `connect()` so the current backend state renders instantly (before the first SSE push arrives)
+- **App automatically switches to Scan tab when a scan starts** — so users always see the progress bar whether the scan was triggered manually or by the scheduler
 
 ## [0.5.4] - 2026-04-17
 
@@ -60,12 +69,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **OAuth error detail hidden** — `pollOAuthStatus` now shows the `state.detail` message in an error toast when authorization fails or expires, instead of silently closing the modal
 - **Upgrade script false-positive health check** — `invoice-maid-upgrade` now auto-detects the service port from `/etc/systemd/system/invoice-maid.service` instead of hardcoding port 8000; this caused the script to report "upgrade OK" while probing a stale old process on 8000 instead of the newly restarted service
 - **Toast notifications too small and disappearing too fast** — toasts now use type-aware auto-durations (error: 7s, info: 5s, success: 4s) and have a proper minimum width of 360px, preventing messages from being squeezed into a few words per line
-
-## [0.4.5] - 2026-04-17
-## [0.5.0] - 2026-04-17
-
-
-### Fixed
 - Outlook personal account OAuth now uses Microsoft Graph Explorer client ID (14d82eec-...), supporting personal @outlook.com, @live.cn, @hotmail.com, @msn.com without Azure App Registration
 - Scan job no longer aborts when one mailbox fails — each account scanned independently, failures logged per-account
 - MissingGreenlet crash on scan failure resolved — failed accounts write error state via raw SQL after rollback
@@ -100,6 +103,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - `deploy/invoice-maid.service` hardened with `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `ProtectHome`, `ReadWritePaths`, `Restart=on-failure`; adds `{{ENV_FILE}}`, `{{PORT}}`, `{{DATA_DIR}}` placeholders; switches from `After=network.target` to `After=network-online.target`
+
+## [0.4.2] - 2026-04-17
+
+### Changed
+- Bumped to v0.4.2 — deploy tooling and Docker support
 
 ## [0.4.0] - 2026-04-17
 
