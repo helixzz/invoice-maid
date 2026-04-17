@@ -36,6 +36,7 @@ if not hasattr(imap_tools, "MailBoxPop3"):
 
     imap_tools.MailBoxPop3 = _MailBoxPop3Fallback
 
+import app.api.ai_settings as ai_settings_api
 import app.api.auth as auth_api
 import app.api.downloads as downloads_api
 import app.api.email_accounts as accounts_api
@@ -45,8 +46,11 @@ import app.api.test_helpers as test_helpers_api
 import app.deps as deps_module
 import app.config as config_module
 import app.main as main_module
+from app.rate_limiter import limiter
 import app.services.auth_service as auth_service_module
+import app.services.ai_service as ai_service_module
 import app.services.email_scanner as email_scanner_module
+import app.services.settings_resolver as settings_resolver_module
 import app.tasks.scheduler as scheduler_module
 from app.config import Settings
 from app.database import create_fts5_objects, get_db
@@ -55,12 +59,14 @@ from app.models import Base, EmailAccount, Invoice
 from app.schemas.invoice import InvoiceExtract
 from app.services.auth_service import create_access_token
 from app.services.email_scanner import encrypt_password
+from app.services.settings_resolver import invalidate_ai_settings_cache
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
     getter = lambda: settings
     for module in (
         config_module,
+        ai_settings_api,
         auth_api,
         downloads_api,
         accounts_api,
@@ -70,7 +76,9 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None
         deps_module,
         main_module,
         auth_service_module,
+        ai_service_module,
         email_scanner_module,
+        settings_resolver_module,
         scheduler_module,
     ):
         monkeypatch.setattr(module, "get_settings", getter, raising=False)
@@ -99,6 +107,7 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
         if key != "__runtime_sqlite_vec_available__":
             monkeypatch.setenv(key, str(value))
     config_module.get_settings.cache_clear()
+    invalidate_ai_settings_cache()
     settings_obj = Settings(**values)
     _patch_settings(monkeypatch, settings_obj)
     monkeypatch.setattr(
@@ -141,10 +150,12 @@ async def client(settings: Settings, db: AsyncSession) -> AsyncIterator[AsyncCli
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         yield db
 
+    limiter.reset()
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client
+    limiter.reset()
     app.dependency_overrides.clear()
 
 

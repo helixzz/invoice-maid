@@ -3,7 +3,10 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Protocol, TypeVar, cast
 
+from fastapi import Request, Response
+
 from app.config import get_settings
+from app.rate_limiter import limiter
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.services.auth_service import create_access_token, verify_password
 
@@ -40,7 +43,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest) -> TokenResponse:
+@limiter.limit("10/minute")
+async def login(request: Request, response: Response, payload: LoginRequest) -> TokenResponse:
+    del request, response
     settings = get_settings()
 
     if not verify_password(payload.password, settings.ADMIN_PASSWORD_HASH):
