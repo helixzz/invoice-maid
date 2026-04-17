@@ -55,7 +55,7 @@ import app.tasks.scheduler as scheduler_module
 from app.config import Settings
 from app.database import create_fts5_objects, get_db
 from app.main import app
-from app.models import Base, EmailAccount, Invoice
+from app.models import Base, CorrectionLog, EmailAccount, ExtractionLog, Invoice
 from app.schemas.invoice import InvoiceExtract
 from app.services.auth_service import create_access_token
 from app.services.email_scanner import encrypt_password
@@ -100,6 +100,8 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
         "EMBED_DIM": 3,
         "SCAN_INTERVAL_MINUTES": 15,
         "SQLITE_VEC_ENABLED": False,
+        "WEBHOOK_URL": "",
+        "WEBHOOK_SECRET": "",
         "ENABLE_TEST_HELPERS": False,
         "__runtime_sqlite_vec_available__": False,
     }
@@ -240,6 +242,7 @@ async def create_invoice(
             "source_format": "pdf",
             "extraction_method": "regex",
             "confidence": 0.8,
+            "is_manually_corrected": False,
         }
         defaults.update(overrides)
         invoice = Invoice(
@@ -249,5 +252,73 @@ async def create_invoice(
         await db.commit()
         await db.refresh(invoice)
         return invoice
+
+    return factory
+
+
+@pytest_asyncio.fixture
+async def create_scan_log(
+    db: AsyncSession, create_email_account: Callable[..., Awaitable[EmailAccount]]
+) -> Callable[..., Awaitable[object]]:
+    async def factory(**overrides):
+        account = overrides.pop("email_account", None) or await create_email_account()
+        defaults = {
+            "email_account_id": account.id,
+            "emails_scanned": 0,
+            "invoices_found": 0,
+            "error_message": None,
+        }
+        defaults.update(overrides)
+        from app.models import ScanLog
+
+        log = ScanLog(**defaults)
+        db.add(log)
+        await db.commit()
+        await db.refresh(log)
+        return log
+
+    return factory
+
+
+@pytest_asyncio.fixture
+async def create_extraction_log(db: AsyncSession, create_scan_log) -> Callable[..., Awaitable[ExtractionLog]]:
+    async def factory(**overrides) -> ExtractionLog:
+        scan_log = overrides.pop("scan_log", None) or await create_scan_log()
+        defaults = {
+            "scan_log_id": scan_log.id,
+            "email_uid": "uid-1",
+            "email_subject": "Invoice",
+            "attachment_filename": "invoice.pdf",
+            "outcome": "saved",
+            "invoice_no": "INV-001",
+            "confidence": 0.9,
+            "error_detail": None,
+        }
+        defaults.update(overrides)
+        log = ExtractionLog(**defaults)
+        db.add(log)
+        await db.commit()
+        await db.refresh(log)
+        return log
+
+    return factory
+
+
+@pytest_asyncio.fixture
+async def create_correction_log(db: AsyncSession, create_invoice) -> Callable[..., Awaitable[CorrectionLog]]:
+    async def factory(**overrides) -> CorrectionLog:
+        invoice = overrides.pop("invoice", None) or await create_invoice()
+        defaults = {
+            "invoice_id": invoice.id,
+            "field_name": "buyer",
+            "old_value": "Alpha Buyer",
+            "new_value": "Updated Buyer",
+        }
+        defaults.update(overrides)
+        log = CorrectionLog(**defaults)
+        db.add(log)
+        await db.commit()
+        await db.refresh(log)
+        return log
 
     return factory

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import CurrentUser
-from app.models import ScanLog
+from app.models import ExtractionLog, ScanLog
 from app.tasks.scheduler import scan_all_accounts
 
 router = APIRouter(prefix="/scan", tags=["scan"])
@@ -38,6 +38,23 @@ class ScanLogListResponse(BaseModel):
     size: int
 
 
+class ExtractionLogResponse(BaseModel):
+    id: int
+    scan_log_id: int
+    email_uid: str | None
+    email_subject: str
+    attachment_filename: str | None
+    outcome: str
+    invoice_no: str | None
+    confidence: float | None
+    error_detail: str | None
+    created_at: str
+
+
+class ExtractionLogListResponse(BaseModel):
+    items: list[ExtractionLogResponse]
+
+
 def _serialize_log(log: ScanLog) -> ScanLogResponse:
     return ScanLogResponse(
         id=log.id,
@@ -47,6 +64,21 @@ def _serialize_log(log: ScanLog) -> ScanLogResponse:
         emails_scanned=log.emails_scanned,
         invoices_found=log.invoices_found,
         error_message=log.error_message,
+    )
+
+
+def _serialize_extraction(log: ExtractionLog) -> ExtractionLogResponse:
+    return ExtractionLogResponse(
+        id=log.id,
+        scan_log_id=log.scan_log_id,
+        email_uid=log.email_uid,
+        email_subject=log.email_subject,
+        attachment_filename=log.attachment_filename,
+        outcome=log.outcome,
+        invoice_no=log.invoice_no,
+        confidence=log.confidence,
+        error_detail=log.error_detail,
+        created_at=log.created_at.isoformat(),
     )
 
 
@@ -77,3 +109,22 @@ async def list_scan_logs(
         page=page,
         size=size,
     )
+
+
+@router.get("/logs/{log_id}/extractions", response_model=ExtractionLogListResponse)
+async def list_extraction_logs(
+    log_id: int,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> ExtractionLogListResponse:
+    log = await db.get(ScanLog, log_id)
+    if log is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan log not found")
+
+    result = await db.execute(
+        select(ExtractionLog)
+        .where(ExtractionLog.scan_log_id == log_id)
+        .order_by(ExtractionLog.created_at.asc(), ExtractionLog.id.asc())
+    )
+    extractions = list(result.scalars().all())
+    return ExtractionLogListResponse(items=[_serialize_extraction(item) for item in extractions])

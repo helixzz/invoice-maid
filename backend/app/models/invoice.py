@@ -4,12 +4,13 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
+    from app.models.correction_log import CorrectionLog
     from app.models.email_account import EmailAccount
 
 
@@ -35,6 +36,10 @@ class Invoice(Base):
     source_format: Mapped[str] = mapped_column(String(32), default="pdf")
     extraction_method: Mapped[str] = mapped_column(String(32), default="llm")
     confidence: Mapped[float] = mapped_column(default=0.0)
+    is_manually_corrected: Mapped[bool] = mapped_column(Boolean(), default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     email_account: Mapped[EmailAccount] = relationship(back_populates="invoices")
+    correction_logs: Mapped[list["CorrectionLog"]] = relationship(
+        back_populates="invoice", cascade="all, delete-orphan"
+    )
