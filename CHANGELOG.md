@@ -4,7 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.4.2] - 2026-04-17
+## [0.4.3] - 2026-04-17
+
+### Fixed
+- Outlook OAuth device code flow now uses the well-known Microsoft Office public client ID (`d3590ed6-52b3-4102-aeff-aad2292ab01c`) by default, allowing personal `@outlook.com`, `@live.com`, `@hotmail.com`, and `@live.cn` accounts to authenticate without needing an Azure App Registration
+- `username` field for Outlook accounts now stores the mailbox email address instead of an Azure App Client ID (the client ID is now in config)
+- Frontend Outlook account form now correctly labels the field "Microsoft Account Email" and shows the appropriate email placeholder
+
+### Added
+- `OUTLOOK_CLIENT_ID` environment variable (default: Microsoft Office well-known ID) to override for work/school Azure AD accounts
 
 ### Added
 - `deploy/install.sh` — idempotent one-command production installer: creates system user, clones repo, builds venv, hashes admin password, writes `/etc/invoice-maid/invoice-maid.env`, runs Alembic migrations, installs systemd service, and optionally starts it. Supports headless (`--yes`), dry-run, random password, and version pinning flags.
