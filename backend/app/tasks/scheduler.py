@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import httpx
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
@@ -20,6 +22,33 @@ from app.services.search_service import store_embedding
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
+
+
+def _guess_filename_from_link(url: str, content_type: str | None) -> str:
+    suffix = Path(url.split("?", 1)[0]).suffix
+    if suffix in {".pdf", ".xml", ".ofd"}:
+        return f"download{suffix}"
+    if content_type:
+        lowered = content_type.lower()
+        if "pdf" in lowered:
+            return "download.pdf"
+        if "xml" in lowered:
+            return "download.xml"
+        if "ofd" in lowered or "zip" in lowered:
+            return "download.ofd"
+    return "download.pdf"
+
+
+async def _download_linked_invoice(url: str) -> tuple[str, bytes] | None:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            filename = _guess_filename_from_link(url, response.headers.get("content-type"))
+            return filename, response.content
+    except Exception as exc:
+        logger.warning("Failed to download invoice link %s: %s", url, exc)
+        return None
 
 
 async def scan_all_accounts() -> None:
@@ -55,9 +84,19 @@ async def scan_all_accounts() -> None:
                     if not is_invoice:
                         continue
 
-                    for att in email.attachments:
+                    raw_items: list[tuple[str, bytes]] = [(att.filename, att.payload) for att in email.attachments]
+                    seen_links: set[str] = set()
+                    for link in email.body_links:
+                        if link in seen_links:
+                            continue
+                        seen_links.add(link)
+                        downloaded = await _download_linked_invoice(link)
+                        if downloaded is not None:
+                            raw_items.append(downloaded)
+
+                    for filename, payload in raw_items:
                         try:
-                            parsed = parse_invoice(att.filename, att.payload)
+                            parsed = parse_invoice(filename, payload)
 
                             if parsed.confidence < 0.5 and parsed.raw_text:
                                 extracted = await ai.extract_invoice_fields(db, parsed.raw_text)
@@ -81,10 +120,10 @@ async def scan_all_accounts() -> None:
                                 continue
 
                             ext = (
-                                f'.{att.filename.rsplit(".", 1)[-1].lower()}' if "." in att.filename else ".pdf"
+                                f'.{filename.rsplit(".", 1)[-1].lower()}' if "." in filename else ".pdf"
                             )
                             file_path = await file_mgr.save_invoice(
-                                att.payload,
+                                payload,
                                 parsed.buyer,
                                 parsed.seller,
                                 parsed.invoice_no,
@@ -124,7 +163,7 @@ async def scan_all_accounts() -> None:
 
                             invoices_added += 1
                         except Exception as exc:
-                            logger.error("Failed to process attachment %s: %s", att.filename, exc)
+                            logger.error("Failed to process invoice payload %s: %s", filename, exc)
 
                     if email.uid and (not last_uid or email.uid > last_uid):
                         last_uid = email.uid
