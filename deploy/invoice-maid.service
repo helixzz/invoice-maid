@@ -1,7 +1,16 @@
 # Invoice Maid — systemd Service Template
-# Replace {{USER}} with the Linux system user that will run the service.
-# Replace {{INSTALL_DIR}} with the installation path (for example: /opt/invoice-maid).
-# Replace {{VENV}} with the virtualenv path (for example: /opt/invoice-maid/.venv).
+#
+# Placeholders (replace before copying to /etc/systemd/system/):
+#   {{USER}}         System user that owns the process (e.g. invoice-maid)
+#   {{INSTALL_DIR}}  Installation root with backend/ and frontend/ subdirs
+#                    (e.g. /var/lib/invoice-maid/src or /opt/invoice-maid)
+#   {{VENV}}         Python virtualenv path (e.g. /var/lib/invoice-maid/venv)
+#   {{ENV_FILE}}     Path to the .env file (e.g. {{INSTALL_DIR}}/backend/.env
+#                    or /etc/invoice-maid/invoice-maid.env). The file MUST
+#                    exist and be readable by {{USER}}.
+#   {{PORT}}         Bind port on 127.0.0.1 (default 8000)
+#   {{DATA_DIR}}     Writable data directory the service may mutate
+#                    (e.g. /var/lib/invoice-maid). Listed in ReadWritePaths.
 #
 # IMPORTANT: --workers 1 is required because APScheduler runs in-process.
 # Multiple workers would start duplicate schedulers and duplicate scheduled jobs.
@@ -9,27 +18,44 @@
 # --log-level controls uvicorn's own loggers. Application loggers (app.*,
 # apscheduler, sqlalchemy, ...) are controlled by LOG_LEVEL in the .env file;
 # both go to stderr and are captured by the systemd journal.
+#
+# Hardening rationale:
+#   NoNewPrivileges   Child processes cannot gain privileges via setuid/setgid.
+#   PrivateTmp        Service gets a private /tmp, isolated from other units.
+#   ProtectSystem     /usr, /boot, /efi are read-only to the process.
+#   ProtectHome       /home, /root, /run/user are inaccessible.
+#   ReadWritePaths    Explicit allow-list of directories the service may mutate.
+# Remove any hardening line if it conflicts with your layout.
 
 [Unit]
 Description=Invoice Maid — AI Invoice Extraction Service
-After=network.target
+Documentation=https://github.com/helixzz/invoice-maid
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User={{USER}}
 Group={{USER}}
 WorkingDirectory={{INSTALL_DIR}}/backend
-EnvironmentFile={{INSTALL_DIR}}/backend/.env
+EnvironmentFile={{ENV_FILE}}
 ExecStart={{VENV}}/bin/uvicorn app.main:app \
     --host 127.0.0.1 \
-    --port 8000 \
+    --port {{PORT}} \
     --workers 1 \
     --log-level info
-Restart=always
+Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=invoice-maid
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{DATA_DIR}}
 
 [Install]
 WantedBy=multi-user.target

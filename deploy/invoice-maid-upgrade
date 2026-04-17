@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# invoice-maid-upgrade — idempotent upgrade driver for Invoice Maid.
+#
+# Usage:
+#   sudo invoice-maid-upgrade                 # upgrade to latest git tag
+#   sudo invoice-maid-upgrade --tag vX.Y.Z    # pin to a specific tag
+#   sudo invoice-maid-upgrade --branch main   # ride a branch tip
+#   sudo invoice-maid-upgrade --dry-run       # preview, change nothing
+#
+# Flow (each step is no-op if unchanged):
+#   1. git fetch --tags
+#   2. resolve target ref (latest v* tag by default)
+#   3. exit 0 if HEAD == target
+#   4. pre-upgrade backup via invoice-maid-backup (if installed)
+#   5. git reset --hard + git clean -fdx (preserves .env if it's a symlink
+#      whose target is outside the tree)
+#   6. pip install --upgrade -e '<src>/backend[full]'
+#   7. alembic upgrade head
+#   8. systemctl restart $INVOICE_MAID_SERVICE
+#   9. health probe: up to 10 retries, 2s apart
+#
+# Environment variables (override to match your layout):
+#   INVOICE_MAID_USER         Service user          (default: invoice-maid)
+#   INVOICE_MAID_HOME         Installation root     (default: /var/lib/invoice-maid)
+#   INVOICE_MAID_SRC          Git checkout dir      (default: $HOME/src)
+#   INVOICE_MAID_VENV         Python venv path      (default: $HOME/venv)
+#   INVOICE_MAID_ENV_FILE     .env file path        (default: $SRC/backend/.env)
+#   INVOICE_MAID_SERVICE      systemd unit name     (default: invoice-maid)
+#   INVOICE_MAID_HEALTH_URL   health probe URL      (default: http://127.0.0.1:8000/api/v1/health)
+#   INVOICE_MAID_LOG          log file              (default: /var/log/invoice-maid-upgrade.log)
+#
+# Operators with a stable layout: drop the overrides into
+# /etc/default/invoice-maid and this script will source them automatically.
+#
+# Exit codes:
+#   0 success (including no-op)
+#   1 usage error
+#   2 git / checkout failure
+#   3 pip install failure
+#   4 alembic migration failure
+#   5 service failed to become healthy
+
+set -Eeuo pipefail
+
+DEFAULTS_FILE=/etc/default/invoice-maid
+if [[ -r "$DEFAULTS_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$DEFAULTS_FILE"
+fi
+
+: "${INVOICE_MAID_USER:=invoice-maid}"
+: "${INVOICE_MAID_HOME:=/var/lib/invoice-maid}"
+: "${INVOICE_MAID_SRC:=${INVOICE_MAID_HOME}/src}"
+: "${INVOICE_MAID_VENV:=${INVOICE_MAID_HOME}/venv}"
+: "${INVOICE_MAID_ENV_FILE:=${INVOICE_MAID_SRC}/backend/.env}"
+: "${INVOICE_MAID_SERVICE:=invoice-maid}"
+: "${INVOICE_MAID_HEALTH_URL:=http://127.0.0.1:8000/api/v1/health}"
+: "${INVOICE_MAID_LOG:=/var/log/invoice-maid-upgrade.log}"
+
+readonly BACKEND_DIR="${INVOICE_MAID_SRC}/backend"
+
+MODE=tag
+REF=""
+DRY=0
+
+while (($#)); do
+  case "$1" in
+    --tag)
+      MODE=tag
+      REF="${2:-}"
+      shift 2 || { echo "--tag requires an argument" >&2; exit 1; }
+      ;;
+    --branch)
+      MODE=branch
+      REF="${2:-}"
+      shift 2 || { echo "--branch requires an argument" >&2; exit 1; }
+      ;;
+    --dry-run)
+      DRY=1
+      shift
+      ;;
+    -h|--help)
+      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || { echo "must run as root (use sudo)" >&2; exit 1; }
+
+for cmd in git systemctl curl sudo; do
+  command -v "$cmd" >/dev/null || { echo "missing required command: $cmd" >&2; exit 1; }
+done
+
+[[ -d "$INVOICE_MAID_SRC/.git" ]] || {
+  echo "not a git checkout: $INVOICE_MAID_SRC" >&2
+  exit 2
+}
+
+id "$INVOICE_MAID_USER" >/dev/null 2>&1 || {
+  echo "user not found: $INVOICE_MAID_USER" >&2
+  exit 1
+}
+
+ts()   { date +'%F %T'; }
+# shellcheck disable=SC2155  # subshell exit code not meaningful for a logger
+log()  { local msg="[$(ts)] $*"; echo "$msg"; [[ -w "$(dirname "$INVOICE_MAID_LOG")" ]] && echo "$msg" >>"$INVOICE_MAID_LOG" || true; }
+run()  { log "+ $*"; (( DRY )) && return 0; "$@"; }
+# CRITICAL: -C "$INVOICE_MAID_SRC" forces CWD to a path the service user can
+# read. Without this, pip resolves the __editable__ sentinel it installs onto
+# sys.path as a RELATIVE path against the caller's CWD; if that directory
+# blocks traversal for the service user (e.g. another user's home with mode
+# 750), os.stat() returns EACCES and the install aborts.
+urun() { log "+ [$INVOICE_MAID_USER] $*"; (( DRY )) && return 0; sudo -u "$INVOICE_MAID_USER" env -C "$INVOICE_MAID_SRC" "$@"; }
+
+on_error() {
+  local ec=$? line=${1:-?}
+  log "ERROR (line $line, exit $ec) — upgrade aborted"
+  exit "$ec"
+}
+trap 'on_error $LINENO' ERR
+
+log "==== invoice-maid-upgrade start (mode=$MODE ref='$REF' dry=$DRY) ===="
+
+log "fetching from origin"
+urun git -C "$INVOICE_MAID_SRC" fetch --tags --prune --force origin
+
+case "$MODE" in
+  tag)
+    if [[ -z "$REF" ]]; then
+      REF=$(sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" tag --sort=-v:refname | grep -E '^v[0-9]+\.' | head -n1 || true)
+      [[ -n "$REF" ]] || { log "no v* tag found"; exit 2; }
+    else
+      sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" rev-parse -q --verify "refs/tags/$REF" >/dev/null \
+        || { log "tag '$REF' not found"; exit 2; }
+    fi
+    TARGET="$REF"
+    ;;
+  branch)
+    [[ -n "$REF" ]] || { log "--branch requires a name"; exit 1; }
+    sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" rev-parse -q --verify "refs/remotes/origin/$REF" >/dev/null \
+      || { log "branch 'origin/$REF' not found"; exit 2; }
+    TARGET="origin/$REF"
+    ;;
+esac
+
+# ^{commit} forces annotated tags to resolve to the commit they point at,
+# otherwise the comparison below is tag-object-SHA vs commit-SHA and the
+# script thinks every upgrade is needed.
+TARGET_SHA=$(sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" rev-parse "${TARGET}^{commit}")
+CURRENT_SHA=$(sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" rev-parse HEAD)
+CURRENT_REF=$(sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" describe --tags --always --dirty 2>/dev/null || echo "$CURRENT_SHA")
+
+log "current: $CURRENT_REF ($CURRENT_SHA)"
+log "target : $TARGET ($TARGET_SHA)"
+
+if [[ "$CURRENT_SHA" == "$TARGET_SHA" ]]; then
+  log "already at target — nothing to do"
+  exit 0
+fi
+
+if command -v invoice-maid-backup >/dev/null; then
+  log "pre-upgrade backup"
+  run invoice-maid-backup
+else
+  log "WARN: invoice-maid-backup not installed — skipping pre-upgrade backup"
+fi
+
+log "checkout $TARGET"
+urun git -C "$INVOICE_MAID_SRC" reset --hard "$TARGET"
+urun git -C "$INVOICE_MAID_SRC" clean -fdx
+
+# git clean -fdx removes any untracked file including .env; restore it if the
+# operator used the symlink-into-/etc pattern (target lives outside the tree).
+if [[ ! -e "$BACKEND_DIR/.env" && -e "$INVOICE_MAID_ENV_FILE" && "$INVOICE_MAID_ENV_FILE" != "$BACKEND_DIR/.env" ]]; then
+  log "restoring .env symlink to $INVOICE_MAID_ENV_FILE"
+  urun ln -sf "$INVOICE_MAID_ENV_FILE" "$BACKEND_DIR/.env"
+fi
+
+log "installing backend[full]"
+if ! urun "$INVOICE_MAID_VENV/bin/pip" install --upgrade -e "${BACKEND_DIR}[full]" >>"$INVOICE_MAID_LOG" 2>&1; then
+  log "pip install failed — see $INVOICE_MAID_LOG"
+  exit 3
+fi
+
+log "alembic upgrade head"
+# Bypass urun (which chdirs to $INVOICE_MAID_SRC) because alembic resolves
+# script_location (relative path in alembic.ini) against CWD — needs backend/.
+# shellcheck disable=SC2024  # redirect runs as root on root-owned log; intended
+if ! sudo -u "$INVOICE_MAID_USER" env -C "$BACKEND_DIR" "$INVOICE_MAID_VENV/bin/alembic" upgrade head >>"$INVOICE_MAID_LOG" 2>&1; then
+  log "alembic migration failed — see $INVOICE_MAID_LOG"
+  exit 4
+fi
+
+log "restarting $INVOICE_MAID_SERVICE"
+run systemctl restart "$INVOICE_MAID_SERVICE"
+
+if (( DRY )); then
+  log "(dry-run) skipping health probe"
+  log "==== upgrade dry-run complete: $CURRENT_REF -> $TARGET ===="
+  exit 0
+fi
+
+log "waiting for service to become healthy at $INVOICE_MAID_HEALTH_URL"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 2
+  if curl -fsS "$INVOICE_MAID_HEALTH_URL" >/dev/null 2>&1; then
+    log "healthy after $((i * 2))s"
+    NEW_REF=$(sudo -u "$INVOICE_MAID_USER" git -C "$INVOICE_MAID_SRC" describe --tags --always 2>/dev/null || echo "$TARGET_SHA")
+    log "==== upgrade OK: $CURRENT_REF -> $NEW_REF ===="
+    exit 0
+  fi
+done
+
+log "ERROR: service did not become healthy within 20s"
+systemctl status "$INVOICE_MAID_SERVICE" --no-pager | tail -20 >>"$INVOICE_MAID_LOG" 2>&1 || true
+exit 5
