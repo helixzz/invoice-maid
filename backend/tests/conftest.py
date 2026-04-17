@@ -58,7 +58,7 @@ from app.config import Settings
 from app.database import create_fts5_objects, get_db
 from app.main import app
 from app.models import Base, CorrectionLog, EmailAccount, ExtractionLog, Invoice
-from app.schemas.invoice import InvoiceExtract
+from app.schemas.invoice import EmailAnalysis, InvoiceExtract
 from app.services.auth_service import create_access_token
 from app.services.email_scanner import encrypt_password
 from app.services.email_scanner import oauth_registry
@@ -197,6 +197,15 @@ def auth_headers(auth_token: str) -> dict[str, str]:
 @pytest.fixture
 def mock_ai_service() -> SimpleNamespace:
     return SimpleNamespace(
+        analyze_email=AsyncMock(
+            return_value=EmailAnalysis(
+                is_invoice_related=True,
+                invoice_confidence=0.9,
+                best_download_url=None,
+                url_confidence=0.0,
+                skip_reason=None,
+            )
+        ),
         classify_email=AsyncMock(return_value=True),
         extract_invoice_fields=AsyncMock(
             return_value=InvoiceExtract(

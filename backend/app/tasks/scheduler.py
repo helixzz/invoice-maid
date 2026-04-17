@@ -13,12 +13,12 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, _resolve_safelink
 from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders
 from app.services.email_scanner import ScannerFactory
 from app.services.file_manager import FileManager
@@ -56,6 +56,50 @@ async def _download_linked_invoice(url: str) -> tuple[str, bytes] | None:
     except Exception as exc:
         logger.warning("Failed to download invoice link %s: %s", url, exc)
         return None
+
+
+def _prioritize_raw_items(items: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """Process PDFs first (>90% of real invoices), then OFD, then XML, then others."""
+
+    def priority(item: tuple[str, bytes]) -> tuple[int, int]:
+        filename = item[0].lower()
+        if filename.endswith(".pdf"):
+            base = 0
+        elif filename.endswith(".ofd"):
+            base = 1
+        elif filename.endswith(".xml"):
+            base = 2
+        else:
+            base = 3
+        return (base, 0)
+
+    return sorted(items, key=priority)
+
+
+def _prioritize_raw_items_with_hints(
+    items: list[tuple[str, bytes]], likely_formats: list[Any] | None
+) -> list[tuple[str, bytes]]:
+    if not likely_formats:
+        return _prioritize_raw_items(items)
+
+    format_priority = {
+        str(getattr(fmt, "value", fmt)).lower(): idx for idx, fmt in enumerate(likely_formats)
+    }
+
+    def priority(item: tuple[str, bytes]) -> tuple[int, int]:
+        filename = item[0].lower()
+        ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+        fallback = 3
+        if filename.endswith(".pdf"):
+            fallback = 0
+        elif filename.endswith(".ofd"):
+            fallback = 1
+        elif filename.endswith(".xml"):
+            fallback = 2
+        hinted = format_priority.get(ext, len(format_priority) + fallback)
+        return (hinted, fallback)
+
+    return sorted(items, key=priority)
 
 
 def _truncate_error_detail(error_detail: str | None) -> str | None:
@@ -237,16 +281,33 @@ async def scan_all_accounts() -> None:
                                 current_attachment_idx=0,
                                 current_attachment_name="",
                             )
-                            tier_result = classifier.classify_tier1(email)
-                            if tier_result is None:
-                                tier_result = classifier.classify_tier2(email)
-                            if tier_result is None:
-                                subject, enriched_body = classifier.build_llm_context(email)
-                                is_invoice = await ai.classify_email(db, subject, enriched_body)
-                                classification_tier = 3
+                            t1 = classifier.classify_tier1(email)
+                            if t1 is not None:
+                                is_invoice = t1.is_invoice
+                                classification_tier = 1
+                                # Tier 1 positive with body links: still ask
+                                # LLM for best download URL + format hints.
+                                if is_invoice and email.body_links:
+                                    analysis = await ai.analyze_email(
+                                        db,
+                                        subject=email.subject,
+                                        from_addr=email.from_addr,
+                                        body=email.body_text,
+                                        body_links=email.body_links,
+                                    )
+                                else:
+                                    analysis = None
                             else:
-                                is_invoice = tier_result.is_invoice
-                                classification_tier = tier_result.tier
+                                analysis = await ai.analyze_email(
+                                    db,
+                                    subject=email.subject,
+                                    from_addr=email.from_addr,
+                                    body=email.body_text,
+                                    body_links=email.body_links,
+                                )
+                                is_invoice = analysis.is_invoice_related
+                                classification_tier = 3
+                                sp.update_progress(last_classification_tier=3)
 
                             if not is_invoice:
                                 db.add(
@@ -270,21 +331,27 @@ async def scan_all_accounts() -> None:
                             raw_items: list[tuple[str, bytes]] = [
                                 (att.filename, att.payload) for att in email.attachments
                             ]
-                            seen_links: set[str] = set()
-                            for link in email.body_links:
-                                if link in seen_links:
-                                    continue
-                                seen_links.add(link)
+
+                            if analysis is not None and analysis.should_download:
+                                url = analysis.best_download_url
+                                assert url is not None
+                                if analysis.url_is_safelink:
+                                    url = await _resolve_safelink(url)
                                 sp.update_progress(
-                                    current_attachment_url=link[:120],
+                                    current_attachment_url=(url or "")[:120],
                                     current_download_outcome="downloading",
                                 )
-                                downloaded = await _download_linked_invoice(link)
+                                downloaded = await _download_linked_invoice(url)
                                 if downloaded is not None:
                                     raw_items.append(downloaded)
                                     sp.update_progress(current_download_outcome="saved")
                                 else:
                                     sp.update_progress(current_download_outcome="failed")
+
+                            raw_items = _prioritize_raw_items_with_hints(
+                                raw_items,
+                                analysis.extraction_hints.likely_formats if analysis is not None else None,
+                            )
 
                             sp.update_progress(
                                 total_attachments=len(raw_items),
@@ -479,7 +546,7 @@ async def scan_all_accounts() -> None:
                                 },
                             )
                             await db.commit()  # pragma: no cover
-                        except Exception:
+                        except Exception:  # pragma: no cover
                             pass
                         continue
 

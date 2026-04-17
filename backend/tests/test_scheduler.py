@@ -12,9 +12,24 @@ from sqlalchemy import select
 
 import app.tasks.scheduler as scheduler
 from app.models import ExtractionLog, Invoice, ScanLog, WebhookLog
+from app.schemas.invoice import EmailAnalysis, InvoiceFormat, InvoicePlatform, UrlKind
 from app.services import scan_progress as sp
 from app.services.email_scanner import RawAttachment, RawEmail
 from app.services.invoice_parser import ParsedInvoice
+
+
+def make_analysis(**overrides) -> EmailAnalysis:
+    defaults = {
+        "is_invoice_related": True,
+        "invoice_confidence": 0.9,
+        "best_download_url": None,
+        "url_confidence": 0.0,
+        "url_is_safelink": False,
+        "url_kind": UrlKind.NONE,
+        "skip_reason": None,
+    }
+    defaults.update(overrides)
+    return EmailAnalysis(**defaults)
 
 
 @pytest.mark.asyncio
@@ -71,11 +86,11 @@ async def test_scan_all_accounts_happy_path_with_embedding(
     assert account.last_scan_uid == "2"
     assert logs[0].invoices_found == 1
     assert extraction_logs[0].outcome == "saved"
-    assert extraction_logs[0].classification_tier == 2
+    assert extraction_logs[0].classification_tier == 1
 
 
 @pytest.mark.asyncio
-async def test_scan_all_accounts_tier1_hit_avoids_llm_call(
+async def test_scan_all_accounts_tier1_attachment_hit_avoids_llm_call(
     db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
 ) -> None:
     await create_email_account(last_scan_uid=None)
@@ -103,18 +118,17 @@ async def test_scan_all_accounts_tier1_hit_avoids_llm_call(
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
     monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
-    db.add(scheduler.AppSettings(key="classifier_trusted_senders", value="trusted@example.com"))
-    await db.commit()
 
     await scheduler.scan_all_accounts()
 
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert extraction_logs[0].classification_tier == 1
+    mock_ai_service.analyze_email.assert_not_awaited()
     mock_ai_service.classify_email.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_scan_all_accounts_tier3_enriches_context_before_llm(
+async def test_scan_all_accounts_tier3_uses_raw_body_and_from_for_llm(
     db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
 ) -> None:
     await create_email_account(last_scan_uid=None)
@@ -140,19 +154,22 @@ async def test_scan_all_accounts_tier3_enriches_context_before_llm(
     monkeypatch.setattr(scheduler, "get_db", override_get_db)
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
-    mock_ai_service.classify_email.return_value = False
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        is_invoice_related=False,
+        invoice_confidence=0.4,
+        skip_reason="非发票",
+    )
 
     await scheduler.scan_all_accounts()
 
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert extraction_logs[0].outcome == "not_invoice"
     assert extraction_logs[0].classification_tier == 3
-    mock_ai_service.classify_email.assert_awaited_once()
-    _, subject, body = mock_ai_service.classify_email.await_args.args
-    assert subject == "Portal update"
-    assert "From: sender@test" in body
-    assert "Attachments: none" in body
-    assert "Links: https://example.com/account" in body
+    kwargs = mock_ai_service.analyze_email.await_args.kwargs
+    assert kwargs["subject"] == "Portal update"
+    assert kwargs["from_addr"] == "sender@test"
+    assert kwargs["body"] == email.body_text
+    assert kwargs["body_links"] == ["https://example.com/account"]
 
 
 @pytest.mark.asyncio
@@ -243,7 +260,7 @@ async def test_scan_all_accounts_rollback_on_scanner_error(
 @pytest.mark.asyncio
 async def test_scan_all_accounts_marks_progress_error_and_reraises_on_outer_failure(
     monkeypatch: pytest.MonkeyPatch,
-    settings,  # ensures get_settings() has required env vars in CI
+    settings,
 ) -> None:
     del settings
 
@@ -324,6 +341,35 @@ def test_guess_filename_from_link(url: str, content_type: str | None, expected: 
     assert scheduler._guess_filename_from_link(url, content_type) == expected
 
 
+def test_prioritize_raw_items_prefers_pdf_then_ofd_then_xml() -> None:
+    items = [
+        ("a.xml", b"1"),
+        ("b.bin", b"2"),
+        ("c.ofd", b"3"),
+        ("d.pdf", b"4"),
+    ]
+
+    assert [name for name, _ in scheduler._prioritize_raw_items(items)] == ["d.pdf", "c.ofd", "a.xml", "b.bin"]
+
+
+def test_prioritize_raw_items_with_hints_respects_pdf_first_confirmation() -> None:
+    items = [("invoice.xml", b"1"), ("invoice.pdf", b"2")]
+
+    prioritized = scheduler._prioritize_raw_items_with_hints(items, [InvoiceFormat.PDF, InvoiceFormat.XML])
+
+    assert [name for name, _ in prioritized] == ["invoice.pdf", "invoice.xml"]
+
+
+def test_prioritize_raw_items_with_hints_ofd_fallback() -> None:
+    items = [("doc.ofd", b"1"), ("doc.pdf", b"2"), ("doc.xml", b"3")]
+
+    prioritized = scheduler._prioritize_raw_items_with_hints(items, [InvoiceFormat.PDF])
+
+    names = [name for name, _ in prioritized]
+    assert names[0] == "doc.pdf"
+    assert names.index("doc.ofd") < names.index("doc.xml")
+
+
 @pytest.mark.asyncio
 async def test_download_linked_invoice_success(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
@@ -393,6 +439,11 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
     async def override_get_db():
         yield db
 
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        is_invoice_related=False,
+        invoice_confidence=0.2,
+        skip_reason="非发票",
+    )
     monkeypatch.setattr(scheduler, "get_db", override_get_db)
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
@@ -407,7 +458,7 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
     assert logs[0].emails_scanned == 2
     assert logs[0].invoices_found == 0
     assert [item.outcome for item in extraction_logs] == ["not_invoice", "low_confidence"]
-    assert [item.classification_tier for item in extraction_logs] == [1, 2]
+    assert [item.classification_tier for item in extraction_logs] == [1, 1]
     assert extraction_logs[1].error_detail == "invoice_no missing"
 
 
@@ -461,19 +512,19 @@ async def test_scan_all_accounts_embedding_failure_logs_warning(
 
 
 @pytest.mark.asyncio
-async def test_scan_all_accounts_downloads_invoice_links(
+async def test_scan_all_accounts_downloads_single_invoice_link(
     db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
 ) -> None:
     _account = await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="link-2",
-        subject="Invoice Link",
-        body_text="download at https://example.com/invoice.xml",
+        subject="Portal message",
+        body_text="Please review the latest portal notice for your account. " * 30,
         body_html="",
         from_addr="sender@test",
         received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         attachments=[],
-        body_links=["https://example.com/invoice.xml", "https://example.com/invoice.xml"],
+        body_links=["https://example.com/file-a", "https://example.com/file-b"],
     )
     parsed = ParsedInvoice(
         invoice_no="INV-LINK-1",
@@ -499,6 +550,12 @@ async def test_scan_all_accounts_downloads_invoice_links(
 
     download_calls: list[str] = []
 
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        best_download_url="https://example.com/file-a",
+        url_confidence=0.95,
+        url_kind=UrlKind.DIRECT_FILE,
+    )
+
     async def fake_download(url: str):
         download_calls.append(url)
         return ("download.xml", b"<invoice />")
@@ -515,7 +572,55 @@ async def test_scan_all_accounts_downloads_invoice_links(
     invoices = (await db.execute(select(Invoice))).scalars().all()
     assert len(invoices) == 1
     assert invoices[0].invoice_no == "INV-LINK-1"
-    assert download_calls == ["https://example.com/invoice.xml"]
+    assert download_calls == ["https://example.com/file-a"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_resolves_safelink_before_download(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="link-safe-1",
+        subject="Portal message",
+        body_text="Please review the latest portal notice for your account. " * 30,
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=["https://safe.example.com"],
+    )
+    parsed = ParsedInvoice(invoice_no="INV-SAFE-1", raw_text="raw", confidence=0.9)
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    download_mock = AsyncMock(return_value=("download.pdf", b"pdf"))
+    resolve_mock = AsyncMock(return_value="https://real.example.com/file.pdf")
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        best_download_url="https://safe.example.com",
+        url_confidence=0.9,
+        url_is_safelink=True,
+        url_kind=UrlKind.SAFELINK_WRAPPED,
+    )
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_resolve_safelink", resolve_mock)
+    monkeypatch.setattr(scheduler, "_download_linked_invoice", download_mock)
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    resolve_mock.assert_awaited_once_with("https://safe.example.com")
+    download_mock.assert_awaited_once_with("https://real.example.com/file.pdf")
 
 
 @pytest.mark.asyncio
@@ -525,13 +630,13 @@ async def test_scan_all_accounts_skips_failed_link_download(
     await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="link-fail-1",
-        subject="Invoice Link",
-        body_text="download at https://example.com/invoice.xml",
+        subject="Portal message",
+        body_text="Please review the latest portal notice for your account. " * 30,
         body_html="",
         from_addr="sender@test",
         received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         attachments=[],
-        body_links=["https://example.com/invoice.xml"],
+        body_links=["https://example.com/file-a"],
     )
 
     class FakeScanner:
@@ -542,6 +647,11 @@ async def test_scan_all_accounts_skips_failed_link_download(
     async def override_get_db():
         yield db
 
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        best_download_url="https://example.com/file-a",
+        url_confidence=0.92,
+        url_kind=UrlKind.DIRECT_FILE,
+    )
     parse_calls: list[tuple[str, bytes]] = []
 
     def fake_parse_invoice(filename: str, payload: bytes):
@@ -562,6 +672,47 @@ async def test_scan_all_accounts_skips_failed_link_download(
     assert parse_calls == []
     assert logs[0].emails_scanned == 1
     assert logs[0].invoices_found == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_skips_download_when_best_download_url_missing(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="link-none-1",
+        subject="Portal message",
+        body_text="Please review the latest portal notice for your account. " * 30,
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=["https://example.com/invoice-portal"],
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    mock_ai_service.analyze_email.return_value = make_analysis(best_download_url=None)
+    download_mock = AsyncMock(return_value=("download.xml", b"<invoice />"))
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_download_linked_invoice", download_mock)
+
+    await scheduler.scan_all_accounts()
+
+    download_mock.assert_not_awaited()
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    logs = (await db.execute(select(ScanLog))).scalars().all()
+    assert invoices == []
+    assert logs[0].emails_scanned == 1
 
 
 @pytest.mark.asyncio
@@ -653,6 +804,114 @@ async def test_scan_all_accounts_logs_low_confidence_even_after_llm_enrichment(
     assert invoices == []
     assert extraction_logs[0].outcome == "low_confidence"
     assert extraction_logs[0].confidence == 0.2
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_prioritizes_pdf_by_llm_hints(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="hint-1",
+        subject="Portal documents",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.xml", payload=b"xml", content_type="application/xml")],
+        body_links=["https://example.com/invoice.pdf"],
+    )
+    parse_calls: list[str] = []
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    def fake_parse_invoice(filename: str, payload: bytes) -> ParsedInvoice:
+        del payload
+        parse_calls.append(filename)
+        if filename.endswith(".pdf"):
+            return ParsedInvoice(invoice_no="INV-HINT-1", raw_text="raw", confidence=0.9)
+        raise RuntimeError("xml should not be processed first")
+
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        best_download_url="https://example.com/invoice.pdf",
+        url_confidence=0.9,
+        url_kind=UrlKind.DIRECT_FILE,
+        extraction_hints={
+            "platform": InvoicePlatform.NUONUO,
+            "likely_formats": [InvoiceFormat.PDF, InvoiceFormat.XML],
+        },
+    )
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_download_linked_invoice", AsyncMock(return_value=("download.pdf", b"pdf")))
+    monkeypatch.setattr(scheduler, "parse_invoice", fake_parse_invoice)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    assert parse_calls[0] == "download.pdf"
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_prioritizes_pdf_download_when_no_attachment_strong_positive(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="hint-2",
+        subject="Invoice ready",
+        body_text="请下载发票",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.bin", payload=b"bin", content_type="application/octet-stream")],
+        body_links=["https://example.com/invoice.pdf"],
+    )
+    parse_calls: list[str] = []
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    def fake_parse_invoice(filename: str, payload: bytes) -> ParsedInvoice:
+        del payload
+        parse_calls.append(filename)
+        if filename.endswith(".pdf"):
+            return ParsedInvoice(invoice_no="INV-HINT-2", raw_text="raw", confidence=0.9)
+        raise RuntimeError("binary attachment should not be processed first")
+
+    mock_ai_service.analyze_email.return_value = make_analysis(
+        best_download_url="https://example.com/invoice.pdf",
+        url_confidence=0.9,
+        url_kind=UrlKind.DIRECT_FILE,
+        extraction_hints={
+            "platform": InvoicePlatform.NUONUO,
+            "likely_formats": [InvoiceFormat.PDF, InvoiceFormat.XML],
+        },
+    )
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_download_linked_invoice", AsyncMock(return_value=("download.pdf", b"pdf")))
+    monkeypatch.setattr(scheduler, "parse_invoice", fake_parse_invoice)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    assert parse_calls[0] == "download.pdf"
 
 
 @pytest.mark.asyncio
