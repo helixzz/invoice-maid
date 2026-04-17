@@ -35,6 +35,7 @@ jobs:
           . .venv/bin/activate
           pip install --upgrade pip
           pip install -e ".[dev]"
+          pip install sqlite-vec pyzbar easyofd || echo "Optional native deps unavailable — tests will skip affected paths"
 
       - name: Run backend tests with 100% coverage
         run: |
@@ -75,6 +76,7 @@ jobs:
           . .venv/bin/activate
           pip install --upgrade pip
           pip install -e ".[dev]"
+          pip install sqlite-vec pyzbar easyofd || echo "Optional native deps unavailable"
 
       - name: Install frontend dependencies
         run: npm ci
