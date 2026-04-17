@@ -223,6 +223,7 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
 
     text = _extract_text_from_pdf(content)
     if not text:
+        logger.info("PDF parser falling back to PyMuPDF text extraction")
         text = _extract_text_pymupdf(content)
     result.raw_text = text
 
@@ -240,15 +241,18 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
             result.invoice_type = regex_result.invoice_type
         if not result.item_summary:
             result.item_summary = regex_result.item_summary
+        logger.debug("Parsed PDF invoice with method qr")
         return result
 
     regex_result = _extract_from_regex(text)
     if regex_result.confidence >= 0.6:
         regex_result.source_format = "pdf"
+        logger.debug("Parsed PDF invoice with method regex")
         return regex_result
 
     result.extraction_method = "llm"
     result.confidence = 0.0
+    logger.error("PDF parsing failed for file: all extraction strategies exhausted")
     return result
 
 
@@ -297,6 +301,7 @@ def parse_xml(content: bytes) -> ParsedInvoice:
 
         found = sum(1 for value in [result.invoice_no, result.buyer, result.seller, result.amount] if value is not None)
         result.confidence = found / 4.0
+        logger.debug("Parsed XML invoice with method xml_xpath")
     except Exception as exc:
         logger.error("XML parsing failed: %s", exc)
         result.raw_text = content.decode("utf-8", errors="ignore")
@@ -345,6 +350,7 @@ def parse_ofd(content: bytes) -> ParsedInvoice:
                 result.confidence = 0.0
         finally:
             ofd.del_data()
+        logger.debug("Parsed OFD invoice with method ofd_struct")
     except ImportError:
         logger.warning("easyofd not installed — OFD parsing unavailable")
         result.confidence = 0.0

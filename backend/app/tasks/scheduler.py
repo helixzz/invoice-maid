@@ -154,7 +154,7 @@ async def scan_all_accounts() -> None:
                             if settings.sqlite_vec_available:
                                 try:
                                     search_text = f"{parsed.buyer} {parsed.seller} {parsed.item_summary or ''}"
-                                    embedding = await ai.embed_text(search_text)
+                                    embedding = await ai.embed_text(search_text, db)
                                     await store_embedding(db, invoice.id, embedding)
                                 except Exception as exc:
                                     logger.warning(
@@ -201,6 +201,10 @@ def start_scheduler(settings: Settings) -> None:
     scheduler.start()
     _scheduler = scheduler
     logger.info("Scheduler started. Scan interval: %d minutes", settings.SCAN_INTERVAL_MINUTES)
+
+
+def get_scheduler() -> AsyncIOScheduler | None:
+    return _scheduler
 
 
 def stop_scheduler() -> None:

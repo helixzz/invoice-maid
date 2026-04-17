@@ -9,10 +9,12 @@ from email import policy
 from email.utils import parsedate_to_datetime
 import functools
 import hashlib
+import imaplib
 import json
 import logging
 import poplib
 import re
+import ssl
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -22,13 +24,19 @@ from typing import Any, cast
 
 import httpx
 import msal
+from msal.exceptions import MsalServiceError
 from cryptography.fernet import Fernet
 from imap_tools import AND, MailBox
+from imap_tools.errors import MailboxLoginError
 
 from app.config import get_settings
 from app.models import EmailAccount
 
 logger = logging.getLogger(__name__)
+
+IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError)
+POP3_CONNECTION_ERRORS = (OSError, ssl.SSLError, poplib.error_proto)
+OUTLOOK_CONNECTION_ERRORS = (OSError, httpx.HTTPError, MsalServiceError)
 
 URL_PATTERN = re.compile(r'https?://[^\s<>"\']+')
 TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -180,8 +188,8 @@ class ImapScanner(BaseEmailScanner):
         try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, functools.partial(self._test_sync, account))
-        except Exception:
-            logger.exception("IMAP connection test failed for account %s", account.id)
+        except IMAP_CONNECTION_ERRORS as exc:
+            logger.exception("IMAP connection test failed for account %s: %s", account.id, exc)
             return False
 
     def _test_sync(self, account: EmailAccount) -> bool:
@@ -270,7 +278,7 @@ class Pop3Scanner(BaseEmailScanner):
         finally:
             try:
                 mailbox.quit()
-            except Exception:
+            except POP3_CONNECTION_ERRORS:
                 mailbox.close()
 
         return emails
@@ -279,8 +287,8 @@ class Pop3Scanner(BaseEmailScanner):
         try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, functools.partial(self._test_sync, account))
-        except Exception:
-            logger.exception("POP3 connection test failed for account %s", account.id)
+        except POP3_CONNECTION_ERRORS as exc:
+            logger.exception("POP3 connection test failed for account %s: %s", account.id, exc)
             return False
 
     def _test_sync(self, account: EmailAccount) -> bool:
@@ -293,7 +301,7 @@ class Pop3Scanner(BaseEmailScanner):
         finally:
             try:
                 mailbox.quit()
-            except Exception:
+            except POP3_CONNECTION_ERRORS:
                 mailbox.close()
 
     def _load_recent_ids(self, raw_value: str | None) -> set[str]:
@@ -320,7 +328,7 @@ class Pop3Scanner(BaseEmailScanner):
                     header_value = headers.get("Message-ID") or headers.get("Message-Id")
                 else:
                     header_value = headers["Message-ID"]
-            except Exception:
+            except (AttributeError, KeyError, TypeError):
                 header_value = None
 
             if isinstance(header_value, list):
@@ -416,8 +424,8 @@ class OutlookScanner(BaseEmailScanner):
                 )
                 response.raise_for_status()
             return True
-        except Exception:
-            logger.exception("Outlook connection test failed for account %s", account.id)
+        except OUTLOOK_CONNECTION_ERRORS as exc:
+            logger.exception("Outlook connection test failed for account %s: %s", account.id, exc)
             return False
 
     async def _acquire_access_token(self, account: EmailAccount) -> str:

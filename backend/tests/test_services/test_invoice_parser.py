@@ -174,6 +174,13 @@ def test_extract_from_regex() -> None:
 
 
 def test_parse_pdf_qr_regex_and_llm_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    debug_logs: list[str] = []
+    info_logs: list[str] = []
+    error_logs: list[str] = []
+    monkeypatch.setattr(parser.logger, "debug", lambda message, *args: debug_logs.append(message % args))
+    monkeypatch.setattr(parser.logger, "info", lambda message, *args: info_logs.append(message % args))
+    monkeypatch.setattr(parser.logger, "error", lambda message, *args: error_logs.append(message % args))
+
     monkeypatch.setattr(parser, "_decode_qr_from_pdf", lambda content: {"invoice_no": "001", "amount_str": "88.00", "invoice_date_str": "20240102"})
     monkeypatch.setattr(parser, "_extract_text_from_pdf", lambda content: "购买方名称：甲方\n纳税人识别号\n销售方名称：乙方\n纳税人识别号")
     monkeypatch.setattr(parser, "_extract_text_pymupdf", lambda content: "")
@@ -181,6 +188,7 @@ def test_parse_pdf_qr_regex_and_llm_paths(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.extraction_method == "qr"
     assert result.invoice_no == "001"
     assert result.buyer == "甲方"
+    assert debug_logs[-1] == "Parsed PDF invoice with method qr"
 
     monkeypatch.setattr(parser, "_decode_qr_from_pdf", lambda content: None)
     monkeypatch.setattr(
@@ -191,12 +199,15 @@ def test_parse_pdf_qr_regex_and_llm_paths(monkeypatch: pytest.MonkeyPatch) -> No
     regex_result = parser.parse_pdf(b"pdf")
     assert regex_result.extraction_method == "regex"
     assert regex_result.source_format == "pdf"
+    assert debug_logs[-1] == "Parsed PDF invoice with method regex"
 
     monkeypatch.setattr(parser, "_extract_text_from_pdf", lambda content: "")
     monkeypatch.setattr(parser, "_extract_text_pymupdf", lambda content: "")
     llm_result = parser.parse_pdf(b"pdf")
     assert llm_result.extraction_method == "llm"
     assert llm_result.confidence == 0.0
+    assert info_logs[-1] == "PDF parser falling back to PyMuPDF text extraction"
+    assert error_logs[-1] == "PDF parsing failed for file: all extraction strategies exhausted"
 
 
 def test_parse_pdf_qr_fills_remaining_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,6 +254,9 @@ def test_parse_pdf_qr_preserves_existing_fields(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_parse_xml_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    debug_logs: list[str] = []
+    monkeypatch.setattr(parser.logger, "debug", lambda message, *args: debug_logs.append(message % args))
+
     class Root:
         def find(self, path):
             mapping = {
@@ -271,6 +285,7 @@ def test_parse_xml_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.buyer == "甲方"
     assert result.seller == "乙方"
     assert result.item_summary == "办公用品"
+    assert debug_logs[-1] == "Parsed XML invoice with method xml_xpath"
 
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: (_ for _ in ()).throw(RuntimeError("bad")))
     failed = parser.parse_xml(b"<xml />")
@@ -295,6 +310,9 @@ def test_parse_xml_missing_optional_fields(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_parse_ofd_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    debug_logs: list[str] = []
+    monkeypatch.setattr(parser.logger, "debug", lambda message, *args: debug_logs.append(message % args))
+
     class FakeOFD:
         def __init__(self):
             self.data = [{"InvoiceNo": "001", "BuyerName": "甲方", "SellerName": "乙方", "TaxInclusiveTotalAmount": "99.00", "InvoiceDate": "20240102"}]
@@ -310,6 +328,7 @@ def test_parse_ofd_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     result = parser.parse_ofd(b"ofd")
     assert result.invoice_no == "001"
     assert result.confidence == 1.0
+    assert debug_logs[-1] == "Parsed OFD invoice with method ofd_struct"
 
     class EmptyOFD(FakeOFD):
         def __init__(self):
@@ -317,6 +336,7 @@ def test_parse_ofd_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: SimpleNamespace(OFD=EmptyOFD))
     assert parser.parse_ofd(b"ofd").confidence == 0.0
+    assert debug_logs[-1] == "Parsed OFD invoice with method ofd_struct"
 
     def raise_import_error(name):
         del name

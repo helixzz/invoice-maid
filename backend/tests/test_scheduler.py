@@ -184,11 +184,13 @@ def test_start_and_stop_scheduler(monkeypatch: pytest.MonkeyPatch, settings) -> 
     scheduler.start_scheduler(settings)
     assert captured["minutes"] == settings.SCAN_INTERVAL_MINUTES
     existing = scheduler._scheduler
+    assert scheduler.get_scheduler() is existing
     scheduler.start_scheduler(settings)
     assert scheduler._scheduler is existing
     scheduler.stop_scheduler()
     assert captured["shutdown_wait"] is False
     assert scheduler._scheduler is None
+    assert scheduler.get_scheduler() is None
     scheduler.stop_scheduler()
 
 
