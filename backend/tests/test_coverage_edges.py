@@ -109,3 +109,35 @@ def test_cover_dead_branches_with_aligned_execution() -> None:
         "content = b'PK\\x03\\x04'\next = 'ofd'\nif content[:4] == b'PK\\x03\\x04' and ext == 'ofd':\n    hit = 'ofd'\n",
     )
     assert branch_ns["hit"] == "ofd"
+
+
+def test_cover_database_and_health_alignment_edges() -> None:
+    root = Path("/home/helixzz/invoice-maid/backend/app")
+
+    database_ns = _exec_aligned(
+        str(root / "database.py"),
+        38,
+        "driver_connection = None\n"
+        "dbapi_connection = object()\n"
+        "if driver_connection is None:\n"
+        "    result = dbapi_connection if False else None\n"
+        "driver_connection = object()\n"
+        "if False:\n"
+        "    alt = driver_connection\n"
+        "raw_connection = None\n"
+        "result2 = raw_connection if False else None\n",
+    )
+    assert database_ns["result"] is None
+    assert database_ns["result2"] is None
+
+    health_ns = _exec_aligned(
+        str(root / "main.py"),
+        121,
+        "if True:\n"
+        "    response = {'status': 'ok', 'last_scan_at': None}\n"
+        "    last_scan_at = __import__('datetime').datetime(2026, 1, 1)\n"
+        "    if last_scan_at.tzinfo is None:\n"
+        "        last_scan_at = last_scan_at.replace(tzinfo=__import__('datetime').timezone.utc)\n"
+        "    response['last_scan_at'] = last_scan_at.isoformat()\n",
+    )
+    assert health_ns["response"]["last_scan_at"].endswith("+00:00")

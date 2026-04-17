@@ -116,6 +116,50 @@ async def test_init_db_uses_existing_engine_path(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_init_db_raises_when_session_factory_missing_after_create_all(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'missing-session.db'}"
+    engine, _ = database.create_engine_and_session(db_url)
+    original_create_all = database.Base.metadata.create_all
+
+    def clear_session_factory(*args, **kwargs):
+        original_create_all(*args, **kwargs)
+        database._session_factory = None
+
+    monkeypatch.setattr(database.Base.metadata, "create_all", clear_session_factory)
+
+    with pytest.raises(RuntimeError, match="session factory"):
+        await database.init_db()
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reset_embedding_objects_requires_bound_engine() -> None:
+    session = __import__("sqlalchemy").ext.asyncio.AsyncSession()
+    database._engine = None
+
+    with pytest.raises(RuntimeError, match="embedding reset"):
+        await database.reset_embedding_objects(session, embed_dim=8, sqlite_vec_requested=False)
+
+
+@pytest.mark.asyncio
+async def test_reset_embedding_objects_recreates_table(tmp_path) -> None:
+    engine, factory = database.create_engine_and_session(f"sqlite+aiosqlite:///{tmp_path / 'reset.db'}")
+
+    try:
+        async with factory() as session:
+            available = await database.reset_embedding_objects(session, embed_dim=5, sqlite_vec_requested=False)
+            assert available is False
+
+        async with engine.begin() as conn:
+            result = await conn.execute(text("PRAGMA table_info(invoice_embeddings)"))
+            columns = [row[1] for row in result.fetchall()]
+            assert columns == ["rowid", "embedding"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_embedding_objects_falls_back_when_vec_table_fails(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     engine, _ = database.create_engine_and_session(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
 
