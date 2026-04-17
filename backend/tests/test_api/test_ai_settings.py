@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import httpx
+import openai
 from sqlalchemy import select
 
 import app.api.ai_settings as ai_settings_api
@@ -10,7 +11,7 @@ import app.database as database_module
 import app.services.ai_service as ai_service_module
 from app.models import AppSettings
 from app.services.email_scanner import decrypt_password
-from app.services.settings_resolver import invalidate_ai_settings_cache, resolve_ai_settings
+from app.services.settings_resolver import SettingsResolver, invalidate_ai_settings_cache, resolve_ai_settings
 
 
 async def test_get_ai_settings_returns_masked_values(client, auth_headers, db, settings) -> None:
@@ -182,6 +183,64 @@ async def test_get_ai_models_handles_upstream_failure(client, auth_headers, monk
 
     assert response.status_code == 502
     assert response.json() == {"detail": "Failed to fetch models from upstream"}
+
+
+async def test_test_ai_connection_success(client, auth_headers, monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))]
+            )
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, base_url: str, api_key: str):
+            assert base_url == "https://llm.invalid/v1"
+            assert api_key == "test-key"
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    response = await client.post("/api/v1/settings/ai/test-connection", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "model": "test-model", "detail": "OK"}
+    assert calls == [{
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Say OK"}],
+        "max_tokens": 5,
+        "timeout": 10.0,
+    }]
+
+
+async def test_test_ai_connection_failure(client, auth_headers, monkeypatch) -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            del kwargs
+            raise openai.APIConnectionError(message="boom", request=None)
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, base_url: str, api_key: str):
+            del base_url, api_key
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    response = await client.post("/api/v1/settings/ai/test-connection", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["model"] == "test-model"
+    assert "boom" in body["detail"]
+
+
+async def test_settings_resolver_falls_back_to_settings_for_unknown_key(db, settings) -> None:
+    resolver = SettingsResolver(db)
+
+    assert await resolver.get("JWT_SECRET") == settings.JWT_SECRET
 
 
 async def test_ai_settings_requires_authentication(client) -> None:

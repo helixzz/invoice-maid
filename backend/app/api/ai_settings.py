@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
+import openai
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +13,11 @@ from app.deps import CurrentUser
 from app.models import AppSettings
 from app.schemas.ai_settings import AISettingsResponse, AISettingsUpdate, ModelListResponse
 from app.services.email_scanner import encrypt_password
-from app.services.settings_resolver import invalidate_ai_settings_cache, resolve_ai_settings
+from app.services.settings_resolver import (
+    SettingsResolver,
+    invalidate_ai_settings_cache,
+    resolve_ai_settings,
+)
 
 router = APIRouter(prefix="/settings/ai", tags=["settings"])
 
@@ -97,3 +104,26 @@ async def list_ai_models(
         ) from exc
 
     return ModelListResponse(models=models)
+
+
+@router.post("/test-connection")
+async def test_ai_connection(
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    resolver = SettingsResolver(db)
+    base_url = await resolver.get("LLM_BASE_URL")
+    api_key = await resolver.get("LLM_API_KEY")
+    model = await resolver.get("LLM_MODEL")
+
+    try:
+        client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=5,
+            timeout=10.0,
+        )
+        return {"ok": True, "model": model, "detail": response.choices[0].message.content}
+    except Exception as exc:
+        return {"ok": False, "model": model, "detail": str(exc)[:500]}
