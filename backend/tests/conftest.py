@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date
 from decimal import Decimal
@@ -50,6 +51,7 @@ from app.rate_limiter import limiter
 import app.services.auth_service as auth_service_module
 import app.services.ai_service as ai_service_module
 import app.services.email_scanner as email_scanner_module
+import app.services.scan_progress as scan_progress_module
 import app.services.settings_resolver as settings_resolver_module
 import app.tasks.scheduler as scheduler_module
 from app.config import Settings
@@ -167,6 +169,17 @@ def clear_oauth_registry() -> None:
     oauth_registry._flows.clear()
     yield
     oauth_registry._flows.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_scan_progress_state() -> None:
+    scan_progress_module._progress = scan_progress_module.ScanProgress()
+    scan_progress_module._subscribers.clear()
+    scan_progress_module._scan_lock = asyncio.Lock()
+    yield
+    scan_progress_module._progress = scan_progress_module.ScanProgress()
+    scan_progress_module._subscribers.clear()
+    scan_progress_module._scan_lock = asyncio.Lock()
 
 
 @pytest.fixture

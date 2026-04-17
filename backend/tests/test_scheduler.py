@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 import app.tasks.scheduler as scheduler
 from app.models import ExtractionLog, Invoice, ScanLog, WebhookLog
+from app.services import scan_progress as sp
 from app.services.email_scanner import RawAttachment, RawEmail
 from app.services.invoice_parser import ParsedInvoice
 
@@ -155,6 +156,28 @@ async def test_scan_all_accounts_rollback_on_scanner_error(
 
     logs = (await db.execute(select(ScanLog))).scalars().all()
     assert logs[0].error_message == "scanner failed"
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_marks_progress_error_and_reraises_on_outer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenDBIterator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise RuntimeError("db failed")
+
+    def broken_get_db():
+        return BrokenDBIterator()
+
+    monkeypatch.setattr(scheduler, "get_db", broken_get_db)
+
+    with pytest.raises(RuntimeError, match="db failed"):
+        await scheduler.scan_all_accounts()
+
+    assert sp.get_progress().phase is sp.ScanPhase.ERROR
 
 
 def test_start_and_stop_scheduler(monkeypatch: pytest.MonkeyPatch, settings) -> None:
