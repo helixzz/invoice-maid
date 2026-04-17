@@ -68,6 +68,7 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 - **Advanced Search**: Full-text search via SQLite FTS5 and optional semantic search using vector embeddings.
 - **Web UI**: Modern dashboard for invoice searching, date filtering, PDF previews, and batch ZIP downloads.
 - **Secure Access**: Single-user admin authentication with JWT.
+- **Operational Guardrails**: Login rate limiting and a rich health endpoint for runtime visibility.
 
 ---
 
