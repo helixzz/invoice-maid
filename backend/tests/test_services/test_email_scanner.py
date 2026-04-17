@@ -727,7 +727,7 @@ async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=9, name="o", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 

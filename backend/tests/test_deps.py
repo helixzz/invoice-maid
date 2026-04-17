@@ -46,7 +46,7 @@ def test_get_current_user_returns_subject() -> None:
     assert __import__("asyncio").run(deps.get_current_user(authorization=f"Bearer {token}")) == "admin"
 
 
-def test_get_current_user_prefers_query_token() -> None:
+def test_get_current_user_prefers_query_token(settings) -> None:
     token = create_access_token({"sub": "admin"})
 
     assert __import__("asyncio").run(
