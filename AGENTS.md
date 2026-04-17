@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v0.1.0 — Feature complete.** All core features implemented, 100% test coverage, ready for deployment.
+**v0.2.0 — Feature complete.** Reliability hardening, data quality, export, branding, AI settings, and operational improvements. 195 tests, 100% coverage.
 
 ## STRUCTURE
 
@@ -20,14 +20,14 @@ invoice-maid/
 │   │   ├── config.py            # Pydantic Settings from .env
 │   │   ├── database.py          # Async SQLAlchemy + FTS5 + sqlite-vec
 │   │   ├── deps.py              # Auth dependency (CurrentUser)
-│   │   ├── models/              # SQLAlchemy 2.0 ORM (Invoice, EmailAccount, ScanLog, LLMCache)
+│   │   ├── models/              # SQLAlchemy 2.0 ORM (Invoice, EmailAccount, ScanLog, LLMCache, AppSettings, ExtractionLog, CorrectionLog, SavedView, WebhookLog)
 │   │   ├── schemas/             # Pydantic request/response schemas
-│   │   ├── api/                 # FastAPI routers (auth, invoices, downloads, accounts, scan)
-│   │   ├── services/            # Business logic (AI, email scanner, invoice parser, file manager, search)
+│   │   ├── api/                 # FastAPI routers (auth, invoices, downloads, accounts, scan, stats, views, ai_settings, test_helpers)
+│   │   ├── services/            # Business logic (AI, email scanner, invoice parser, file manager, search, settings resolver)
 │   │   ├── tasks/               # APScheduler scan orchestration
 │   │   └── prompts/             # LLM prompt templates (classify, extract)
 │   ├── alembic/                 # DB migrations
-│   ├── tests/                   # 92 tests, 100% coverage
+│   ├── tests/                   # 195 tests, 100% coverage
 │   ├── pyproject.toml
 │   └── .env.example
 ├── frontend/
@@ -47,6 +47,7 @@ invoice-maid/
 | Email scanning | `backend/app/services/email_scanner.py` | 4 scanner implementations |
 | Invoice parsing | `backend/app/services/invoice_parser.py` | PDF/XML/OFD + QR decode |
 | LLM integration | `backend/app/services/ai_service.py` | instructor + cache |
+| AI settings | `backend/app/services/settings_resolver.py` | DB-backed config with .env fallback |
 | Scheduler | `backend/app/tasks/scheduler.py` | APScheduler scan_all_accounts |
 | Frontend views | `frontend/src/views/` | Login, InvoiceList, InvoiceDetail, Settings |
 | Config reference | `backend/.env.example` | All env vars documented |
