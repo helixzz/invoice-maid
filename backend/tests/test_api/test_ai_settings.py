@@ -330,7 +330,7 @@ async def test_ai_service_uses_database_overrides(db, settings, monkeypatch) -> 
 
     result = SimpleNamespace(
         is_invoice_related=True,
-        model_dump_json=lambda: '{"is_invoice_related":true,"confidence":0.9,"reason":"ok"}',
+        model_dump_json=lambda: '{"is_invoice_related":true,"invoice_confidence":0.9,"best_download_url":null,"url_confidence":0.0,"url_is_safelink":false,"url_kind":"none","extraction_hints":{"platform":"unknown","likely_formats":[],"invoice_type_hint":null,"visible_invoice_no":null,"visible_invoice_date":null,"visible_amount":null,"parser_notes":null},"skip_reason":null}',
     )
     calls: list[dict[str, object]] = []
 
