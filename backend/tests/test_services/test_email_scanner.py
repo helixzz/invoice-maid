@@ -16,6 +16,7 @@ import pytest
 import app.services.email_scanner as email_scanner
 from app.models import EmailAccount
 from app.services.email_scanner import (
+    FIRST_SCAN_LIMIT,
     ImapScanner,
     OAuthFlowRegistry,
     OAuthFlowState,
@@ -127,7 +128,7 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
 
         def fetch(self, criteria, limit, reverse):
             del criteria
-            assert limit == 200
+            assert limit is None
             assert reverse is True
             return [msg_old, msg_new]
 
@@ -150,6 +151,39 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
     assert emails[0].uid == "3"
     assert emails[0].body_links == ["https://invoice.test"]
     assert emails[0].attachments[0].filename == "invoice.pdf"
+
+
+def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeMailbox:
+        def __init__(self, host, port):
+            del host, port
+
+        def login(self, username, password):
+            assert username == "user@example.com"
+            assert password == "secret"
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit, reverse):
+            captured.update({"criteria": criteria, "limit": limit, "reverse": reverse})
+            return []
+
+    monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs or {"all": True})
+    monkeypatch.setattr(email_scanner, "MailBox", FakeMailbox)
+    account = EmailAccount(
+        id=1,
+        name="imap",
+        type="imap",
+        host="imap.example.com",
+        port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+
+    ImapScanner()._scan_sync(account, None)
+
+    assert captured == {"criteria": {"seen": False}, "limit": FIRST_SCAN_LIMIT, "reverse": True}
 
 
 @pytest.mark.asyncio
@@ -298,6 +332,29 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
     emails = scanner._scan_sync(account, json.dumps(["already-seen"]))
     assert emails[0].uid == "mid-1"
     assert emails[0].attachments[0].filename == "invoice.xml"
+
+    retr_indexes: list[int] = []
+
+    class PaginationPop3(FakePop3):
+        def list(self):
+            return b"+OK", [f"{idx} 123".encode() for idx in range(1, 6)], 123
+
+        def retr(self, index):
+            retr_indexes.append(index)
+            payload = b"\r\n".join(
+                [
+                    b"From: sender",
+                    f"Subject: {index}".encode(),
+                    b"Date: Mon, 01 Jan 2024 00:00:00 +0000",
+                    f"Message-ID: mid-{index}".encode(),
+                    b"",
+                ]
+            )
+            return b"+OK", payload.split(b"\r\n"), len(payload)
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", PaginationPop3)
+    scanner._scan_sync(account, "mid-3")
+    assert retr_indexes == [5, 4, 3]
 
     class SkipPop3(FakePop3):
         def retr(self, index):
@@ -707,7 +764,7 @@ def test_pop3_message_id_for_handles_specific_header_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
+async def test_outlook_scan_last_uid_and_pagination(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=4, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -721,10 +778,15 @@ async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPat
         def json(self):
             return self._payload
 
-    items = [
+    first_page = [
         {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
-        for idx in range(205)
+        for idx in range(200)
     ]
+    second_page = [
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        for idx in range(200, 205)
+    ]
+    seen_params: list[dict[str, str] | None] = []
 
     class FakeClient:
         async def __aenter__(self):
@@ -735,18 +797,22 @@ async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPat
             return False
 
         async def get(self, url, headers=None, params=None):
-            del url, headers
-            if params is None:
-                return FakeResponse({"value": []})
-            if params and params.get("$top") == "100":
-                return FakeResponse({"value": items, "@odata.nextLink": None})
-            return FakeResponse({"value": []})
+            del headers
+            seen_params.append(params)
+            if url.endswith("/messages"):
+                return FakeResponse({"value": first_page, "@odata.nextLink": "https://graph.microsoft.com/next"})
+            return FakeResponse({"value": second_page, "@odata.nextLink": None})
 
     monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
     monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
     monkeypatch.setattr(scanner, "_fetch_attachments", AsyncMock(return_value=[]))
     emails = await scanner.scan(account, last_uid="other")
-    assert len(emails) == 200
+    assert len(emails) == 205
+    assert seen_params[0] is not None and seen_params[0]["$top"] == "200"
+    assert seen_params[1] is None
+
+    first_scan_emails = await scanner.scan(account, last_uid=None)
+    assert len(first_scan_emails) == 205
 
     class EarlyReturnClient(FakeClient):
         async def get(self, url, headers=None, params=None):
@@ -758,7 +824,50 @@ async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
+async def test_outlook_scan_first_pass_stops_at_first_scan_limit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=11, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+    items = [
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        for idx in range(email_scanner.FIRST_SCAN_LIMIT)
+    ]
+    urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            urls.append(url)
+            return FakeResponse({"value": items, "@odata.nextLink": "https://graph.microsoft.com/next"})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(scanner, "_fetch_attachments", AsyncMock(return_value=[]))
+
+    emails = await scanner.scan(account, last_uid=None)
+
+    assert len(emails) == email_scanner.FIRST_SCAN_LIMIT
+    assert urls == [f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/inbox/messages"]
+
+
+@pytest.mark.asyncio
+async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=9, name="o", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -798,7 +907,7 @@ async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.M
     assert await scanner._fetch_attachments(AttachmentClient(), {}, "") == []
 
 
-def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
+def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     token_path = tmp_path / "oauth" / "cache.json"
     account = EmailAccount(id=5, name="outlook", type="outlook", username="client", oauth_token_path=str(token_path))
@@ -976,7 +1085,7 @@ def test_get_outlook_msal_params_from_type(settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_device_flow_with_path_writes_token(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
+async def test_complete_device_flow_with_path_writes_token(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     token_path = str(tmp_path / "token.json")
     flow = {"device_code": "dc", "interval": 5, "expires_in": 900}
@@ -986,6 +1095,7 @@ async def test_complete_device_flow_with_path_writes_token(monkeypatch: pytest.M
             pass
 
         def acquire_token_by_device_flow(self, flow):
+            del flow
             return {"access_token": "tok123", "token_type": "Bearer"}
 
     class FakeCache:
@@ -1006,7 +1116,7 @@ async def test_complete_device_flow_with_path_writes_token(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_complete_device_flow_with_path_no_token_path(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+async def test_complete_device_flow_with_path_no_token_path(monkeypatch: pytest.MonkeyPatch) -> None:
     scanner = OutlookScanner()
 
     class FakeApp:
@@ -1014,6 +1124,7 @@ async def test_complete_device_flow_with_path_no_token_path(monkeypatch: pytest.
             pass
 
         def acquire_token_by_device_flow(self, flow):
+            del flow
             return {"error": "expired"}
 
     class FakeCache:
@@ -1033,7 +1144,7 @@ async def test_complete_device_flow_with_path_no_token_path(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_acquire_token_sync_raises_when_no_token_path(settings) -> None:
+async def test_acquire_token_sync_raises_when_no_token_path() -> None:
     scanner = OutlookScanner()
     account = email_scanner.EmailAccount(id=99, name="no-path", type="outlook", username="a@b.com", oauth_token_path=None)
     with pytest.raises(RuntimeError, match="Outlook authorization required"):
