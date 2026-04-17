@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import event, text
@@ -185,6 +186,26 @@ async def seed_ai_settings(session: AsyncSession) -> None:
     invalidate_ai_settings_cache()
 
 
+async def seed_classifier_settings(session: AsyncSession) -> None:
+    seeded_at = datetime.now(timezone.utc)
+    defaults = {
+        "classifier_trusted_senders": "",
+        "classifier_extra_keywords": "",
+    }
+    result = await session.execute(select(AppSettings.key).where(AppSettings.key.in_(defaults)))
+    existing_keys = set(result.scalars().all())
+    missing = [
+        AppSettings(key=key, value=value, updated_at=seeded_at)
+        for key, value in defaults.items()
+        if key not in existing_keys
+    ]
+    if not missing:
+        return
+
+    session.add_all(missing)
+    await session.commit()
+
+
 async def reset_embedding_objects(
     session: AsyncSession,
     embed_dim: int,
@@ -221,6 +242,7 @@ async def init_db(database_url: str | None = None) -> None:
 
     async with _session_factory() as session:
         await seed_ai_settings(session)
+        await seed_classifier_settings(session)
 
     await create_fts5_objects(engine)
 

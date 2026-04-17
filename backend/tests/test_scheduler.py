@@ -25,12 +25,12 @@ async def test_scan_all_accounts_happy_path_with_embedding(
     account = await create_email_account(last_scan_uid="1")
     email = RawEmail(
         uid="2",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
         received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-        attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+        attachments=[RawAttachment(filename="doc.pdf", payload=b"pdf", content_type="application/pdf")],
     )
     parsed = ParsedInvoice(
         invoice_no="INV-SCHED-1",
@@ -71,6 +71,88 @@ async def test_scan_all_accounts_happy_path_with_embedding(
     assert account.last_scan_uid == "2"
     assert logs[0].invoices_found == 1
     assert extraction_logs[0].outcome == "saved"
+    assert extraction_logs[0].classification_tier == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_tier1_hit_avoids_llm_call(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="trusted-1",
+        subject="Status",
+        body_text="normal body",
+        body_html="",
+        from_addr="trusted@example.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="doc.pdf", payload=b"pdf", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(invoice_no="INV-TIER1", raw_text="raw", confidence=0.9)
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    db.add(scheduler.AppSettings(key="classifier_trusted_senders", value="trusted@example.com"))
+    await db.commit()
+
+    await scheduler.scan_all_accounts()
+
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert extraction_logs[0].classification_tier == 1
+    mock_ai_service.classify_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_tier3_enriches_context_before_llm(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="tier3-1",
+        subject="Portal update",
+        body_text="Please review the latest portal notice for your account." * 30,
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=["https://example.com/account"],
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    mock_ai_service.classify_email.return_value = False
+
+    await scheduler.scan_all_accounts()
+
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert extraction_logs[0].outcome == "not_invoice"
+    assert extraction_logs[0].classification_tier == 3
+    mock_ai_service.classify_email.assert_awaited_once()
+    _, subject, body = mock_ai_service.classify_email.await_args.args
+    assert subject == "Portal update"
+    assert "From: sender@test" in body
+    assert "Attachments: none" in body
+    assert "Links: https://example.com/account" in body
 
 
 @pytest.mark.asyncio
@@ -81,15 +163,15 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
     await create_invoice(invoice_no="INV-DUPLICATE", email_account=account)
     email = RawEmail(
         uid="uid-9",
-        subject="Invoice",
+        subject="Portal documents",
         body_text="body",
         body_html="",
         from_addr="sender@test",
         received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         attachments=[
-            RawAttachment(filename="duplicate.pdf", payload=b"1", content_type="application/pdf"),
-            RawAttachment(filename="enrich.pdf", payload=b"2", content_type="application/pdf"),
-            RawAttachment(filename="bad.pdf", payload=b"3", content_type="application/pdf"),
+            RawAttachment(filename="duplicate-doc.pdf", payload=b"1", content_type="application/pdf"),
+            RawAttachment(filename="enrich-doc.pdf", payload=b"2", content_type="application/pdf"),
+            RawAttachment(filename="bad-doc.pdf", payload=b"3", content_type="application/pdf"),
         ],
     )
     parsed_results = iter(
@@ -163,6 +245,8 @@ async def test_scan_all_accounts_marks_progress_error_and_reraises_on_outer_fail
     monkeypatch: pytest.MonkeyPatch,
     settings,  # ensures get_settings() has required env vars in CI
 ) -> None:
+    del settings
+
     class BrokenDBIterator:
         def __aiter__(self):
             return self
@@ -296,11 +380,9 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
     settings.sqlite_vec_available = True
     _account = await create_email_account(last_scan_uid=None)
     emails = [
-        RawEmail(uid="1", subject="no", body_text="body", body_html="", from_addr="a@test", received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc), attachments=[RawAttachment(filename="a.pdf", payload=b"1", content_type="application/pdf")]),
+        RawEmail(uid="1", subject="hello", body_text="body", body_html="", from_addr="a@test", received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc), attachments=[]),
         RawEmail(uid="", subject="yes", body_text="body", body_html="", from_addr="a@test", received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc), attachments=[RawAttachment(filename="b.pdf", payload=b"2", content_type="application/pdf")]),
     ]
-    classify = AsyncMock(side_effect=[False, True])
-    mock_ai_service.classify_email = classify
     parsed_results = iter([ParsedInvoice(invoice_no=None, raw_text="raw", confidence=0.9)])
 
     class FakeScanner:
@@ -325,6 +407,7 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
     assert logs[0].emails_scanned == 2
     assert logs[0].invoices_found == 0
     assert [item.outcome for item in extraction_logs] == ["not_invoice", "low_confidence"]
+    assert [item.classification_tier for item in extraction_logs] == [1, 2]
     assert extraction_logs[1].error_detail == "invoice_no missing"
 
 
@@ -336,7 +419,7 @@ async def test_scan_all_accounts_embedding_failure_logs_warning(
     await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="2",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
@@ -488,7 +571,7 @@ async def test_scan_all_accounts_skips_seen_email_uid_and_attachment_pair(
     _account = await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="uid-seen-1",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
@@ -538,7 +621,7 @@ async def test_scan_all_accounts_logs_low_confidence_even_after_llm_enrichment(
     _account = await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="uid-low-1",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
@@ -581,7 +664,7 @@ async def test_scan_all_accounts_sends_webhook_with_signature(
     await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="webhook-1",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
@@ -673,7 +756,7 @@ async def test_scan_all_accounts_webhook_failure_logs_warning_and_continues(
     await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="webhook-fail-1",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
@@ -745,7 +828,7 @@ async def test_scan_all_accounts_webhook_non_success_response_logs_warning(
     await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="webhook-422-1",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",
@@ -817,7 +900,7 @@ async def test_scan_all_accounts_skips_webhook_when_disabled(
     await create_email_account(last_scan_uid=None)
     email = RawEmail(
         uid="webhook-off-1",
-        subject="Invoice",
+        subject="Document ready",
         body_text="body",
         body_html="",
         from_addr="sender@test",

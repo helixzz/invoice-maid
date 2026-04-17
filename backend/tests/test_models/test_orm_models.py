@@ -23,3 +23,4 @@ def test_models_exports_and_relationships() -> None:
     assert SavedView.__tablename__ == "saved_views"
     assert ScanLog.__tablename__ == "scan_logs"
     assert WebhookLog.__tablename__ == "webhook_logs"
+    assert "classification_tier" in ExtractionLog.__table__.columns

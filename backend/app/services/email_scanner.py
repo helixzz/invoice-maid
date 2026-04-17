@@ -96,6 +96,7 @@ class RawEmail:
     received_at: datetime
     attachments: list[RawAttachment] = field(default_factory=list)
     body_links: list[str] = field(default_factory=list)
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class BaseEmailScanner(ABC):
@@ -214,6 +215,7 @@ class ImapScanner(BaseEmailScanner):
                         received_at=_normalize_datetime(getattr(msg, "date", None)),
                         attachments=attachments,
                         body_links=_extract_urls(body_text, body_html),
+                        headers={key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()},
                     )
                 )
 
@@ -308,6 +310,7 @@ class Pop3Scanner(BaseEmailScanner):
                         received_at=_normalize_datetime(msg.get("Date")),
                         attachments=attachments,
                         body_links=_extract_urls(body_text, body_html),
+                        headers={key: str(value) for key, value in msg.items()},
                     )
                 )
         finally:
@@ -436,6 +439,7 @@ class OutlookScanner(BaseEmailScanner):
                             received_at=_normalize_datetime(item.get("receivedDateTime")),
                             attachments=attachments,
                             body_links=_extract_urls(body_text, body_html),
+                            headers={},
                         )
                     )
 
