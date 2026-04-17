@@ -40,9 +40,6 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
     "anyio[trio]>=4.0",
-    "sqlite-vec>=0.1.6",
-    "pyzbar>=0.1.9",
-    "easyofd>=0.5.6",
 ]
 
 [tool.pytest.ini_options]
