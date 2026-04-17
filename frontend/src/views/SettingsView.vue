@@ -341,6 +341,7 @@ watch(() => scanProgress.value.phase, (newPhase) => {
     fetchLogs()
   } else if (newPhase === 'scanning') {
     scanning.value = true
+    activeTab.value = 'scan'
   }
 })
 
@@ -630,7 +631,7 @@ onMounted(() => {
           </div>
         </div>
 
-        <ScanProgressBar :progress="scanProgress" v-if="scanProgress.phase !== 'idle'" />
+        <ScanProgressBar :progress="scanProgress" v-if="scanProgress.phase !== 'idle' || scanProgress.emails_processed > 0" />
 
         <div class="bg-white shadow-sm overflow-hidden sm:rounded-xl border border-slate-200">
           <div class="px-6 py-5 border-b border-slate-200 bg-slate-50">

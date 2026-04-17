@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.5] - 2026-04-17
+
+### Fixed
+- **Scan progress panel never appeared** — root cause: the SSE composable used `onmessage` which only fires for unnamed events, but the backend emits named `event: "progress"` events. Fixed by adding `addEventListener('progress', handler)` alongside `onmessage` as fallback
+- **Progress state not visible on connect** — composable now polls `GET /scan/progress` immediately on `connect()` so the current backend state renders instantly (before the first SSE push arrives)
+- **App automatically switches to Scan tab when a scan starts** — so users always see the progress bar whether the scan was triggered manually or by the scheduler
+
 ## [0.5.4] - 2026-04-17
 
 ### Added

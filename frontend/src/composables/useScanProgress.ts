@@ -126,29 +126,32 @@ export function useScanProgress() {
     const authStore = useAuthStore()
     if (!authStore.token) return
 
+    pollProgress()
+
     try {
       eventSource.value = new EventSource(`/api/v1/scan/progress/stream?token=${encodeURIComponent(authStore.token)}`)
-      
-      eventSource.value.onmessage = (event) => {
+
+      const handleProgress = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data)
-          updateProgress(data)
-          
-          if (data.phase === 'done' || data.phase === 'error') {
-            cleanup()
+          if (data && typeof data === 'object') {
+            updateProgress(data)
+            if (data.phase === 'done' || data.phase === 'error') {
+              cleanup()
+            }
           }
         } catch (e) {
           console.error('Error parsing SSE data', e)
         }
       }
-      
+
+      eventSource.value.addEventListener('progress', handleProgress)
+      eventSource.value.onmessage = handleProgress
+
       eventSource.value.onerror = () => {
-        console.error('EventSource error, falling back to polling or reconnecting')
         cleanup()
-        
         pollInterval.value = window.setInterval(pollProgress, 2000)
         pollProgress()
-        
         reconnectTimeout.value = window.setTimeout(() => {
           if (progress.value.phase === 'scanning') {
             if (pollInterval.value) {
@@ -162,7 +165,6 @@ export function useScanProgress() {
     } catch (err) {
       console.error('Failed to setup EventSource, using polling', err)
       pollInterval.value = window.setInterval(pollProgress, 2000)
-      pollProgress()
     }
   }
 
