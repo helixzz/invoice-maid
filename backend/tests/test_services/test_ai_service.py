@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.models import LLMCache
 from app.schemas.invoice import EmailAnalysis, InvoiceExtract, UrlKind
@@ -267,3 +268,31 @@ def test_prompt_helpers(settings, monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert "发票" in service._load_prompt("classify_email.txt")
     assert service._content_hash("kind", "value") == service._content_hash("kind", "value")
+
+
+@pytest.mark.asyncio
+async def test_set_cache_rolls_back_on_integrity_error(db, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_client = FakeRawClient([0.1, 0.2, 0.3])
+    monkeypatch.setattr("app.services.ai_service.AsyncOpenAI", lambda **kwargs: raw_client)
+    monkeypatch.setattr(
+        "app.services.ai_service.instructor.from_openai",
+        lambda client, mode: SimpleNamespace(chat=SimpleNamespace(completions=FakeChatCompletions(None))),
+    )
+
+    service = AIService(settings)
+    rollback = db.rollback
+    rollback_calls: list[bool] = []
+
+    async def failing_commit() -> None:
+        raise IntegrityError("insert", {}, Exception("duplicate"))
+
+    async def tracked_rollback() -> None:
+        rollback_calls.append(True)
+        await rollback()
+
+    monkeypatch.setattr(db, "commit", failing_commit)
+    monkeypatch.setattr(db, "rollback", tracked_rollback)
+
+    await service._set_cache(db, "hash", "extract", "{}")
+
+    assert rollback_calls == [True]

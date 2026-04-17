@@ -11,6 +11,7 @@ import httpx
 import instructor
 from openai import AsyncOpenAI
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -88,13 +89,16 @@ class AIService:
         prompt_type: str,
         response: str,
     ) -> None:
-        cache_entry = LLMCache(
-            content_hash=content_hash,
-            prompt_type=prompt_type,
-            response_json=response,
-        )
-        db.add(cache_entry)
-        await db.commit()
+        try:
+            cache_entry = LLMCache(
+                content_hash=content_hash,
+                prompt_type=prompt_type,
+                response_json=response,
+            )
+            db.add(cache_entry)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
 
     async def analyze_email(
         self,
