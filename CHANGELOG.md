@@ -4,10 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.4.1] - 2026-04-17
+## [0.4.2] - 2026-04-17
 
 ### Added
+- `deploy/install.sh` — idempotent one-command production installer: creates system user, clones repo, builds venv, hashes admin password, writes `/etc/invoice-maid/invoice-maid.env`, runs Alembic migrations, installs systemd service, and optionally starts it. Supports headless (`--yes`), dry-run, random password, and version pinning flags.
+- `deploy/invoice-maid-upgrade` — upgrade driver installed to `/usr/local/sbin/`: fetch latest tag, optional pre-backup, `pip install --upgrade`, `alembic upgrade head`, service restart, health probe with retries.
 - Docker deployment support with a multi-stage root `Dockerfile`, `docker-compose.yml`, `.dockerignore`, and a development hot-reload compose override example
+
+### Changed
+- `deploy/invoice-maid.service` hardened with `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `ProtectHome`, `ReadWritePaths`, `Restart=on-failure`; adds `{{ENV_FILE}}`, `{{PORT}}`, `{{DATA_DIR}}` placeholders; switches from `After=network.target` to `After=network-online.target`
 
 ## [0.4.0] - 2026-04-17
 
