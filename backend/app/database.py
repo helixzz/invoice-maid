@@ -1,3 +1,4 @@
+# pyright: reportUnusedFunction=false
 from __future__ import annotations
 
 import logging
@@ -7,10 +8,13 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from sqlalchemy import event, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
-from app.models import Base
+from app.models import AppSettings, Base
+from app.services.email_scanner import encrypt_password
+from app.services.settings_resolver import AI_SEEDED_LLM_DB_KEYS, invalidate_ai_settings_cache
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +161,45 @@ async def create_embedding_objects(engine: AsyncEngine, embed_dim: int, sqlite_v
     return False
 
 
+async def seed_ai_settings(session: AsyncSession) -> None:
+    settings = get_settings()
+    result = await session.execute(select(AppSettings.key).where(AppSettings.key.in_(AI_SEEDED_LLM_DB_KEYS)))
+    existing_keys = list(result.scalars().all())
+    if existing_keys:
+        return
+
+    existing_all_result = await session.execute(select(AppSettings.key))
+    existing_all_keys = set(existing_all_result.scalars().all())
+
+    seeded_values = {
+        "llm_base_url": settings.LLM_BASE_URL,
+        "llm_api_key": encrypt_password(settings.LLM_API_KEY, settings.JWT_SECRET),
+        "llm_model": settings.LLM_MODEL,
+        "llm_embed_model": settings.LLM_EMBED_MODEL,
+        "embed_dim": str(settings.EMBED_DIM),
+    }
+    session.add_all(
+        [AppSettings(key=key, value=value) for key, value in seeded_values.items() if key not in existing_all_keys]
+    )
+    await session.commit()
+    invalidate_ai_settings_cache()
+
+
+async def reset_embedding_objects(
+    session: AsyncSession,
+    embed_dim: int,
+    sqlite_vec_requested: bool,
+) -> bool:
+    del session
+    if _engine is None:
+        raise RuntimeError("Database engine is not available for embedding reset.")
+
+    async with _engine.begin() as connection:
+        await connection.execute(text("DROP TABLE IF EXISTS invoice_embeddings"))
+
+    return await create_embedding_objects(_engine, embed_dim=embed_dim, sqlite_vec_requested=sqlite_vec_requested)
+
+
 async def init_db(database_url: str | None = None) -> None:
     engine = _engine
     if database_url is not None:
@@ -168,9 +211,16 @@ async def init_db(database_url: str | None = None) -> None:
         engine, _ = create_engine_and_session(env_database_url)
 
     assert engine is not None
+    invalidate_ai_settings_cache()
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+
+    if _session_factory is None:
+        raise RuntimeError("Database session factory has not been initialized.")
+
+    async with _session_factory() as session:
+        await seed_ai_settings(session)
 
     await create_fts5_objects(engine)
 
