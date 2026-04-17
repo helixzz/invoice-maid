@@ -1,6 +1,6 @@
 [project]
 name = "invoice-maid"
-version = "0.5.7"
+version = "0.6.0"
 description = "AI-powered invoice extraction service"
 requires-python = ">=3.11"
 dependencies = [
