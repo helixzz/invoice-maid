@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import DateTime, Float, ForeignKey, String
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -25,6 +25,7 @@ class ExtractionLog(Base):
     email_subject: Mapped[str] = mapped_column(String(500))
     attachment_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
     outcome: Mapped[str] = mapped_column(String(32))
+    classification_tier: Mapped[int | None] = mapped_column(Integer(), nullable=True)
     invoice_no: Mapped[str | None] = mapped_column(String(128), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float(), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(String(2000), nullable=True)

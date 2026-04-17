@@ -17,8 +17,9 @@ from sqlalchemy import select
 
 from app.config import Settings, get_settings
 from app.database import get_db
-from app.models import EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
+from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
 from app.services.ai_service import AIService
+from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders
 from app.services.email_scanner import ScannerFactory
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import parse as parse_invoice
@@ -70,6 +71,7 @@ def _record_extraction_log(
     email_subject: str,
     attachment_filename: str | None,
     outcome: str,
+    classification_tier: int | None = None,
     invoice_no: str | None = None,
     confidence: float | None = None,
     error_detail: str | None = None,
@@ -80,9 +82,23 @@ def _record_extraction_log(
         email_subject=email_subject,
         attachment_filename=attachment_filename,
         outcome=outcome,
+        classification_tier=classification_tier,
         invoice_no=invoice_no,
         confidence=confidence,
         error_detail=_truncate_error_detail(error_detail),
+    )
+
+
+async def _load_classifier(db: Any) -> EmailClassifier:
+    trusted_raw = (
+        await db.execute(select(AppSettings.value).where(AppSettings.key == "classifier_trusted_senders"))
+    ).scalar_one_or_none() or ""
+    keywords_raw = (
+        await db.execute(select(AppSettings.value).where(AppSettings.key == "classifier_extra_keywords"))
+    ).scalar_one_or_none() or ""
+    return EmailClassifier(
+        trusted_senders=_parse_trusted_senders(trusted_raw),
+        extra_keywords=_parse_extra_keywords(keywords_raw),
     )
 
 
@@ -171,6 +187,7 @@ async def scan_all_accounts() -> None:
             async for db in get_db():
                 result = await db.execute(select(EmailAccount).where(EmailAccount.is_active.is_(True)))
                 accounts = list(result.scalars().all())
+                classifier = await _load_classifier(db)
                 sp.reset_progress(total_accounts=len(accounts))
 
                 for account_idx, account in enumerate(accounts):
@@ -220,7 +237,17 @@ async def scan_all_accounts() -> None:
                                 current_attachment_idx=0,
                                 current_attachment_name="",
                             )
-                            is_invoice = await ai.classify_email(db, email.subject, email.body_text)
+                            tier_result = classifier.classify_tier1(email)
+                            if tier_result is None:
+                                tier_result = classifier.classify_tier2(email)
+                            if tier_result is None:
+                                subject, enriched_body = classifier.build_llm_context(email)
+                                is_invoice = await ai.classify_email(db, subject, enriched_body)
+                                classification_tier = 3
+                            else:
+                                is_invoice = tier_result.is_invoice
+                                classification_tier = tier_result.tier
+
                             if not is_invoice:
                                 db.add(
                                     _record_extraction_log(
@@ -229,6 +256,7 @@ async def scan_all_accounts() -> None:
                                         email_subject=email.subject,
                                         attachment_filename=None,
                                         outcome="not_invoice",
+                                        classification_tier=classification_tier,
                                     )
                                 )
                                 sp.update_progress(
@@ -267,6 +295,7 @@ async def scan_all_accounts() -> None:
                                             email_subject=email.subject,
                                             attachment_filename=filename,
                                             outcome="skipped_seen",
+                                            classification_tier=classification_tier,
                                         )
                                     )
                                     continue
@@ -294,6 +323,7 @@ async def scan_all_accounts() -> None:
                                                 email_subject=email.subject,
                                                 attachment_filename=filename,
                                                 outcome="low_confidence",
+                                                classification_tier=classification_tier,
                                                 invoice_no=parsed.invoice_no,
                                                 confidence=parsed.confidence,
                                                 error_detail=None if parsed.invoice_no else "invoice_no missing",
@@ -312,6 +342,7 @@ async def scan_all_accounts() -> None:
                                                 email_subject=email.subject,
                                                 attachment_filename=filename,
                                                 outcome="duplicate",
+                                                classification_tier=classification_tier,
                                                 invoice_no=parsed.invoice_no,
                                                 confidence=parsed.confidence,
                                             )
@@ -359,6 +390,7 @@ async def scan_all_accounts() -> None:
                                             email_subject=email.subject,
                                             attachment_filename=filename,
                                             outcome="saved",
+                                            classification_tier=classification_tier,
                                             invoice_no=parsed.invoice_no,
                                             confidence=parsed.confidence,
                                         )
@@ -390,6 +422,7 @@ async def scan_all_accounts() -> None:
                                             email_subject=email.subject,
                                             attachment_filename=filename,
                                             outcome="parse_error",
+                                            classification_tier=classification_tier,
                                             error_detail=str(exc),
                                         )
                                     )

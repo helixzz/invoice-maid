@@ -80,6 +80,15 @@ async def test_init_db_uses_env_database_url(monkeypatch: pytest.MonkeyPatch, tm
         result = await conn.execute(text("PRAGMA table_info(invoice_embeddings)"))
         columns = [row[1] for row in result.fetchall()]
         assert columns == ["rowid", "embedding"]
+        seeded = await conn.execute(
+            text(
+                "SELECT key, value FROM app_settings WHERE key IN ('classifier_trusted_senders', 'classifier_extra_keywords') ORDER BY key"
+            )
+        )
+        assert seeded.fetchall() == [
+            ("classifier_extra_keywords", ""),
+            ("classifier_trusted_senders", ""),
+        ]
     await database._engine.dispose()
 
 
@@ -131,6 +140,22 @@ async def test_init_db_raises_when_session_factory_missing_after_create_all(tmp_
         await database.init_db()
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_seed_classifier_settings_noop_when_defaults_exist(db) -> None:
+    db.add_all(
+        [
+            database.AppSettings(key="classifier_trusted_senders", value=""),
+            database.AppSettings(key="classifier_extra_keywords", value=""),
+        ]
+    )
+    await db.commit()
+
+    await database.seed_classifier_settings(db)
+
+    rows = (await db.execute(text("SELECT COUNT(*) FROM app_settings"))).scalar_one()
+    assert rows == 2
 
 
 @pytest.mark.asyncio
