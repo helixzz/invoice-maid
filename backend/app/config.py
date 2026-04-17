@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     WEBHOOK_URL: str = ""
     WEBHOOK_SECRET: str = ""
     ENABLE_TEST_HELPERS: bool = False
+    LOG_LEVEL: str = "INFO"
     sqlite_vec_available: bool = Field(default=False, validation_alias="__runtime_sqlite_vec_available__")
 
 
