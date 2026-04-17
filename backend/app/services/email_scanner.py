@@ -413,12 +413,14 @@ def _is_personal_microsoft_account(email: str) -> bool:
 
 
 def _get_outlook_msal_params(account: EmailAccount) -> tuple[str, str]:
-    """Returns (client_id, authority) for MSAL based on account type."""
-    from app.config import get_settings
+    outlook_type = getattr(account, "outlook_account_type", "personal")
+    return _get_outlook_msal_params_from_type(outlook_type)
 
+
+def _get_outlook_msal_params_from_type(outlook_type: str) -> tuple[str, str]:
+    from app.config import get_settings
     settings = get_settings()
-    account_type = getattr(account, "outlook_account_type", "personal")
-    if account_type == "organizational":
+    if outlook_type == "organizational":
         return settings.OUTLOOK_AAD_CLIENT_ID, "https://login.microsoftonline.com/common"
     return settings.OUTLOOK_PERSONAL_CLIENT_ID, "https://login.microsoftonline.com/consumers"
 
@@ -565,6 +567,40 @@ class OutlookScanner(BaseEmailScanner):
         result = cast(dict[str, Any], app.acquire_token_by_device_flow(flow))
         self._save_cache(account, token_cache)
         return result
+
+    def _complete_device_flow_with_path_sync(
+        self, flow: dict[str, Any], token_path: str | None, outlook_type: str
+    ) -> dict[str, Any]:
+        token_cache = msal.SerializableTokenCache()
+        if token_path:
+            try:
+                token_cache.deserialize(Path(token_path).read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                pass
+
+        client_id, authority = _get_outlook_msal_params_from_type(outlook_type)
+        app = msal.PublicClientApplication(
+            client_id=client_id,
+            authority=authority,
+            token_cache=token_cache,
+        )
+        result = cast(dict[str, Any], app.acquire_token_by_device_flow(flow))
+
+        if token_path and (result.get("access_token") or token_cache.has_state_changed):
+            path = Path(token_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(token_cache.serialize(), encoding="utf-8")
+
+        return result
+
+    async def complete_device_flow_async_with_path(
+        self, flow: dict[str, Any], token_path: str | None, outlook_type: str
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._complete_device_flow_with_path_sync, flow, token_path, outlook_type),
+        )
 
     async def _fetch_attachments(
         self,

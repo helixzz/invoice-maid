@@ -26,7 +26,7 @@
 #   INVOICE_MAID_VENV         Python venv path      (default: $HOME/venv)
 #   INVOICE_MAID_ENV_FILE     .env file path        (default: $SRC/backend/.env)
 #   INVOICE_MAID_SERVICE      systemd unit name     (default: invoice-maid)
-#   INVOICE_MAID_HEALTH_URL   health probe URL      (default: http://127.0.0.1:8000/api/v1/health)
+#   INVOICE_MAID_HEALTH_URL   health probe URL      (default: auto-detected from service port)
 #   INVOICE_MAID_LOG          log file              (default: /var/log/invoice-maid-upgrade.log)
 #
 # Operators with a stable layout: drop the overrides into
@@ -54,8 +54,20 @@ fi
 : "${INVOICE_MAID_VENV:=${INVOICE_MAID_HOME}/venv}"
 : "${INVOICE_MAID_ENV_FILE:=${INVOICE_MAID_SRC}/backend/.env}"
 : "${INVOICE_MAID_SERVICE:=invoice-maid}"
-: "${INVOICE_MAID_HEALTH_URL:=http://127.0.0.1:8000/api/v1/health}"
 : "${INVOICE_MAID_LOG:=/var/log/invoice-maid-upgrade.log}"
+
+_detect_service_port() {
+  local unit_file
+  unit_file="/etc/systemd/system/${INVOICE_MAID_SERVICE}.service"
+  if [[ -r "$unit_file" ]]; then
+    grep -oP '(?<=--port )\d+' "$unit_file" 2>/dev/null | head -1
+  fi
+}
+
+if [[ -z "${INVOICE_MAID_HEALTH_URL:-}" ]]; then
+  _detected_port="$(_detect_service_port)"
+  INVOICE_MAID_HEALTH_URL="http://127.0.0.1:${_detected_port:-8000}/api/v1/health"
+fi
 
 readonly BACKEND_DIR="${INVOICE_MAID_SRC}/backend"
 

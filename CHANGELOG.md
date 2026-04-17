@@ -4,7 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.0] - 2026-04-17
+
+### Fixed
+- **OAuth login loop** — `_attach_flow_task` now captures `oauth_token_path` and `outlook_account_type` as primitive strings before background execution, eliminating `MissingGreenlet` crashes from ORM attribute access after session expiry
+- **OAuth token not saved after successful Microsoft login** — `_complete_device_flow_with_path_sync` force-writes the token cache when `access_token` is present, regardless of `has_state_changed`; old code silently skipped saving and caused authentication to loop
+- **OAuth error detail hidden** — `pollOAuthStatus` now shows the `state.detail` message in an error toast when authorization fails or expires, instead of silently closing the modal
+- **Upgrade script false-positive health check** — `invoice-maid-upgrade` now auto-detects the service port from `/etc/systemd/system/invoice-maid.service` instead of hardcoding port 8000; this caused the script to report "upgrade OK" while probing a stale old process on 8000 instead of the newly restarted service
+- **Toast notifications too small and disappearing too fast** — toasts now use type-aware auto-durations (error: 7s, info: 5s, success: 4s) and have a proper minimum width of 360px, preventing messages from being squeezed into a few words per line
+
 ## [0.4.5] - 2026-04-17
+## [0.5.0] - 2026-04-17
+
 
 ### Fixed
 - Outlook personal account OAuth now uses Microsoft Graph Explorer client ID (14d82eec-...), supporting personal @outlook.com, @live.cn, @hotmail.com, @msn.com without Azure App Registration

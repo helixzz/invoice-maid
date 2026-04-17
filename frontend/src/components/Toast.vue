@@ -10,12 +10,13 @@ export interface ToastMessage {
 const toasts = ref<ToastMessage[]>([])
 let nextId = 0
 
-const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info', duration = 3000) => {
+const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info', duration?: number) => {
   const id = nextId++
+  const defaultDuration = type === 'error' ? 7000 : type === 'success' ? 4000 : 5000
   toasts.value.push({ id, message, type })
   setTimeout(() => {
     removeToast(id)
-  }, duration)
+  }, duration ?? defaultDuration)
 }
 
 const removeToast = (id: number) => {
@@ -29,12 +30,12 @@ defineExpose({ addToast })
 </script>
 
 <template>
-  <div class="fixed bottom-0 right-0 p-4 space-y-4 z-50">
+  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-3" style="min-width: 360px; max-width: min(520px, calc(100vw - 2rem))">
     <transition-group name="toast" tag="div">
       <div
         v-for="toast in toasts"
         :key="toast.id"
-        class="max-w-md w-full bg-white shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden"
+        class="w-full bg-white shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden"
         :class="{
           'border-l-4 border-green-500': toast.type === 'success',
           'border-l-4 border-red-500': toast.type === 'error',

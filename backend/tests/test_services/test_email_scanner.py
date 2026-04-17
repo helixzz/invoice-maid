@@ -963,3 +963,70 @@ def test_scanner_factory_routes_and_rejects_unknown() -> None:
     assert isinstance(ScannerFactory.get_scanner("outlook"), OutlookScanner)
     with pytest.raises(ValueError, match="Unknown email account type"):
         ScannerFactory.get_scanner("smtp")
+
+
+def test_get_outlook_msal_params_from_type(settings) -> None:
+    personal_id, personal_auth = email_scanner._get_outlook_msal_params_from_type("personal")
+    assert personal_auth == "https://login.microsoftonline.com/consumers"
+    assert personal_id == settings.OUTLOOK_PERSONAL_CLIENT_ID
+
+    org_id, org_auth = email_scanner._get_outlook_msal_params_from_type("organizational")
+    assert org_auth == "https://login.microsoftonline.com/common"
+    assert org_id == settings.OUTLOOK_AAD_CLIENT_ID
+
+
+@pytest.mark.asyncio
+async def test_complete_device_flow_with_path_writes_token(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
+    scanner = OutlookScanner()
+    token_path = str(tmp_path / "token.json")
+    flow = {"device_code": "dc", "interval": 5, "expires_in": 900}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            pass
+
+        def acquire_token_by_device_flow(self, flow):
+            return {"access_token": "tok123", "token_type": "Bearer"}
+
+    class FakeCache:
+        has_state_changed = True
+        def __init__(self):
+            pass
+        def deserialize(self, _):
+            pass
+        def serialize(self):
+            return '{"cached": true}'
+
+    monkeypatch.setattr(email_scanner.msal, "PublicClientApplication", lambda **kwargs: FakeApp())
+    monkeypatch.setattr(email_scanner.msal, "SerializableTokenCache", FakeCache)
+
+    result = scanner._complete_device_flow_with_path_sync(flow, token_path, "personal")
+    assert result["access_token"] == "tok123"
+    assert (tmp_path / 'token.json').read_text() == '{"cached": true}'
+
+
+@pytest.mark.asyncio
+async def test_complete_device_flow_with_path_no_token_path(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    scanner = OutlookScanner()
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            pass
+
+        def acquire_token_by_device_flow(self, flow):
+            return {"error": "expired"}
+
+    class FakeCache:
+        has_state_changed = False
+        def __init__(self):
+            pass
+        def deserialize(self, _):
+            pass
+        def serialize(self):
+            return "{}"
+
+    monkeypatch.setattr(email_scanner.msal, "PublicClientApplication", lambda **kwargs: FakeApp())
+    monkeypatch.setattr(email_scanner.msal, "SerializableTokenCache", FakeCache)
+
+    result = await scanner.complete_device_flow_async_with_path({}, None, "personal")
+    assert result["error"] == "expired"
