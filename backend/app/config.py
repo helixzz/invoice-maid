@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = ""
     ENABLE_TEST_HELPERS: bool = False
     LOG_LEVEL: str = "INFO"
-    OUTLOOK_CLIENT_ID: str = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+    OUTLOOK_PERSONAL_CLIENT_ID: str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+    OUTLOOK_AAD_CLIENT_ID: str = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
     sqlite_vec_available: bool = Field(default=False, validation_alias="__runtime_sqlite_vec_available__")
 
 

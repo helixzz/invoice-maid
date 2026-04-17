@@ -7,6 +7,7 @@ class EmailAccountCreate(BaseModel):
     host: str | None = None
     port: int | None = None
     username: str
+    outlook_account_type: str = "personal"
     password: str | None = None
     oauth_token_path: str | None = None
     is_active: bool = True
@@ -17,6 +18,7 @@ class EmailAccountUpdate(BaseModel):
     host: str | None = None
     port: int | None = None
     username: str | None = None
+    outlook_account_type: str | None = None
     password: str | None = None
     is_active: bool | None = None
 
@@ -28,6 +30,7 @@ class EmailAccountResponse(BaseModel):
     host: str | None
     port: int | None
     username: str
+    outlook_account_type: str
     is_active: bool
     last_scan_uid: str | None
     created_at: str

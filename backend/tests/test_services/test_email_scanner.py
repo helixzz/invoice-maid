@@ -22,9 +22,11 @@ from app.services.email_scanner import (
     OutlookScanner,
     Pop3Scanner,
     ScannerFactory,
+    _get_outlook_msal_params,
     _derive_fernet_key,
     _extract_urls,
     _html_to_text,
+    _is_personal_microsoft_account,
     _is_uid_newer,
     _normalize_datetime,
     _resolve_filename,
@@ -55,6 +57,35 @@ def test_helpers_cover_password_url_html_datetime_and_uid_logic(settings) -> Non
     assert _is_uid_newer("10", "2") is True
     assert _is_uid_newer("b", "a") is True
     assert _resolve_filename("  ", "fallback.pdf") == "fallback.pdf"
+
+
+def test_is_personal_microsoft_account_detects_domains() -> None:
+    assert _is_personal_microsoft_account("person@outlook.com") is True
+    assert _is_personal_microsoft_account("person@LIVE.CN") is True
+    assert _is_personal_microsoft_account("person@company.com") is False
+    assert _is_personal_microsoft_account("not-an-email") is False
+
+
+def test_get_outlook_msal_params_resolves_personal_and_organizational(settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(email_scanner, "get_settings", lambda: settings)
+
+    personal = EmailAccount(id=1, name="o", type="outlook", username="person@outlook.com", outlook_account_type="personal")
+    organizational = EmailAccount(
+        id=2,
+        name="o",
+        type="outlook",
+        username="person@company.com",
+        outlook_account_type="organizational",
+    )
+
+    assert _get_outlook_msal_params(personal) == (
+        settings.OUTLOOK_PERSONAL_CLIENT_ID,
+        "https://login.microsoftonline.com/consumers",
+    )
+    assert _get_outlook_msal_params(organizational) == (
+        settings.OUTLOOK_AAD_CLIENT_ID,
+        "https://login.microsoftonline.com/common",
+    )
 
 
 class _FakeContextManager:
@@ -727,7 +758,7 @@ async def test_outlook_scan_last_uid_and_200_limit(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path, settings) -> None:
+async def test_outlook_access_token_and_attachment_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=9, name="o", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -786,7 +817,8 @@ def test_outlook_token_cache_and_sync_flow(monkeypatch: pytest.MonkeyPatch, tmp_
 
     class FakeApp:
         def __init__(self, client_id, authority, token_cache):
-            del client_id, authority
+            self.client_id = client_id
+            self.authority = authority
             self.token_cache = token_cache
 
         def get_accounts(self):

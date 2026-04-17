@@ -26,6 +26,7 @@ class EmailAccount(Base):
     host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     port: Mapped[int | None] = mapped_column(Integer(), nullable=True)
     username: Mapped[str] = mapped_column(String(255))
+    outlook_account_type: Mapped[str] = mapped_column(String(16), default="personal")
     password_encrypted: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     oauth_token_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean(), default=True)
