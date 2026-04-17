@@ -8,6 +8,10 @@ import logging
 import os
 from pathlib import Path
 
+from app.logging_config import configure_logging
+
+configure_logging()
+
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse

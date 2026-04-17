@@ -47,3 +47,28 @@ def test_get_settings_uses_cache(settings: Settings) -> None:
     second = get_settings()
     assert first is second
     assert first.JWT_SECRET == settings.JWT_SECRET
+
+
+def test_settings_log_level_defaults_to_info() -> None:
+    settings = Settings(
+        _env_file=None,
+        DATABASE_URL="sqlite+aiosqlite:///./test.db",
+        ADMIN_PASSWORD_HASH="hashed:testpass",
+        JWT_SECRET="test-secret",
+        LLM_BASE_URL="https://llm.invalid/v1",
+        LLM_API_KEY="test-key",
+    )
+    assert settings.LOG_LEVEL == "INFO"
+
+
+def test_settings_log_level_accepts_override() -> None:
+    settings = Settings(
+        _env_file=None,
+        DATABASE_URL="sqlite+aiosqlite:///./test.db",
+        ADMIN_PASSWORD_HASH="hashed:testpass",
+        JWT_SECRET="test-secret",
+        LLM_BASE_URL="https://llm.invalid/v1",
+        LLM_API_KEY="test-key",
+        LOG_LEVEL="DEBUG",
+    )
+    assert settings.LOG_LEVEL == "DEBUG"

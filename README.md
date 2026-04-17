@@ -214,6 +214,7 @@ Open `http://localhost:8000`, log in, then configure your email accounts and AI 
 | `SQLITE_VEC_ENABLED` | Enable semantic search | `true` | No |
 | `WEBHOOK_URL` | Outbound webhook endpoint | `https://example.com/hook` | No |
 | `WEBHOOK_SECRET` | HMAC-SHA256 signing key for webhooks | `your-secret` | No |
+| `LOG_LEVEL` | App log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` | No |
 
 AI model settings can also be managed from the **Settings > AI 模型** page in the web UI. Database-stored values override `.env` defaults.
 

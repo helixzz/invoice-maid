@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- Application loggers (`app.*`, `apscheduler`) now emit to stderr and are captured by the systemd journal. Previously only uvicorn access/error logs were visible because uvicorn configures only its own logger tree and the root logger had no handler, silently dropping `logger.info(...)` calls from application code.
+- Suppress the benign `(trapped) error reading bcrypt version` traceback from passlib when using bcrypt >= 4.1.
+
+### Added
+- `LOG_LEVEL` environment variable (default `INFO`) for controlling application log verbosity. Accepts DEBUG, INFO, WARNING, ERROR, CRITICAL. Invalid values fall back to INFO.
+- `app.logging_config` module that installs a root-logger stderr handler at process startup with sensible per-library level overrides (SQLAlchemy engine at WARNING, passlib at ERROR).
+
 ## [0.2.1] - 2026-04-17
 
 ### Fixed
