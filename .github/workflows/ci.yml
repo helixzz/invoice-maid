@@ -27,7 +27,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libzbar0
+          sudo apt-get install -y libzbar0 libzbar-dev libmupdf-dev mupdf-tools
 
       - name: Install backend dependencies
         run: |
@@ -61,6 +61,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Install system dependencies for backend
+        working-directory: backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzbar0 libzbar-dev libmupdf-dev mupdf-tools
 
       - name: Install backend runtime for smoke tests
         working-directory: backend
