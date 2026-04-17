@@ -171,7 +171,8 @@ const defaultAccountForm: AccountCreate = {
   host: '',
   port: 993,
   username: '',
-  password: ''
+  password: '',
+  outlook_account_type: 'personal'
 }
 
 const accountForm = ref<AccountCreate>({ ...defaultAccountForm })
@@ -345,7 +346,7 @@ const testConnection = async (accountId: number) => {
 
 const openAddModal = () => {
   editingAccountId.value = null
-  accountForm.value = { ...defaultAccountForm }
+  accountForm.value = { ...defaultAccountForm, outlook_account_type: 'personal' }
   showAccountModal.value = true
 }
 
@@ -357,6 +358,7 @@ const openEditModal = (account: EmailAccount) => {
     host: account.host,
     port: account.port,
     username: account.username,
+    outlook_account_type: account.outlook_account_type || 'personal',
     password: '' // Don't prefill password
   }
   showAccountModal.value = true
@@ -372,6 +374,9 @@ const saveAccount = async () => {
         port: accountForm.value.port,
         username: accountForm.value.username,
       }
+      if (accountForm.value.type === 'outlook') {
+        updateData.outlook_account_type = accountForm.value.outlook_account_type
+      }
       if (accountForm.value.password) {
         updateData.password = accountForm.value.password
       }
@@ -382,7 +387,11 @@ const saveAccount = async () => {
         startOAuthFlow(updatedAccount.id)
       }
     } else {
-      const newAccount = await api.createAccount(accountForm.value)
+      const createData = { ...accountForm.value }
+      if (createData.type !== 'outlook') {
+        delete createData.outlook_account_type
+      }
+      const newAccount = await api.createAccount(createData)
       toastRef.value?.addToast('Account created successfully', 'success')
       
       if (newAccount.type === 'outlook') {
@@ -514,6 +523,10 @@ onMounted(() => {
                     </span>
                     <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">
                       {{ account.type }}
+                    </span>
+                    <span v-if="account.type === 'outlook' && account.outlook_account_type" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border"
+                      :class="account.outlook_account_type === 'personal' ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-blue-50 text-blue-700 border-blue-200'">
+                      {{ account.outlook_account_type === 'personal' ? 'Personal' : 'Organizational' }}
                     </span>
                   </div>
                   <div class="text-sm text-slate-500">
@@ -885,6 +898,33 @@ onMounted(() => {
                       <input type="text" v-model="accountForm.username" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" :placeholder="accountForm.type === 'outlook' ? 'you@outlook.com or you@live.cn' : 'user@example.com'">
                       <p v-if="accountForm.type === 'outlook'" class="mt-1 text-xs text-slate-500">Enter your Microsoft account email address. OAuth2 authentication happens after saving.</p>
                     </div>
+
+                    <div v-if="accountForm.type === 'outlook'" class="mt-4">
+                      <label class="block text-sm font-medium text-slate-700 mb-2">Microsoft Account Type</label>
+                      <div class="space-y-3">
+                        <div class="flex items-start">
+                          <div class="flex items-center h-5">
+                            <input id="type-personal" v-model="accountForm.outlook_account_type" type="radio" value="personal" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-slate-300">
+                          </div>
+                          <div class="ml-3 text-sm">
+                            <label for="type-personal" class="font-medium text-slate-700">Personal</label>
+                            <p class="text-slate-500">For @outlook.com, @live.com, @live.cn, @hotmail.com, @msn.com</p>
+                          </div>
+                        </div>
+                        <div class="flex items-start">
+                          <div class="flex items-center h-5">
+                            <input id="type-org" v-model="accountForm.outlook_account_type" type="radio" value="organizational" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-slate-300">
+                          </div>
+                          <div class="ml-3 text-sm">
+                            <label for="type-org" class="font-medium text-slate-700">Organizational</label>
+                            <p class="text-slate-500">For work or school accounts with a custom domain</p>
+                            <p v-if="accountForm.outlook_account_type === 'organizational'" class="text-xs text-slate-500 mt-1">For Azure AD / Entra ID work accounts. May require Azure App Registration for some organizations.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+
 
                     <div v-if="accountForm.type !== 'outlook'">
                       <label class="block text-sm font-medium text-slate-700">

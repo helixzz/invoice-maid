@@ -26,6 +26,7 @@ export interface EmailAccount {
   id: number
   name: string
   type: string
+  outlook_account_type: string
   host: string | null
   port: number | null
   username: string
@@ -37,6 +38,7 @@ export interface EmailAccount {
 export interface AccountCreate {
   name: string
   type: string
+  outlook_account_type?: string
   host?: string | null
   port?: number | null
   username: string
@@ -45,6 +47,7 @@ export interface AccountCreate {
 
 export interface AccountUpdate {
   name?: string
+  outlook_account_type?: string
   host?: string | null
   port?: number | null
   username?: string
