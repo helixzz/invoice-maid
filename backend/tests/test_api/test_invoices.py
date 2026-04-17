@@ -162,7 +162,7 @@ async def test_update_invoice_creates_correction_logs_and_sets_manual_flag(
     assert [(item.field_name, item.old_value, item.new_value) for item in correction_logs] == [
         ("buyer", "Before Buyer", "After Buyer"),
         ("amount", "12.34", "99.88"),
-        ("invoice_type", "电子普通发票", "数电专票"),
+        ("invoice_type", "增值税电子普通发票", "数电专票"),
     ]
 
     get_response = await client.get(f"/api/v1/invoices/{invoice.id}", headers=auth_headers)

@@ -48,6 +48,7 @@ const savingAISettings = ref(false)
 const availableModels = ref<string[]>([])
 const loadingModels = ref(false)
 const modelsFetchFailed = ref(false)
+const aiConnectionOk = ref<boolean | null>(null)
 
 // Classifier Settings
 const classifierSettings = ref<ClassifierSettingsResponse | null>(null)
@@ -91,6 +92,7 @@ const fetchAISettings = async () => {
   try {
     const res = await api.getAISettings()
     aiSettings.value = res
+    aiConnectionOk.value = null
     aiSettingsForm.value = {
       llm_base_url: res.llm_base_url,
       llm_model: res.llm_model,
@@ -117,6 +119,25 @@ const fetchAIModels = async () => {
     console.error('Failed to fetch AI models', error)
     modelsFetchFailed.value = true
     toastRef.value?.addToast('Failed to fetch models. Using text input.', 'error')
+  } finally {
+    loadingModels.value = false
+  }
+}
+
+const testAIConnection = async () => {
+  loadingModels.value = true
+  aiConnectionOk.value = null
+  try {
+    const res = await api.testAIConnection()
+    aiConnectionOk.value = res.ok
+    if (res.ok) {
+      toastRef.value?.addToast(`Model ${res.model} connected successfully`, 'success')
+    } else {
+      toastRef.value?.addToast(`Model ${res.model} failed: ${res.detail}`, 'error')
+    }
+  } catch (error) {
+    aiConnectionOk.value = false
+    toastRef.value?.addToast('AI connection test failed', 'error')
   } finally {
     loadingModels.value = false
   }
@@ -783,11 +804,16 @@ onMounted(() => {
                   <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
                   <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
                 </label>
-                <div class="flex space-x-2">
+                <div class="flex items-center space-x-2">
                   <select v-if="availableModels.length > 0 && !modelsFetchFailed" v-model="aiSettingsForm.llm_model" class="block w-full py-2 px-3 border border-slate-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                     <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
                   </select>
                   <input v-else type="text" v-model="aiSettingsForm.llm_model" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
+                  <span
+                    class="inline-flex h-3 w-3 rounded-full"
+                    :class="aiConnectionOk === null ? 'bg-slate-300' : aiConnectionOk ? 'bg-green-500' : 'bg-red-500'"
+                    :title="aiConnectionOk === null ? 'Not tested' : aiConnectionOk ? 'Connection OK' : 'Connection failed'"
+                  ></span>
                   <button type="button" @click="fetchAIModels" :disabled="loadingModels" class="inline-flex items-center px-3 py-2 border border-slate-300 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors" title="Refresh Models">
                     <svg v-if="loadingModels" class="animate-spin h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                     <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
@@ -824,12 +850,12 @@ onMounted(() => {
             </div>
 
             <div class="pt-5 border-t border-slate-200 flex justify-between items-center">
-              <button
-                type="button"
-                @click="fetchAIModels"
-                :disabled="loadingModels"
-                class="inline-flex items-center justify-center py-2 px-4 border border-slate-300 shadow-sm text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
-              >
+                <button
+                  type="button"
+                  @click="testAIConnection"
+                  :disabled="loadingModels"
+                  class="inline-flex items-center justify-center py-2 px-4 border border-slate-300 shadow-sm text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
+                >
                 {{ loadingModels ? 'Testing...' : 'Test Connection' }}
               </button>
               

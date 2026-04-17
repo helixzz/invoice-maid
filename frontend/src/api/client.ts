@@ -218,6 +218,11 @@ export const api = {
     return res.data
   },
 
+  async testAIConnection(): Promise<{ok: boolean, model?: string, detail?: string}> {
+    const res = await apiClient.post('/settings/ai/test-connection')
+    return res.data
+  },
+
   async getClassifierSettings(): Promise<ClassifierSettingsResponse> {
     const res = await apiClient.get('/settings/classifier')
     return res.data
