@@ -61,7 +61,7 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 - **Automated Email Scanning** — IMAP, POP3, QQ Mail (via auth code), Microsoft Outlook (OAuth2 device code flow)
 - **Scheduled Processing** — configurable scan intervals via APScheduler
 - **Tiered Email Classification** — free heuristics first, cheap metadata second, LLM fallback only for ambiguous cases
-- **Body Link Downloads** — follows download links in email body to retrieve invoices
+- **LLM-Guided Body Link Downloads** — Tier 3 analysis classifies invoice emails and selects the single best direct invoice download link instead of blindly following every body link
 - **Extraction Audit Log** — per-email tracking of why each message was saved, skipped, or failed
 
 ### Invoice intelligence
