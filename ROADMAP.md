@@ -54,6 +54,29 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 Ideas under consideration (not committed):
 
+### Tiered email classification pipeline (P0 for v0.3.0)
+
+The current approach sends every email through the LLM API for classification — expensive and slow when scanning thousands of emails. v0.3.0 should implement a 3-tier classification pipeline that eliminates >90% of LLM calls:
+
+**Tier 1 — Free local signals (instant, zero cost):**
+- Attachment filenames: `.pdf`, `.xml`, `.ofd` with invoice-like names → instant positive
+- Known sender addresses: configurable allowlist (tax bureau domains, e-invoice platforms)
+- Subject keyword match: `发票`, `invoice`, `开票`, `报销`, `税` → strong positive signal
+- No attachments + no links + no keywords → instant negative skip
+
+**Tier 2 — Cheap metadata enrichment (still no LLM):**
+- Attachment MIME types: `application/pdf`, `text/xml`
+- Body URL pattern matching: known invoice download domains
+- Email header analysis: `X-Mailer`, `List-Unsubscribe` (newsletters → skip)
+
+**Tier 3 — LLM fallback (only for ambiguous emails):**
+- Feed enriched context: subject + sender + attachment filenames + body links + body text (first 2KB)
+- Only called when Tier 1 and Tier 2 are inconclusive
+
+Expected impact: **90%+ of emails resolved locally**, LLM called for <10%, massive cost and latency reduction on large mailboxes.
+
+### Other planned items
+
 - Dark mode
 - PWA / installable app
 - Faceted filter sidebar
