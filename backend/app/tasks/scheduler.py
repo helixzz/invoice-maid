@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
+from app.schemas.invoice import VALID_INVOICE_TYPES
 from app.services.ai_service import AIService, _resolve_safelink
 from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders
 from app.services.email_scanner import ScannerFactory, _is_uid_newer
@@ -320,8 +321,10 @@ async def _process_single_email(
 
                     try:
                         parsed = await asyncio.to_thread(parse_invoice, filename, payload)
+                        extracted = None
 
-                        if parsed.confidence < 0.5 and parsed.raw_text:
+                        amount_is_sentinel = parsed.amount is not None and parsed.amount < Decimal("0.10")
+                        if (parsed.confidence < 0.6 or not parsed.invoice_no or amount_is_sentinel) and parsed.raw_text:
                             extracted = await ai.extract_invoice_fields(db, parsed.raw_text)
                             parsed.buyer = parsed.buyer or extracted.buyer
                             parsed.seller = parsed.seller or extracted.seller
@@ -333,7 +336,33 @@ async def _process_single_email(
                             parsed.extraction_method = "llm"
                             parsed.confidence = extracted.confidence
 
-                        if parsed.confidence < 0.5 or not parsed.invoice_no:
+                        final_type = parsed.invoice_type or ""
+                        type_is_valid = (
+                            final_type in VALID_INVOICE_TYPES
+                            or any(vt in final_type for vt in VALID_INVOICE_TYPES if len(vt) > 3)
+                        )
+                        llm_rejected = extracted is not None and not extracted.is_valid_tax_invoice
+                        heuristic_rejected = extracted is None and not parsed.is_vat_document and not type_is_valid
+
+                        if llm_rejected or (not type_is_valid and heuristic_rejected):
+                            db.add(
+                                _record_extraction_log(
+                                    scan_log_id=log_id,
+                                    email_uid=email_data.uid,
+                                    email_subject=email_data.subject,
+                                    attachment_filename=filename,
+                                    outcome="not_vat_invoice",
+                                    classification_tier=classification_tier,
+                                    invoice_no=parsed.invoice_no,
+                                    confidence=parsed.confidence,
+                                    error_detail=f"type={final_type!r} llm_rejected={llm_rejected}",
+                                )
+                            )
+                            await db.commit()
+                            continue
+
+                        amount_is_sentinel = parsed.amount is not None and parsed.amount < Decimal("0.10")
+                        if parsed.confidence < 0.6 or not parsed.invoice_no or amount_is_sentinel:
                             db.add(
                                 _record_extraction_log(
                                     scan_log_id=log_id,
@@ -344,7 +373,11 @@ async def _process_single_email(
                                     classification_tier=classification_tier,
                                     invoice_no=parsed.invoice_no,
                                     confidence=parsed.confidence,
-                                    error_detail=None if parsed.invoice_no else "invoice_no missing",
+                                    error_detail=(
+                                        "amount sentinel"
+                                        if amount_is_sentinel
+                                        else None if parsed.invoice_no else "invoice_no missing"
+                                    ),
                                 )
                             )
                             continue
