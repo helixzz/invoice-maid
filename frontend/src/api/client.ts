@@ -12,6 +12,8 @@ import type {
   StatsResponse,
   AISettingsResponse,
   AISettingsUpdate,
+  ClassifierSettingsResponse,
+  ClassifierSettingsUpdate,
   ExtractionLog,
   SavedView,
   StatsAnalytics,
@@ -214,6 +216,15 @@ export const api = {
   async getAIModels(): Promise<{ models: string[] }> {
     const res = await apiClient.get('/settings/ai/models')
     return res.data
+  },
+
+  async getClassifierSettings(): Promise<ClassifierSettingsResponse> {
+    const res = await apiClient.get('/settings/classifier')
+    return res.data
+  },
+
+  async updateClassifierSettings(data: ClassifierSettingsUpdate): Promise<void> {
+    await apiClient.put('/settings/classifier', data)
   }
 }
 

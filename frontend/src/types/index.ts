@@ -101,6 +101,16 @@ export interface AISettingsUpdate {
   embed_dim?: number
 }
 
+export interface ClassifierSettingsResponse {
+  trusted_senders: string
+  extra_keywords: string
+}
+
+export interface ClassifierSettingsUpdate {
+  trusted_senders?: string
+  extra_keywords?: string
+}
+
 export interface CorrectionLog {
   id: number
   field_name: string
