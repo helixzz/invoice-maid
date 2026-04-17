@@ -73,7 +73,26 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ### Planned improvements
 
-#### Enhanced scan progress transparency (P0 for v0.6.0)
+### Planned improvements
+
+#### LLM-first email analysis — combined classify + link selection (shipped in v0.5.6)
+
+**Architecture shift:** The 3-tier heuristic classifier is replaced with a 2-step pipeline:
+
+1. **Tier 1 only** (hard negatives, free): bulk mail headers OR no content/keywords → skip immediately
+2. **Single LLM call for everything else** → returns `EmailAnalysis` with:
+   - `is_invoice_related` + `invoice_confidence`
+   - `best_download_url` (ONE URL from the explicit links list, or null)
+   - `url_confidence` (gate at ≥0.6 before downloading)
+   - `url_is_safelink` (resolve Outlook SafeLinks before fetch)
+   - `extraction_hints` (platform, format, visible invoice fields for downstream parser)
+   - `skip_reason` (why not invoice, when false)
+
+**Why LLM is actually faster here:** Previous pipeline followed ALL body links (3-10s × N links each). New pipeline: one 1-3s LLM call → at most ONE targeted download. Real-world speedup is 10-100x for invoice-dense mailboxes.
+
+**SafeLink support:** Outlook wraps all URLs in `*.safelinks.protection.outlook.com`. The LLM is explicitly instructed to select SafeLinks when no direct URL is available, and the scanner resolves them before downloading.
+
+**Known limitations still tracked below:**
 
 Current state: the scan progress SSE shows account/email/attachment counters but misses meaningful state information:
 

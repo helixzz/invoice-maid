@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Progress state not visible on connect** — composable now polls `GET /scan/progress` immediately on `connect()` so the current backend state renders instantly (before the first SSE push arrives)
 - **App automatically switches to Scan tab when a scan starts** — so users always see the progress bar whether the scan was triggered manually or by the scheduler
 
+## [0.5.6] - 2026-04-17
+
+### Changed
+- **LLM-first email analysis pipeline** — scan classification now uses only hard Tier 1 negatives/strong attachment positives plus a single structured LLM analysis call for everything else.
+- **Single targeted link download** — Tier 3 scanning no longer blindly downloads every body link. The backend now asks the LLM to classify the email, choose one best invoice URL, return extraction hints, and only downloads that highest-confidence link.
+- **PDF-first processing order** — attachments/downloads are prioritized as PDF → OFD → XML, with LLM format hints able to confirm PDF-first ordering.
+
 ## [0.5.4] - 2026-04-17
 
 ### Added
