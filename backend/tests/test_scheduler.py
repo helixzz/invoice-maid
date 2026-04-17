@@ -3,12 +3,16 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from collections.abc import AsyncIterator
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.tasks.scheduler as scheduler
 from app.models import ExtractionLog, Invoice, ScanLog, WebhookLog
@@ -16,6 +20,16 @@ from app.schemas.invoice import EmailAnalysis, InvoiceFormat, InvoicePlatform, U
 from app.services import scan_progress as sp
 from app.services.email_scanner import RawAttachment, RawEmail
 from app.services.invoice_parser import ParsedInvoice
+
+
+def make_get_db_override(db: AsyncSession):
+    session_factory = async_sessionmaker(bind=db.bind, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    return override_get_db
 
 
 def make_analysis(**overrides) -> EmailAnalysis:
@@ -66,10 +80,7 @@ async def test_scan_all_accounts_happy_path_with_embedding(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -77,6 +88,7 @@ async def test_scan_all_accounts_happy_path_with_embedding(
     monkeypatch.setattr(scheduler, "store_embedding", AsyncMock(return_value=None))
 
     await scheduler.scan_all_accounts()
+    await db.refresh(account)
 
     invoices = (await db.execute(select(Invoice))).scalars().all()
     logs = (await db.execute(select(ScanLog))).scalars().all()
@@ -110,10 +122,7 @@ async def test_scan_all_accounts_tier1_attachment_hit_avoids_llm_call(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -148,10 +157,7 @@ async def test_scan_all_accounts_tier3_uses_raw_body_and_from_for_llm(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     mock_ai_service.analyze_email.return_value = make_analysis(
@@ -204,9 +210,6 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     def parse_invoice(filename, payload):
         del filename, payload
         item = next(parsed_results)
@@ -214,7 +217,7 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
             raise item
         return item
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", parse_invoice)
@@ -229,7 +232,7 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
     assert invoices[-1].invoice_no == mock_ai_service.extract_invoice_fields.return_value.invoice_no
     assert invoices[-1].extraction_method == "llm"
     assert logs[0].invoices_found == 1
-    assert [item.outcome for item in extraction_logs] == ["duplicate", "saved", "parse_error"]
+    assert [item.outcome for item in extraction_logs] == ["duplicate", "saved", "error"]
 
 
 @pytest.mark.asyncio
@@ -244,10 +247,7 @@ async def test_scan_all_accounts_rollback_on_scanner_error(
             del account, last_uid
             raise RuntimeError("scanner failed")
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: BrokenScanner())
 
@@ -436,15 +436,12 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
             del account, last_uid
             return emails
 
-    async def override_get_db():
-        yield db
-
     mock_ai_service.analyze_email.return_value = make_analysis(
         is_invoice_related=False,
         invoice_confidence=0.2,
         skip_reason="非发票",
     )
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: next(parsed_results))
@@ -495,10 +492,7 @@ async def test_scan_all_accounts_embedding_failure_logs_warning(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -545,9 +539,6 @@ async def test_scan_all_accounts_downloads_single_invoice_link(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     download_calls: list[str] = []
 
     mock_ai_service.analyze_email.return_value = make_analysis(
@@ -560,7 +551,7 @@ async def test_scan_all_accounts_downloads_single_invoice_link(
         download_calls.append(url)
         return ("download.xml", b"<invoice />")
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "_download_linked_invoice", fake_download)
@@ -597,9 +588,6 @@ async def test_scan_all_accounts_resolves_safelink_before_download(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     download_mock = AsyncMock(return_value=("download.pdf", b"pdf"))
     resolve_mock = AsyncMock(return_value="https://real.example.com/file.pdf")
     mock_ai_service.analyze_email.return_value = make_analysis(
@@ -609,7 +597,7 @@ async def test_scan_all_accounts_resolves_safelink_before_download(
         url_kind=UrlKind.SAFELINK_WRAPPED,
     )
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "_resolve_safelink", resolve_mock)
@@ -644,9 +632,6 @@ async def test_scan_all_accounts_skips_failed_link_download(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     mock_ai_service.analyze_email.return_value = make_analysis(
         best_download_url="https://example.com/file-a",
         url_confidence=0.92,
@@ -658,7 +643,7 @@ async def test_scan_all_accounts_skips_failed_link_download(
         parse_calls.append((filename, payload))
         raise AssertionError("parse_invoice should not be called when link download fails")
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "_download_linked_invoice", AsyncMock(return_value=None))
@@ -695,13 +680,10 @@ async def test_scan_all_accounts_skips_download_when_best_download_url_missing(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     mock_ai_service.analyze_email.return_value = make_analysis(best_download_url=None)
     download_mock = AsyncMock(return_value=("download.xml", b"<invoice />"))
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "_download_linked_invoice", download_mock)
@@ -747,10 +729,7 @@ async def test_scan_all_accounts_skips_seen_email_uid_and_attachment_pair(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -789,10 +768,7 @@ async def test_scan_all_accounts_logs_low_confidence_even_after_llm_enrichment(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -828,9 +804,6 @@ async def test_scan_all_accounts_prioritizes_pdf_by_llm_hints(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     def fake_parse_invoice(filename: str, payload: bytes) -> ParsedInvoice:
         del payload
         parse_calls.append(filename)
@@ -848,7 +821,7 @@ async def test_scan_all_accounts_prioritizes_pdf_by_llm_hints(
         },
     )
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "_download_linked_invoice", AsyncMock(return_value=("download.pdf", b"pdf")))
@@ -882,9 +855,6 @@ async def test_scan_all_accounts_prioritizes_pdf_download_when_no_attachment_str
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     def fake_parse_invoice(filename: str, payload: bytes) -> ParsedInvoice:
         del payload
         parse_calls.append(filename)
@@ -902,7 +872,7 @@ async def test_scan_all_accounts_prioritizes_pdf_download_when_no_attachment_str
         },
     )
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "_download_linked_invoice", AsyncMock(return_value=("download.pdf", b"pdf")))
@@ -968,10 +938,7 @@ async def test_scan_all_accounts_sends_webhook_with_signature(
             captured["headers"] = headers
             return FakeResponse()
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -1053,10 +1020,7 @@ async def test_scan_all_accounts_webhook_failure_logs_warning_and_continues(
             del url, json, headers
             raise scheduler.httpx.HTTPError("webhook boom")
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -1130,10 +1094,7 @@ async def test_scan_all_accounts_webhook_non_success_response_logs_warning(
             del url, json, headers
             return FakeResponse()
 
-    async def override_get_db():
-        yield db
-
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
@@ -1149,6 +1110,229 @@ async def test_scan_all_accounts_webhook_non_success_response_logs_warning(
     assert webhook_logs[0].success is False
     assert webhook_logs[0].error_detail == "invalid payload"
     assert any("Webhook delivery failed for invoice INV-WEBHOOK-422 with status 422" in warning for warning in warnings)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(scheduler.logger, "warning", lambda message, *args: warnings.append(message % args))
+
+    await scheduler.scan_all_accounts()
+
+    webhook_logs = (await db.execute(select(WebhookLog))).scalars().all()
+    assert len(webhook_logs) == 1
+    assert webhook_logs[0].status_code == 422
+    assert webhook_logs[0].success is False
+    assert webhook_logs[0].error_detail == "invalid payload"
+    assert any("Webhook delivery failed for invoice INV-WEBHOOK-422 with status 422" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_process_single_email_returns_email_result_and_saves_invoice(
+    db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    account = await create_email_account(last_scan_uid=None)
+    scan_log = ScanLog(
+        email_account_id=account.id,
+        started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        emails_scanned=0,
+        invoices_found=0,
+    )
+    db.add(scan_log)
+    await db.commit()
+    await db.refresh(scan_log)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(
+        scheduler,
+        "parse_invoice",
+        lambda filename, payload: ParsedInvoice(invoice_no="INV-SINGLE", raw_text="raw", confidence=0.9),
+    )
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    result = await scheduler._process_single_email(
+        email_data=RawEmail(
+            uid="uid-1",
+            subject="Invoice",
+            body_text="body",
+            body_html="",
+            from_addr="sender@test",
+            received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+        ),
+        classifier=SimpleNamespace(classify_tier1=lambda email: SimpleNamespace(is_invoice=True)),
+        ai=mock_ai_service,
+        file_mgr=scheduler.FileManager(settings.STORAGE_PATH),
+        settings=settings,
+        log_id=scan_log.id,
+        account_id=account.id,
+    )
+
+    assert result == scheduler._EmailResult(invoices_added=1, last_uid="uid-1", error=None)
+
+
+@pytest.mark.asyncio
+async def test_process_single_email_handles_invoice_integrity_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    added: list[object] = []
+    committed: list[bool] = []
+    rolled_back: list[bool] = []
+
+    class FakeScalarResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class FakeDB:
+        def add(self, item):
+            added.append(item)
+
+        async def commit(self):
+            committed.append(True)
+
+        async def rollback(self):
+            rolled_back.append(True)
+
+        async def execute(self, stmt):
+            del stmt
+            return FakeScalarResult()
+
+        async def flush(self):
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+
+    async def fake_get_db():
+        yield FakeDB()
+
+    monkeypatch.setattr(scheduler, "get_db", fake_get_db)
+    monkeypatch.setattr(
+        scheduler,
+        "parse_invoice",
+        lambda filename, payload: ParsedInvoice(invoice_no="INV-RACE", raw_text="raw", confidence=0.9),
+    )
+
+    result = await scheduler._process_single_email(
+        email_data=RawEmail(
+            uid="uid-race",
+            subject="Invoice",
+            body_text="body",
+            body_html="",
+            from_addr="sender@test",
+            received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            attachments=[RawAttachment(filename="invoice.pdf", payload=b"pdf", content_type="application/pdf")],
+        ),
+        classifier=SimpleNamespace(classify_tier1=lambda email: SimpleNamespace(is_invoice=True)),
+        ai=SimpleNamespace(
+            analyze_email=AsyncMock(),
+            extract_invoice_fields=AsyncMock(),
+            embed_text=AsyncMock(),
+        ),
+        file_mgr=SimpleNamespace(save_invoice=AsyncMock(return_value="saved.pdf")),
+        settings=SimpleNamespace(sqlite_vec_available=False),
+        log_id=1,
+        account_id=1,
+    )
+
+    assert result.invoices_added == 0
+    assert rolled_back == [True]
+    assert committed == [True, True]
+    assert any(getattr(item, "outcome", None) == "duplicate" for item in added)
+
+
+@pytest.mark.asyncio
+async def test_process_single_email_returns_error_result_on_outer_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    rolled_back: list[bool] = []
+
+    class FakeDB:
+        async def rollback(self):
+            rolled_back.append(True)
+
+    async def fake_get_db():
+        yield FakeDB()
+
+    monkeypatch.setattr(scheduler, "get_db", fake_get_db)
+
+    result = await scheduler._process_single_email(
+        email_data=RawEmail(
+            uid="uid-fail",
+            subject="Invoice",
+            body_text="body",
+            body_html="",
+            from_addr="sender@test",
+            received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            attachments=[],
+        ),
+        classifier=SimpleNamespace(classify_tier1=lambda email: (_ for _ in ()).throw(RuntimeError("boom"))),
+        ai=SimpleNamespace(),
+        file_mgr=SimpleNamespace(),
+        settings=SimpleNamespace(sqlite_vec_available=False),
+        log_id=1,
+        account_id=1,
+    )
+
+    assert result == scheduler._EmailResult(invoices_added=0, last_uid="uid-fail", error="boom")
+    assert rolled_back == [True]
+
+
+@pytest.mark.asyncio
+async def test_process_single_email_returns_default_when_no_db_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    class EmptyDBIterator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    def fake_get_db():
+        return EmptyDBIterator()
+
+    monkeypatch.setattr(scheduler, "get_db", fake_get_db)
+
+    result = await scheduler._process_single_email(
+        email_data=SimpleNamespace(uid="uid-none"),
+        classifier=SimpleNamespace(),
+        ai=SimpleNamespace(),
+        file_mgr=SimpleNamespace(),
+        settings=SimpleNamespace(sqlite_vec_available=False),
+        log_id=1,
+        account_id=1,
+    )
+
+    assert result == scheduler._EmailResult()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_counts_task_exception_and_error_result(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    account = await create_email_account(last_scan_uid=None)
+    emails = [
+        RawEmail(uid="uid-1", subject="A", body_text="body", body_html="", from_addr="a@test", received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc), attachments=[]),
+        RawEmail(uid="uid-2", subject="B", body_text="body", body_html="", from_addr="b@test", received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc), attachments=[]),
+    ]
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return emails
+
+    call_count = 0
+
+    async def fake_process_single_email(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("task failed")
+        return scheduler._EmailResult(invoices_added=0, last_uid=kwargs["email_data"].uid, error="email failed")
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_process_single_email", fake_process_single_email)
+
+    await scheduler.scan_all_accounts()
+    await db.refresh(account)
+
+    progress = sp.get_progress()
+    assert progress.errors == 2
+    assert progress.emails_processed == 2
+    assert account.last_scan_uid in {"uid-1", "uid-2"}
 
 
 @pytest.mark.asyncio
@@ -1185,12 +1369,9 @@ async def test_scan_all_accounts_skips_webhook_when_disabled(
             del account, last_uid
             return [email]
 
-    async def override_get_db():
-        yield db
-
     post_mock = AsyncMock()
 
-    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
     monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)

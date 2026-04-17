@@ -51,7 +51,7 @@ async def test_trigger_scan_returns_409_when_already_running(client, auth_header
 
 async def test_progress_snapshot_accepts_query_token_and_returns_progress(client, auth_token) -> None:
     sp.reset_progress(total_accounts=2)
-    sp.update_progress(current_account_idx=1, current_account_name="Inbox")
+    await sp.update_progress(current_account_idx=1, current_account_name="Inbox")
 
     response = await client.get(f"/api/v1/scan/progress?token={auth_token}")
 
@@ -80,7 +80,7 @@ async def test_progress_stream_emits_progress_and_done_event(monkeypatch: pytest
     assert first["event"] == "progress"
     assert '"phase": "scanning"' in first["data"]
 
-    sp.finish_progress()
+    await sp.finish_progress()
     second = await anext(stream)
     assert second["event"] == "progress"
     assert '"phase": "done"' in second["data"]
@@ -151,7 +151,7 @@ async def test_progress_stream_continues_after_scanning_event_until_disconnect(
     stream = response.body_iterator
     assert (await anext(stream))["event"] == "progress"
 
-    sp.update_progress(current_account_name="Mailbox")
+    await sp.update_progress(current_account_name="Mailbox")
     second = await anext(stream)
     assert second["event"] == "progress"
     assert '"phase": "scanning"' in second["data"]
