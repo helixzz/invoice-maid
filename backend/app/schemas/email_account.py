@@ -31,3 +31,18 @@ class EmailAccountResponse(BaseModel):
     is_active: bool
     last_scan_uid: str | None
     created_at: str
+
+
+class OAuthInitiateResponse(BaseModel):
+    status: str
+    verification_uri: str | None = None
+    user_code: str | None = None
+    expires_at: str | None = None
+
+
+class OAuthStatusResponse(BaseModel):
+    status: str
+    verification_uri: str | None = None
+    user_code: str | None = None
+    expires_at: str | None = None
+    detail: str | None = None

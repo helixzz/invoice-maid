@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import app.api.email_accounts as accounts_api
+from sqlalchemy import select
+
+from app.models import EmailAccount
+from app.services.email_scanner import OAuthFlowState, oauth_registry
 
 
 async def test_email_accounts_crud(client, auth_headers) -> None:
@@ -119,3 +126,397 @@ async def test_email_account_test_connection_missing_account(client, auth_header
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Account not found"}
+
+
+async def test_outlook_account_creation_auto_assigns_oauth_token_path(client, auth_headers, db, settings) -> None:
+    response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "Outlook",
+            "type": "outlook",
+            "username": "azure-client-id",
+            "password": None,
+            "is_active": True,
+        },
+    )
+
+    assert response.status_code == 201
+    account_id = response.json()["id"]
+    account = await db.scalar(select(EmailAccount).where(EmailAccount.id == account_id))
+    assert account is not None
+    assert account.oauth_token_path == str((Path(settings.STORAGE_PATH).parent / "oauth" / f"account_{account_id}_token.json").resolve())
+
+
+async def test_email_account_test_connection_outlook_requires_auth_message(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    scanner = SimpleNamespace(
+        test_connection=AsyncMock(side_effect=RuntimeError("Outlook authorization required. Use the Settings page to authenticate."))
+    )
+    monkeypatch.setattr(accounts_api.ScannerFactory, "get_scanner", lambda account_type: scanner)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/test-connection", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "detail": "Outlook authorization required. Use the Authenticate button.",
+    }
+
+
+async def test_oauth_initiate_rejects_non_outlook_account(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(type="imap")
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "OAuth is only supported for Outlook accounts"}
+
+
+async def test_oauth_initiate_missing_account(client, auth_headers) -> None:
+    response = await client.post("/api/v1/accounts/999/oauth/initiate", headers=auth_headers)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Account not found"}
+
+
+async def test_oauth_initiate_returns_authorized_when_cached_token_exists(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=True))
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "authorized",
+        "verification_uri": None,
+        "user_code": None,
+        "expires_at": None,
+    }
+
+
+async def test_oauth_initiate_starts_pending_flow_and_is_idempotent(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        ),
+    )
+    monkeypatch.setattr(accounts_api, "_attach_flow_task", lambda account, scanner, flow, state: None)
+
+    first = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+    second = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "pending"
+    assert first.json()["verification_uri"] == "https://microsoft.com/devicelogin"
+    assert first.json()["user_code"] == "ABCD-EFGH"
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+async def test_oauth_status_returns_current_state(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(type="outlook")
+    oauth_registry.set(
+        account.id,
+        OAuthFlowState(
+            status="pending",
+            verification_uri="https://microsoft.com/devicelogin",
+            user_code="ABCD-EFGH",
+            expires_at=datetime(2026, 4, 17, 12, 34, 56, tzinfo=timezone.utc),
+        ),
+    )
+
+    response = await client.get(f"/api/v1/accounts/{account.id}/oauth/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "pending",
+        "verification_uri": "https://microsoft.com/devicelogin",
+        "user_code": "ABCD-EFGH",
+        "expires_at": "2026-04-17T12:34:56Z",
+        "detail": None,
+    }
+
+
+async def test_oauth_status_marks_expired_flow(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(type="outlook")
+    oauth_registry.set(
+        account.id,
+        OAuthFlowState(
+            status="pending",
+            verification_uri="https://microsoft.com/devicelogin",
+            user_code="ABCD-EFGH",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        ),
+    )
+
+    response = await client.get(f"/api/v1/accounts/{account.id}/oauth/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "expired"
+    assert response.json()["detail"] == "Device code expired"
+
+
+async def test_oauth_status_without_flow_or_token(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+
+    response = await client.get(f"/api/v1/accounts/{account.id}/oauth/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "none",
+        "verification_uri": None,
+        "user_code": None,
+        "expires_at": None,
+        "detail": "Authorization not started",
+    }
+
+
+async def test_oauth_status_without_flow_but_with_token(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=True))
+
+    response = await client.get(f"/api/v1/accounts/{account.id}/oauth/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "authorized",
+        "verification_uri": None,
+        "user_code": None,
+        "expires_at": None,
+        "detail": None,
+    }
+
+
+async def test_oauth_status_rejects_non_outlook_account(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(type="imap")
+
+    response = await client.get(f"/api/v1/accounts/{account.id}/oauth/status", headers=auth_headers)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "OAuth is only supported for Outlook accounts"}
+
+
+async def test_oauth_status_missing_account(client, auth_headers) -> None:
+    response = await client.get("/api/v1/accounts/999/oauth/status", headers=auth_headers)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Account not found"}
+
+
+async def test_oauth_initiate_with_expired_existing_state_restarts_flow(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    oauth_registry.set(
+        account.id,
+        OAuthFlowState(
+            status="pending",
+            verification_uri="https://old",
+            user_code="OLD",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        ),
+    )
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "NEW-CODE",
+                "expires_in": 900,
+            }
+        ),
+    )
+    monkeypatch.setattr(accounts_api, "_attach_flow_task", lambda account, scanner, flow, state: None)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["user_code"] == "NEW-CODE"
+
+
+async def test_oauth_initiate_background_task_marks_error_on_failure(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        ),
+    )
+
+    async def failing_complete(_self, account, flow):
+        del account, flow
+        raise RuntimeError("device flow failed")
+
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", failing_complete)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+    assert response.status_code == 200
+
+    await asyncio.sleep(0)
+    state = oauth_registry.get(account.id)
+    assert state is not None
+    assert state.status == "error"
+    assert state.detail == "device flow failed"
+
+
+async def test_oauth_initiate_background_task_marks_authorized_on_success(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        ),
+    )
+
+    async def complete(_self, account, flow):
+        del account, flow
+        return {"access_token": "token"}
+
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", complete)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+    assert response.status_code == 200
+
+    await asyncio.sleep(0)
+    state = oauth_registry.get(account.id)
+    assert state is not None
+    assert state.status == "authorized"
+    assert state.detail is None
+
+
+async def test_oauth_initiate_background_task_marks_error_from_result(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        ),
+    )
+
+    async def complete(_self, account, flow):
+        del account, flow
+        return {"error": "authorization_pending", "error_description": "still waiting"}
+
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", complete)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+    assert response.status_code == 200
+
+    await asyncio.sleep(0)
+    state = oauth_registry.get(account.id)
+    assert state is not None
+    assert state.status == "error"
+    assert state.detail == "still waiting"
+
+
+async def test_oauth_initiate_background_task_marks_expired_from_result(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "expires_in": -1,
+            }
+        ),
+    )
+
+    async def complete(_self, account, flow):
+        del account, flow
+        return {"error": "expired_token"}
+
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", complete)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+    assert response.status_code == 200
+
+    await asyncio.sleep(0)
+    state = oauth_registry.get(account.id)
+    assert state is not None
+    assert state.status == "expired"
+    assert state.detail == "Device code expired"
+
+
+async def test_oauth_initiate_background_task_handles_cancellation(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    monkeypatch.setattr(accounts_api.OutlookScanner, "has_cached_token_async", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        accounts_api.OutlookScanner,
+        "initiate_device_flow_async",
+        AsyncMock(
+            return_value={
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        ),
+    )
+
+    async def cancelled(_self, account, flow):
+        del account, flow
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", cancelled)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
+    assert response.status_code == 200
+
+    await asyncio.sleep(0)
+    state = oauth_registry.get(account.id)
+    assert state is not None
+    assert state.status == "pending"
+    assert state.detail is None
+
+
+async def test_email_account_test_connection_generic_runtime_error(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="outlook")
+    scanner = SimpleNamespace(test_connection=AsyncMock(side_effect=RuntimeError("other runtime failure")))
+    monkeypatch.setattr(accounts_api.ScannerFactory, "get_scanner", lambda account_type: scanner)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/test-connection", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": False, "detail": "Connection test failed"}
+
+
+async def test_email_account_test_connection_generic_exception(client, auth_headers, create_email_account, monkeypatch) -> None:
+    account = await create_email_account(type="imap")
+    scanner = SimpleNamespace(test_connection=AsyncMock(side_effect=ValueError("boom")))
+    monkeypatch.setattr(accounts_api.ScannerFactory, "get_scanner", lambda account_type: scanner)
+
+    response = await client.post(f"/api/v1/accounts/{account.id}/test-connection", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": False, "detail": "Connection test failed"}
