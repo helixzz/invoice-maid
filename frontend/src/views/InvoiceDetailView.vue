@@ -13,9 +13,10 @@ const authStore = useAuthStore()
 const invoice = ref<Invoice | null>(null)
 const loading = ref(true)
 const error = ref('')
-const pdfUrl = ref('')
+const previewUrl = ref('')
 
 const fetchInvoice = async () => {
+  loading.value = true
   const id = Number(route.params.id)
   if (isNaN(id)) {
     error.value = 'Invalid invoice ID'
@@ -25,7 +26,9 @@ const fetchInvoice = async () => {
 
   try {
     invoice.value = await api.getInvoice(id)
-    await loadPdfBlob(id)
+    if (invoice.value.source_format?.toLowerCase() === 'pdf') {
+      await loadPreviewBlob(id)
+    }
   } catch (err: any) {
     error.value = 'Failed to load invoice details'
     console.error(err)
@@ -34,7 +37,7 @@ const fetchInvoice = async () => {
   }
 }
 
-const loadPdfBlob = async (id: number) => {
+const loadPreviewBlob = async (id: number) => {
   try {
     const response = await fetch(`/api/v1/invoices/${id}/download`, {
       headers: {
@@ -42,12 +45,12 @@ const loadPdfBlob = async (id: number) => {
       }
     })
     
-    if (!response.ok) throw new Error('Failed to load PDF')
+    if (!response.ok) throw new Error('Failed to load document')
     
     const blob = await response.blob()
-    pdfUrl.value = URL.createObjectURL(blob)
+    previewUrl.value = URL.createObjectURL(blob)
   } catch (err) {
-    console.error('Error fetching PDF blob', err)
+    console.error('Error fetching document blob', err)
   }
 }
 
@@ -70,15 +73,34 @@ const goBack = () => {
   router.push('/invoices')
 }
 
-const downloadInvoice = () => {
-  if (pdfUrl.value) {
+const downloadInvoice = async () => {
+  if (!invoice.value) return
+  
+  try {
+    const response = await fetch(`/api/v1/invoices/${invoice.value.id}/download`, {
+      headers: {
+        'Authorization': `Bearer ${authStore.token}`
+      }
+    })
+    
+    if (!response.ok) throw new Error('Failed to download invoice')
+    
+    const ext = api.invoiceExtension(invoice.value.source_format || 'pdf')
+    const fallbackFilename = `${invoice.value.buyer || 'buyer'}_${invoice.value.seller || 'seller'}_${invoice.value.invoice_no || 'invoice'}${ext}`
+    
+    const filename = api.extractFilename(response, fallbackFilename)
+    
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = pdfUrl.value
-    const filename = `${invoice.value?.buyer || 'buyer'}_${invoice.value?.seller || 'seller'}_${invoice.value?.invoice_no || 'invoice'}.pdf`
+    a.href = url
     a.download = filename
     document.body.appendChild(a)
     a.click()
+    window.URL.revokeObjectURL(url)
     document.body.removeChild(a)
+  } catch (error) {
+    console.error('Failed to download invoice', error)
   }
 }
 
@@ -195,12 +217,12 @@ onMounted(() => {
         <div class="px-6 py-5 border-t border-slate-200">
           <h4 class="text-sm font-medium text-slate-900 mb-4 uppercase tracking-wide">Document Preview</h4>
           <div class="bg-slate-100 rounded-lg border border-slate-200 flex items-center justify-center min-h-[600px] overflow-hidden">
-            <iframe v-if="pdfUrl" :src="pdfUrl" class="w-full h-[800px]" title="PDF Preview"></iframe>
+            <iframe v-if="previewUrl && invoice?.source_format?.toLowerCase() === 'pdf'" :src="previewUrl" class="w-full h-[800px]" title="Document Preview"></iframe>
             <div v-else class="text-slate-400 flex flex-col items-center justify-center p-12">
               <svg class="h-12 w-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
               </svg>
-              <span>Preview not available</span>
+              <span>Preview not available for {{ invoice?.source_format || 'unknown' }} files. Click Download to save.</span>
             </div>
           </div>
         </div>

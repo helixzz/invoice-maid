@@ -46,6 +46,21 @@ apiClient.interceptors.response.use(
 )
 
 export const api = {
+  // Helpers
+  extractFilename(response: Response, fallback: string): string {
+    const disposition = response.headers.get('Content-Disposition')
+    if (disposition) {
+      const match = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i)
+      if (match) return decodeURIComponent(match[1].replace(/"/g, ''))
+    }
+    return fallback
+  },
+
+  invoiceExtension(sourceFormat: string): string {
+    const map: Record<string, string> = { pdf: '.pdf', xml: '.xml', ofd: '.ofd' }
+    return map[sourceFormat.toLowerCase()] || '.pdf'
+  },
+
   // Auth
   async login(password: string): Promise<{access_token: string}> {
     const formData = new FormData()
