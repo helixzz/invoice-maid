@@ -7,6 +7,16 @@ from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 
 
+VALID_INVOICE_TYPES: frozenset[str] = frozenset({
+    "增值税专用发票", "增值税普通发票", "增值税电子专用发票", "增值税电子普通发票",
+    "增值税普通发票（卷票）", "通行费发票",
+    "电子发票（增值税专用发票）", "电子发票（普通发票）", "全面数字化的电子发票",
+    "数电专票", "数电普票", "电子专票", "电子普票",
+    "机动车销售统一发票", "二手车销售统一发票",
+    "01", "03", "04", "08", "10", "11", "14", "15", "0910", "0920",
+})
+
+
 class InvoiceExtract(BaseModel):
     """LLM-extracted invoice fields — used with instructor for structured output."""
 
@@ -18,6 +28,10 @@ class InvoiceExtract(BaseModel):
     item_summary: str = Field(description="商品/服务一句话中文概括")
     invoice_type: str = Field(description="发票类型，如增值税电子普通发票、数电专票")
     confidence: float = Field(ge=0, le=1, default=0.9)
+    is_valid_tax_invoice: bool = Field(
+        default=False,
+        description="True ONLY when the document is an actual Chinese VAT tax invoice (增值税发票). False for hotel receipts, ride itineraries, payment receipts, or any non-invoice document.",
+    )
 
 
 class InvoicePlatform(str, Enum):
