@@ -47,19 +47,17 @@ class ScanProgress:
 
     @property
     def email_pct(self) -> float:
-        return self.current_email_idx / self.total_emails if self.total_emails else 0.0
+        return self.emails_processed / self.total_emails if self.total_emails else 0.0
 
     @property
     def overall_pct(self) -> float:
         if not self.total_accounts:
             return 0.0
-        return min(
-            self.current_account_idx / self.total_accounts * 0.10
-            + (self.current_account_idx / self.total_accounts)
-            * (self.current_email_idx / max(self.total_emails, 1))
-            * 0.90,
-            1.0,
-        )
+        completed = max(0, self.current_account_idx - 1)
+        base = completed / self.total_accounts
+        current_weight = 1.0 / self.total_accounts
+        email_frac = self.emails_processed / max(self.total_emails, 1)
+        return min(base + current_weight * email_frac, 1.0)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

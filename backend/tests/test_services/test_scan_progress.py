@@ -13,16 +13,18 @@ def test_scan_progress_properties_to_dict_and_to_json() -> None:
         phase=sp.ScanPhase.SCANNING,
         total_accounts=4,
         current_account_idx=2,
-        total_emails=5,
-        current_email_idx=3,
+        total_emails=10,
+        emails_processed=3,
     )
 
     assert progress.account_pct == 0.5
-    assert progress.email_pct == 0.6
-    assert progress.overall_pct == 0.32
+    assert progress.email_pct == 0.3
+    # overall: completed=(2-1)/4=0.25, current_weight=0.25, email_frac=3/10=0.3
+    # = 0.25 + 0.25 * 0.3 = 0.325
+    assert progress.overall_pct == 0.325
     assert progress.to_dict()["account_pct"] == 50.0
-    assert progress.to_dict()["email_pct"] == 60.0
-    assert progress.to_dict()["overall_pct"] == 32.0
+    assert progress.to_dict()["email_pct"] == 30.0
+    assert progress.to_dict()["overall_pct"] == 32.5
     assert progress.to_dict()["phase"] == "scanning"
     assert json.loads(progress.to_json())["phase"] == "scanning"
 
