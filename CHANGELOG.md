@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.2] - 2026-04-18
+
+### Fixed
+- **Scan log timestamps inconsistent** — naive datetimes from the database are now normalized to UTC before serialization, ensuring the frontend renders all times consistently in the user's local timezone
+
 ## [0.6.1] - 2026-04-18
 
 ### Fixed
