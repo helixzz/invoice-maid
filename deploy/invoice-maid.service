@@ -5,6 +5,10 @@
 #
 # IMPORTANT: --workers 1 is required because APScheduler runs in-process.
 # Multiple workers would start duplicate schedulers and duplicate scheduled jobs.
+#
+# --log-level controls uvicorn's own loggers. Application loggers (app.*,
+# apscheduler, sqlalchemy, ...) are controlled by LOG_LEVEL in the .env file;
+# both go to stderr and are captured by the systemd journal.
 
 [Unit]
 Description=Invoice Maid — AI Invoice Extraction Service
