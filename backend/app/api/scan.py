@@ -6,12 +6,15 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sse_starlette import EventSourceResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from app.database import get_db
 from app.deps import CurrentUser
 from app.models import ExtractionLog, ScanLog
+from app.services import scan_progress as sp
 from app.tasks.scheduler import scan_all_accounts
 
 router = APIRouter(prefix="/scan", tags=["scan"])
@@ -84,8 +87,45 @@ def _serialize_extraction(log: ExtractionLog) -> ExtractionLogResponse:
 
 @router.post("/trigger", response_model=ScanTriggerResponse)
 async def trigger_scan(_current_user: CurrentUser) -> ScanTriggerResponse:
+    if sp.is_scanning():
+        raise HTTPException(status_code=409, detail="Scan already in progress")
     _ = asyncio.create_task(scan_all_accounts())
     return ScanTriggerResponse(status="triggered")
+
+
+@router.get("/progress/stream")
+async def progress_stream(
+    request: Request,
+    _current_user: CurrentUser,
+) -> EventSourceResponse:
+    queue = sp.subscribe()
+
+    async def generate():
+        yield {"data": sp.get_progress().to_json(), "event": "progress"}
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    yield {"data": "", "event": "ping"}
+                    continue
+                yield {"data": payload, "event": "progress"}
+                if sp.get_progress().phase in (sp.ScanPhase.DONE, sp.ScanPhase.ERROR):
+                    break
+        finally:
+            sp.unsubscribe(queue)
+
+    return EventSourceResponse(
+        generate(),
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/progress")
+async def progress_snapshot(_current_user: CurrentUser) -> dict[str, object]:
+    return sp.get_progress().to_dict()
 
 
 @router.get("/logs", response_model=ScanLogListResponse)

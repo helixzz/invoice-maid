@@ -1,60 +1,28 @@
 from __future__ import annotations
 
-from importlib import import_module
 from typing import Annotated
-from typing import Protocol, TypeVar, cast
+
+from fastapi import Depends, Header, HTTPException, Query, status
+from jose import ExpiredSignatureError, JWTError
 
 from app.services.auth_service import decode_access_token
 
-_F = TypeVar("_F")
 
-
-class _DependsFactory(Protocol):
-    def __call__(self, dependency: object) -> object: ...
-
-
-class _HTTPExceptionFactory(Protocol):
-    def __call__(self, *, status_code: int, detail: str) -> Exception: ...
-
-
-class _StatusProtocol(Protocol):
-    HTTP_401_UNAUTHORIZED: int
-
-
-class _BearerFactory(Protocol):
-    def __call__(self, *, auto_error: bool = True) -> object: ...
-
-
-class _CredentialsLike(Protocol):
-    credentials: str
-
-
-_fastapi = import_module("fastapi")
-_security = import_module("fastapi.security")
-_jose = import_module("jose")
-
-Depends = cast(_DependsFactory, getattr(_fastapi, "Depends"))
-HTTPException = cast(_HTTPExceptionFactory, getattr(_fastapi, "HTTPException"))
-status = cast(_StatusProtocol, getattr(_fastapi, "status"))
-HTTPBearer = cast(_BearerFactory, getattr(_security, "HTTPBearer"))
-ExpiredSignatureError = cast(type[Exception], getattr(_jose, "ExpiredSignatureError"))
-JWTError = cast(type[Exception], getattr(_jose, "JWTError"))
-
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-def get_current_user(
-    credentials: Annotated[object | None, Depends(bearer_scheme)],
+async def get_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+    token: Annotated[str | None, Query()] = None,
 ) -> str:
-    token = cast(str | None, getattr(cast(_CredentialsLike | None, credentials), "credentials", None))
-    if not token:
+    raw_token = token
+    if raw_token is None and authorization is not None:
+        raw_token = authorization.removeprefix("Bearer ").strip() or None
+    if raw_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
     try:
-        payload = decode_access_token(token)
+        payload = decode_access_token(raw_token)
     except ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
