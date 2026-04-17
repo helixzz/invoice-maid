@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -59,11 +60,17 @@ class ExtractionLogListResponse(BaseModel):
 
 
 def _serialize_log(log: ScanLog) -> ScanLogResponse:
+    started = log.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    finished = log.finished_at
+    if finished is not None and finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
     return ScanLogResponse(
         id=log.id,
         email_account_id=log.email_account_id,
-        started_at=log.started_at.isoformat(),
-        finished_at=log.finished_at.isoformat() if log.finished_at else None,
+        started_at=started.isoformat(),
+        finished_at=finished.isoformat() if finished else None,
         emails_scanned=log.emails_scanned,
         invoices_found=log.invoices_found,
         error_message=log.error_message,
