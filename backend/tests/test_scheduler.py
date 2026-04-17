@@ -192,6 +192,70 @@ def test_start_and_stop_scheduler(monkeypatch: pytest.MonkeyPatch, settings) -> 
     scheduler.stop_scheduler()
 
 
+@pytest.mark.parametrize(
+    ("url", "content_type", "expected"),
+    [
+        ("https://example.com/invoice.xml?token=1", None, "download.xml"),
+        ("https://example.com/path/file", "application/pdf", "download.pdf"),
+        ("https://example.com/path/file", "text/xml; charset=utf-8", "download.xml"),
+        ("https://example.com/path/file", "application/zip", "download.ofd"),
+        ("https://example.com/path/file", "text/plain", "download.pdf"),
+        ("https://example.com/path/file", None, "download.pdf"),
+    ],
+)
+def test_guess_filename_from_link(url: str, content_type: str | None, expected: str) -> None:
+    assert scheduler._guess_filename_from_link(url, content_type) == expected
+
+
+@pytest.mark.asyncio
+async def test_download_linked_invoice_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        headers = {"content-type": "application/xml"}
+        content = b"<invoice />"
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            assert url == "https://example.com/invoice"
+            return FakeResponse()
+
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    assert await scheduler._download_linked_invoice("https://example.com/invoice") == (
+        "download.xml",
+        b"<invoice />",
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_linked_invoice_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: list[str] = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str):
+            raise scheduler.httpx.HTTPError(f"boom: {url}")
+
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(scheduler.logger, "warning", lambda message, *args: warnings.append(message % args))
+
+    assert await scheduler._download_linked_invoice("https://example.com/invoice") is None
+    assert any("Failed to download invoice link https://example.com/invoice" in warning for warning in warnings)
+
+
 @pytest.mark.asyncio
 async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_failure(
     db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
@@ -275,3 +339,107 @@ async def test_scan_all_accounts_embedding_failure_logs_warning(
     await scheduler.scan_all_accounts()
 
     assert any("Embedding failed for invoice INV-EMBED-FAIL" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_downloads_invoice_links(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    _account = await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="link-2",
+        subject="Invoice Link",
+        body_text="download at https://example.com/invoice.xml",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=["https://example.com/invoice.xml", "https://example.com/invoice.xml"],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="INV-LINK-1",
+        buyer="Link Buyer",
+        seller="Link Seller",
+        amount=Decimal("12.00"),
+        invoice_date=date(2024, 1, 3),
+        invoice_type="电子普通发票",
+        item_summary="链接发票",
+        raw_text="raw",
+        source_format="xml",
+        extraction_method="xml_xpath",
+        confidence=0.9,
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    download_calls: list[str] = []
+
+    async def fake_download(url: str):
+        download_calls.append(url)
+        return ("download.xml", b"<invoice />")
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_download_linked_invoice", fake_download)
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="linked.xml"))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "INV-LINK-1"
+    assert download_calls == ["https://example.com/invoice.xml"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_skips_failed_link_download(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="link-fail-1",
+        subject="Invoice Link",
+        body_text="download at https://example.com/invoice.xml",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=["https://example.com/invoice.xml"],
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    async def override_get_db():
+        yield db
+
+    parse_calls: list[tuple[str, bytes]] = []
+
+    def fake_parse_invoice(filename: str, payload: bytes):
+        parse_calls.append((filename, payload))
+        raise AssertionError("parse_invoice should not be called when link download fails")
+
+    monkeypatch.setattr(scheduler, "get_db", override_get_db)
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "_download_linked_invoice", AsyncMock(return_value=None))
+    monkeypatch.setattr(scheduler, "parse_invoice", fake_parse_invoice)
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    logs = (await db.execute(select(ScanLog))).scalars().all()
+    assert invoices == []
+    assert parse_calls == []
+    assert logs[0].emails_scanned == 1
+    assert logs[0].invoices_found == 0
