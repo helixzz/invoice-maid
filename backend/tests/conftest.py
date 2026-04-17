@@ -177,10 +177,12 @@ def reset_scan_progress_state() -> None:
     scan_progress_module._progress = scan_progress_module.ScanProgress()
     scan_progress_module._subscribers.clear()
     scan_progress_module._scan_lock = asyncio.Lock()
+    scan_progress_module._progress_lock = asyncio.Lock()
     yield
     scan_progress_module._progress = scan_progress_module.ScanProgress()
     scan_progress_module._subscribers.clear()
     scan_progress_module._scan_lock = asyncio.Lock()
+    scan_progress_module._progress_lock = asyncio.Lock()
 
 
 @pytest.fixture
