@@ -199,7 +199,7 @@ class ImapScanner(BaseEmailScanner):
         emails: list[RawEmail] = []
 
         with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
-            criteria = AND(seen=False) if last_uid is None else AND()
+            criteria = AND(seen=False) if last_uid is None else "ALL"
             limit = FIRST_SCAN_LIMIT if last_uid is None else None
 
             for msg in mailbox.fetch(criteria, limit=limit, reverse=True):
