@@ -94,7 +94,7 @@ async def test_get_stats_populated_db(client, auth_headers, db, create_email_acc
             {"month": today.strftime("%Y-%m"), "total": 150.0, "count": 2},
         ],
         "top_sellers": [{"seller": "Beta Seller", "total": 175.0, "count": 3}],
-        "by_type": [{"type": "电子普通发票", "count": 3}],
+        "by_type": [{"type": "增值税电子普通发票", "count": 3}],
         "by_method": [{"method": "regex", "count": 3}],
         "avg_confidence": 0.8,
     }
