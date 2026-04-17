@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.5] - 2026-04-17
+
+### Fixed
+- Outlook personal account OAuth now uses Microsoft Graph Explorer client ID (14d82eec-...), supporting personal @outlook.com, @live.cn, @hotmail.com, @msn.com without Azure App Registration
+- Scan job no longer aborts when one mailbox fails — each account scanned independently, failures logged per-account
+- MissingGreenlet crash on scan failure resolved — failed accounts write error state via raw SQL after rollback
+- Toast notifications wider (max-w-md) to prevent long messages wrapping into multiple lines
+- Account form modal widened (sm:max-w-2xl) for Outlook personal/organizational radio group
+- OAuth authentication modal widened (sm:max-w-xl) for device code display
+
+### Changed
+- OUTLOOK_PERSONAL_CLIENT_ID default changed from Azure CLI to Graph Explorer (14d82eec-...)
+
 ## [0.4.4] - 2026-04-17
 
 ### Added

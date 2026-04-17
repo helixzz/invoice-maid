@@ -34,7 +34,7 @@ defineExpose({ addToast })
       <div
         v-for="toast in toasts"
         :key="toast.id"
-        class="max-w-sm w-full bg-white shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden"
+        class="max-w-md w-full bg-white shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden"
         :class="{
           'border-l-4 border-green-500': toast.type === 'success',
           'border-l-4 border-red-500': toast.type === 'error',
