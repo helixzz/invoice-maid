@@ -44,6 +44,21 @@ async def test_health_and_spa_catch_all(
     assert response.path.endswith("index.html")
 
 
+async def test_favicon_route(client, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "favicon.png").write_bytes(b"\x89PNG\r\n")
+    monkeypatch.setattr(main_module, "FRONTEND_DIST", dist)
+
+    response = await client.get("/favicon.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+
+    monkeypatch.setattr(main_module, "FRONTEND_DIST", tmp_path / "missing")
+    missing = await client.get("/favicon.png")
+    assert missing.status_code == 404
+
+
 async def test_health_reports_degraded_on_db_failure(client, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main_module, "get_scheduler", lambda: type("Scheduler", (), {"running": True})())
     monkeypatch.setattr(
