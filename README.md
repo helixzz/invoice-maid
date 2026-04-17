@@ -328,4 +328,4 @@ See [ROADMAP.md](ROADMAP.md) for planned features and version history.
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE)
