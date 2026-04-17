@@ -1,4 +1,4 @@
-# pyright: reportMissingImports=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false
+# pyright: reportMissingImports=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportUnusedFunction=false
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import httpx
 import instructor
 from openai import AsyncOpenAI
 from sqlalchemy import select
@@ -14,10 +15,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.models import LLMCache
-from app.schemas.invoice import EmailClassification, InvoiceExtract
+from app.schemas.invoice import EmailAnalysis, InvoiceExtract
 from app.services.settings_resolver import resolve_ai_settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_safelink(url: str) -> str:
+    """Follow an Outlook SafeLink redirect to get the real URL. Returns original on failure."""
+    if "safelinks.protection.outlook.com" not in url:
+        return url
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = await client.head(url)
+            return str(response.url)
+    except Exception:
+        return url
 
 
 class AIService:
@@ -83,28 +96,45 @@ class AIService:
         db.add(cache_entry)
         await db.commit()
 
-    async def classify_email(self, db: AsyncSession, subject: str, body: str) -> bool:
+    async def analyze_email(
+        self,
+        db: AsyncSession,
+        subject: str,
+        from_addr: str,
+        body: str,
+        body_links: list[str],
+    ) -> EmailAnalysis:
         runtime_settings = await self._resolve_runtime_settings(db)
         client, _ = self._get_clients(runtime_settings)
-        content = f"Subject: {subject}\n\nBody: {body[:2000]}"
-        cache_key = self._content_hash("classify", content)
+
+        links_block = "\n".join(f"  <url>{url}</url>" for url in body_links) or "  (none)"
+        content = (
+            f"Subject: {subject}\n"
+            f"From: {from_addr}\n"
+            f"Body:\n{body[:2000]}\n\n"
+            f"<links>\n{links_block}\n</links>"
+        )
+        cache_key = self._content_hash("analyze_email_v2", content)
 
         cached = await self._get_cache(db, cache_key)
         if cached is not None:
-            result = EmailClassification.model_validate_json(cached)
-            return result.is_invoice_related
+            return EmailAnalysis.model_validate_json(cached)
 
         system_prompt = self._load_prompt("classify_email.txt")
         result = await client.chat.completions.create(
             model=str(runtime_settings["llm_model"]),
-            response_model=EmailClassification,
-            max_retries=2,
+            response_model=EmailAnalysis,
+            max_retries=3,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
             ],
         )
-        await self._set_cache(db, cache_key, "classify", result.model_dump_json())
+        await self._set_cache(db, cache_key, "analyze_email_v2", result.model_dump_json())
+        return result
+
+    async def classify_email(self, db: AsyncSession, subject: str, body: str) -> bool:
+        result = await self.analyze_email(db, subject, "", body, [])
         return result.is_invoice_related
 
     async def extract_invoice_fields(self, db: AsyncSession, text: str) -> InvoiceExtract:
