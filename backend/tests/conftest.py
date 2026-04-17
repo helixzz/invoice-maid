@@ -104,6 +104,7 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
         "WEBHOOK_URL": "",
         "WEBHOOK_SECRET": "",
         "ENABLE_TEST_HELPERS": False,
+        "LOG_LEVEL": "INFO",
         "__runtime_sqlite_vec_available__": False,
     }
     for key, value in values.items():
