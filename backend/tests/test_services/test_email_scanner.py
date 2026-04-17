@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import poplib
+import ssl
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from imap_tools.errors import MailboxLoginError
+import httpx
+from msal.exceptions import MsalServiceError
 import pytest
 
 import app.services.email_scanner as email_scanner
@@ -144,13 +149,32 @@ async def test_imap_test_connection_success_and_failure(monkeypatch: pytest.Monk
     monkeypatch.setattr(email_scanner, "MailBox", ConnectionMailbox)
     assert await scanner.test_connection(account) is True
 
+    failures: list[str] = []
+
     class BrokenLoop:
+        def __init__(self, error: Exception):
+            self.error = error
+
         async def run_in_executor(self, executor, func):
             del executor, func
-            raise RuntimeError("fail")
+            raise self.error
 
-    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop())
+    monkeypatch.setattr(email_scanner.logger, "exception", lambda message, *args: failures.append(message % args))
+    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop(OSError("imap down")))
     assert await scanner.test_connection(account) is False
+    assert any("IMAP connection test failed for account 1: imap down" in failure for failure in failures)
+
+    monkeypatch.setattr(
+        email_scanner.asyncio,
+        "get_running_loop",
+        lambda: BrokenLoop(MailboxLoginError(("NO", [b"bad credentials"]), "OK")),
+    )
+    assert await scanner.test_connection(account) is False
+    assert any("bad credentials" in failure for failure in failures)
+
+    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop(RuntimeError("fail")))
+    with pytest.raises(RuntimeError, match="fail"):
+        await scanner.test_connection(account)
 
 
 @pytest.mark.asyncio
@@ -343,7 +367,7 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
             self.closed = False
 
         def quit(self):
-            raise RuntimeError("quit failed")
+            raise poplib.error_proto("-ERR quit failed")
 
         def close(self):
             self.closed = True
@@ -374,13 +398,28 @@ async def test_pop3_test_connection_failure(monkeypatch: pytest.MonkeyPatch, set
         password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
     )
 
+    failures: list[str] = []
+
     class BrokenLoop:
+        def __init__(self, error: Exception):
+            self.error = error
+
         async def run_in_executor(self, executor, func):
             del executor, func
-            raise RuntimeError("fail")
+            raise self.error
 
-    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop())
+    monkeypatch.setattr(email_scanner.logger, "exception", lambda message, *args: failures.append(message % args))
+    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop(OSError("pop down")))
     assert await scanner.test_connection(account) is False
+    assert any("POP3 connection test failed for account 2: pop down" in failure for failure in failures)
+
+    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop(poplib.error_proto("-ERR auth")))
+    assert await scanner.test_connection(account) is False
+    assert any("-ERR auth" in failure for failure in failures)
+
+    monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: BrokenLoop(RuntimeError("fail")))
+    with pytest.raises(RuntimeError, match="fail"):
+        await scanner.test_connection(account)
 
 
 def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatch, settings) -> None:
@@ -412,7 +451,7 @@ def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatc
             self.closed = False
 
         def quit(self):
-            raise RuntimeError("quit failed")
+            raise poplib.error_proto("-ERR quit failed")
 
         def close(self):
             self.closed = True
@@ -429,14 +468,23 @@ def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatc
     assert scanner._test_sync(account) is True
     assert quit_fail_mailbox is not None and quit_fail_mailbox.closed is True
 
+
+def test_pop3_message_id_for_string_and_email_message_sources() -> None:
+    scanner = Pop3Scanner()
+
+    assert scanner._message_id_for(SimpleNamespace(headers={"Message-ID": " scalar "}, subject="s", from_="f", date="d"), 1) == "scalar"
+    assert scanner._message_id_for(email_scanner.email.message_from_bytes(b"Message-ID: msg-get\r\n\r\n", policy=email_scanner.policy.default), 3) == "msg-get"
+    assert scanner._message_id_for(email_scanner.email.message_from_bytes(b"Subject: no-id\r\n\r\n", policy=email_scanner.policy.default), 4).startswith("pop3-")
+
+
+def test_pop3_message_id_for_handles_key_error_headers() -> None:
+    scanner = Pop3Scanner()
+
     class BrokenHeaders:
         def __getitem__(self, key):
             raise KeyError(key)
 
     assert scanner._message_id_for(SimpleNamespace(headers=BrokenHeaders(), subject="s", from_="f", date="d"), 2).startswith("pop3-")
-    assert scanner._message_id_for(SimpleNamespace(headers={"Message-ID": " scalar "}, subject="s", from_="f", date="d"), 1) == "scalar"
-    assert scanner._message_id_for(email_scanner.email.message_from_bytes(b"Message-ID: msg-get\r\n\r\n", policy=email_scanner.policy.default), 3) == "msg-get"
-    assert scanner._message_id_for(email_scanner.email.message_from_bytes(b"Subject: no-id\r\n\r\n", policy=email_scanner.policy.default), 4).startswith("pop3-")
 
 
 @pytest.mark.asyncio
@@ -521,9 +569,108 @@ async def test_outlook_scanner_scan_connection_and_helpers(monkeypatch: pytest.M
     assert emails[0].body_links == ["https://invoice.test"]
     assert await scanner.test_connection(account) is True
 
-    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(side_effect=RuntimeError("boom")))
+    failures: list[str] = []
+    monkeypatch.setattr(email_scanner.logger, "exception", lambda message, *args: failures.append(message % args))
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(side_effect=httpx.HTTPError("boom")))
     assert await scanner.test_connection(account) is False
+    assert any("Outlook connection test failed for account 3: boom" in failure for failure in failures)
+
+    monkeypatch.setattr(
+        scanner,
+        "_acquire_access_token",
+        AsyncMock(side_effect=MsalServiceError(error="service_error", error_description="msal boom")),
+    )
+    assert await scanner.test_connection(account) is False
+
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(side_effect=RuntimeError("boom")))
+    with pytest.raises(RuntimeError, match="boom"):
+        await scanner.test_connection(account)
+
     assert scanner._recent_message_filter().startswith("receivedDateTime ge ")
+
+
+def test_pop3_close_fallback_ignores_expected_transport_errors(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    scanner = Pop3Scanner()
+    account = EmailAccount(
+        id=2,
+        name="pop3",
+        type="pop3",
+        host="pop.example.com",
+        port=995,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+
+    class CloseFallbackPop3:
+        def __init__(self, host, port):
+            del host, port
+            self.closed = False
+
+        def user(self, username):
+            assert username == "user@example.com"
+
+        def pass_(self, password):
+            assert password == "secret"
+
+        def quit(self):
+            raise ssl.SSLError("bye")
+
+        def close(self):
+            self.closed = True
+
+    mailbox: CloseFallbackPop3 | None = None
+
+    def build_mailbox(host, port):
+        nonlocal mailbox
+        mailbox = CloseFallbackPop3(host, port)
+        return mailbox
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", build_mailbox)
+    assert scanner._test_sync(account) is True
+    assert mailbox is not None and mailbox.closed is True
+
+
+def test_pop3_close_fallback_propagates_unexpected_quit_error(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    scanner = Pop3Scanner()
+    account = EmailAccount(
+        id=2,
+        name="pop3",
+        type="pop3",
+        host="pop.example.com",
+        port=995,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+
+    class UnexpectedQuitPop3:
+        def __init__(self, host, port):
+            del host, port
+
+        def user(self, username):
+            assert username == "user@example.com"
+
+        def pass_(self, password):
+            assert password == "secret"
+
+        def quit(self):
+            raise RuntimeError("quit failed")
+
+        def close(self):
+            raise AssertionError("close should not be called")
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", UnexpectedQuitPop3)
+    with pytest.raises(RuntimeError, match="quit failed"):
+        scanner._test_sync(account)
+
+
+def test_pop3_message_id_for_handles_specific_header_errors() -> None:
+    scanner = Pop3Scanner()
+
+    class TypeErrorHeaders:
+        def __getitem__(self, key):
+            raise TypeError(key)
+
+    assert scanner._message_id_for(SimpleNamespace(headers=TypeErrorHeaders(), subject="s", from_="f", date="d"), 1).startswith("pop3-")
 
 
 @pytest.mark.asyncio
