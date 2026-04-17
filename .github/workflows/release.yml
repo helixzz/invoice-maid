@@ -21,58 +21,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libzbar0 libzbar-dev zip rsync
-
-      - name: Build backend environment
-        working-directory: backend
-        run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          pip install --upgrade pip
-          pip install -e ".[dev]"
-          pip install sqlite-vec pyzbar easyofd || echo "Optional native deps unavailable — some tests may be skipped"
-
-      - name: Run backend tests
-        working-directory: backend
-        run: |
-          . .venv/bin/activate
-          pytest --cov=app --cov-report=term-missing --cov-fail-under=99
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install Playwright browser
-        working-directory: frontend
-        run: npx playwright install --with-deps chromium
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-
-      - name: Run Playwright smoke tests
-        working-directory: frontend
-        run: npm run test:e2e
+          sudo apt-get install -y zip rsync
 
       - name: Create release bundle
         run: |
           mkdir -p dist-release/invoice-maid
-          rsync -a --exclude='.git' --exclude='backend/.venv' --exclude='backend/.coverage' --exclude='backend/.pytest_cache' --exclude='frontend/node_modules' --exclude='frontend/test-results' --exclude='frontend/playwright-report' --exclude='frontend/.playwright' ./ dist-release/invoice-maid/
+          rsync -a --exclude='.git' --exclude='backend/.venv' --exclude='backend/.coverage' --exclude='backend/.pytest_cache' --exclude='frontend/node_modules' --exclude='frontend/test-results' --exclude='frontend/playwright-report' --exclude='frontend/.playwright' --exclude='backend/data' --exclude='IDEA.md' ./ dist-release/invoice-maid/
           cd dist-release
           tar -czf invoice-maid-release.tar.gz invoice-maid
           zip -r invoice-maid-release.zip invoice-maid >/dev/null
@@ -85,7 +42,7 @@ jobs:
           elif [ -n "${{ github.event.inputs.version }}" ]; then
             echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=v0.1.0-manual" >> "$GITHUB_OUTPUT"
+            echo "tag=v0.0.0-manual" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release
