@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.2] - 2026-04-17
+
+### Changed
+- **Outlook authentication status badge** — each Outlook account row now shows a live "✓ Authenticated" (green) or "⚠ Not authenticated" (amber) badge, fetched from the backend on Settings load and updated immediately after a successful OAuth flow
+- **Authenticate / Re-authenticate button** — blue primary button when not authenticated; gray secondary when already authenticated, making the action intent clear at a glance
+- **Toast notifications wider and longer** — minimum 440px, maximum 600px; error toasts last 10 s, info toasts 7 s, success toasts 5 s
+
 ## [0.5.1] - 2026-04-17
 
 ### Fixed

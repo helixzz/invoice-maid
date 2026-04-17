@@ -22,6 +22,20 @@ import type {
 
 const activeTab = ref('accounts')
 
+// OAuth status map for Outlook accounts
+const oauthStatusMap = ref<Record<number, 'authorized' | 'none' | 'pending' | 'expired' | 'error'>>({})
+
+const refreshOAuthStatuses = async (accountList: EmailAccount[]) => {
+  for (const acct of accountList.filter(a => a.type === 'outlook')) {
+    try {
+      const status = await api.getOAuthStatus(acct.id)
+      oauthStatusMap.value[acct.id] = status.status as 'authorized' | 'none' | 'pending' | 'expired' | 'error'
+    } catch {
+      oauthStatusMap.value[acct.id] = 'none'
+    }
+  }
+}
+
 // AI Settings
 const aiSettings = ref<AISettingsResponse | null>(null)
 const aiSettingsForm = ref<AISettingsUpdate>({})
@@ -235,14 +249,15 @@ const pollOAuthStatus = async (accountId: number) => {
     
     if (status.status === 'authorized') {
       stopOAuthPolling()
-      toastRef.value?.addToast('Authorization successful!', 'success')
+      oauthStatusMap.value[accountId] = 'authorized'
+      toastRef.value?.addToast('Authorization successful! Outlook account is now connected.', 'success')
       setTimeout(() => {
         closeOAuthModal()
-        // Optionally auto test connection
         testConnection(accountId)
       }, 2000)
     } else if (status.status === 'expired' || status.status === 'error') {
       stopOAuthPolling()
+      oauthStatusMap.value[accountId] = status.status as 'expired' | 'error'
       const detail = status.detail || (status.status === 'expired' ? 'Device code expired. Please try again.' : 'Authorization failed. Please try again.')
       toastRef.value?.addToast(detail, 'error')
     }
@@ -279,6 +294,7 @@ const fetchAccounts = async () => {
   loadingAccounts.value = true
   try {
     accounts.value = await api.getAccounts()
+    refreshOAuthStatuses(accounts.value)
   } catch (error) {
     console.error('Failed to fetch accounts', error)
     toastRef.value?.addToast('Failed to fetch accounts', 'error')
@@ -530,6 +546,18 @@ onMounted(() => {
                       :class="account.outlook_account_type === 'personal' ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-blue-50 text-blue-700 border-blue-200'">
                       {{ account.outlook_account_type === 'personal' ? 'Personal' : 'Organizational' }}
                     </span>
+                    <span v-if="account.type === 'outlook'" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border"
+                      :class="oauthStatusMap[account.id] === 'authorized'
+                        ? 'bg-green-50 text-green-700 border-green-200'
+                        : 'bg-amber-50 text-amber-700 border-amber-200'">
+                      <svg v-if="oauthStatusMap[account.id] === 'authorized'" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                      </svg>
+                      <svg v-else class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                      </svg>
+                      {{ oauthStatusMap[account.id] === 'authorized' ? 'Authenticated' : 'Not authenticated' }}
+                    </span>
                   </div>
                   <div class="text-sm text-slate-500">
                     {{ account.username }}
@@ -539,7 +567,16 @@ onMounted(() => {
                   </div>
                 </div>
                 <div class="flex items-center space-x-4">
-                  <button v-if="account.type === 'outlook'" @click="startOAuthFlow(account.id)" class="text-sm text-blue-600 hover:text-blue-900 transition-colors hidden sm:inline-block border border-blue-200 px-3 py-1 rounded hover:bg-blue-50 font-medium">{{ account.last_scan_uid ? 'Re-authenticate' : 'Authenticate' }}</button>
+                  <button
+                    v-if="account.type === 'outlook'"
+                    @click="startOAuthFlow(account.id)"
+                    class="text-sm transition-colors hidden sm:inline-block px-3 py-1 rounded font-medium border"
+                    :class="oauthStatusMap[account.id] === 'authorized'
+                      ? 'text-slate-600 hover:text-slate-900 border-slate-300 hover:bg-slate-50'
+                      : 'text-white bg-blue-600 hover:bg-blue-700 border-blue-600 hover:border-blue-700'"
+                  >
+                    {{ oauthStatusMap[account.id] === 'authorized' ? 'Re-authenticate' : 'Authenticate' }}
+                  </button>
                   <button @click="testConnection(account.id)" class="text-sm text-green-600 hover:text-green-900 transition-colors hidden sm:inline-block border border-green-200 px-3 py-1 rounded hover:bg-green-50 font-medium">Test Connection</button>
                   <button @click="openEditModal(account)" class="text-sm text-blue-600 hover:text-blue-900 transition-colors font-medium">Edit</button>
                   <button @click="confirmDeleteAccount(account.id)" class="text-sm text-red-600 hover:text-red-900 transition-colors font-medium">Delete</button>
