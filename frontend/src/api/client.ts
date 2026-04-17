@@ -14,7 +14,9 @@ import type {
   AISettingsUpdate,
   ExtractionLog,
   SavedView,
-  StatsAnalytics
+  StatsAnalytics,
+  OAuthInitiateResponse,
+  OAuthStatusResponse
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -171,6 +173,16 @@ export const api = {
 
   async testConnection(id: number): Promise<ConnectionTestResponse> {
     const res = await apiClient.post(`/accounts/${id}/test-connection`)
+    return res.data
+  },
+
+  async initiateOAuth(id: number): Promise<OAuthInitiateResponse> {
+    const res = await apiClient.post(`/accounts/${id}/oauth/initiate`)
+    return res.data
+  },
+
+  async getOAuthStatus(id: number): Promise<OAuthStatusResponse> {
+    const res = await apiClient.get(`/accounts/${id}/oauth/status`)
     return res.data
   },
 

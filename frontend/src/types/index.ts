@@ -135,3 +135,18 @@ export interface StatsAnalytics {
   by_method: {method: string; count: number}[]
   avg_confidence: number
 }
+
+export interface OAuthInitiateResponse {
+  status: 'authorized' | 'pending'
+  verification_uri?: string
+  user_code?: string
+  expires_at?: string
+}
+
+export interface OAuthStatusResponse {
+  status: 'none' | 'pending' | 'authorized' | 'expired' | 'error'
+  verification_uri?: string
+  user_code?: string
+  expires_at?: string
+  detail?: string
+}
