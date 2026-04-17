@@ -139,7 +139,7 @@ async def test_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_lifespan_skips_scheduler_for_multiple_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_lifespan_skips_scheduler_for_multiple_workers(monkeypatch: pytest.MonkeyPatch, settings) -> None:
     engine = type("Engine", (), {"dispose": AsyncMock()})()
     monkeypatch.setattr(main_module, "create_engine_and_session", lambda database_url: (engine, object()))
     monkeypatch.setattr(main_module, "init_db", AsyncMock())
