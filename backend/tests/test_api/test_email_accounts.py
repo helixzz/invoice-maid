@@ -298,7 +298,7 @@ async def test_oauth_status_returns_current_state(client, auth_headers, create_e
             status="pending",
             verification_uri="https://microsoft.com/devicelogin",
             user_code="ABCD-EFGH",
-            expires_at=datetime(2026, 4, 17, 12, 34, 56, tzinfo=timezone.utc),
+            expires_at=datetime(2099, 4, 17, 12, 34, 56, tzinfo=timezone.utc),
         ),
     )
 
@@ -309,7 +309,7 @@ async def test_oauth_status_returns_current_state(client, auth_headers, create_e
         "status": "pending",
         "verification_uri": "https://microsoft.com/devicelogin",
         "user_code": "ABCD-EFGH",
-        "expires_at": "2026-04-17T12:34:56Z",
+        "expires_at": "2099-04-17T12:34:56Z",
         "detail": None,
     }
 
@@ -428,11 +428,11 @@ async def test_oauth_initiate_background_task_marks_error_on_failure(client, aut
         ),
     )
 
-    async def failing_complete(_self, account, flow):
-        del account, flow
+    async def failing_complete(_self, flow, token_path, outlook_type):
+        del flow, token_path, outlook_type
         raise RuntimeError("device flow failed")
 
-    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", failing_complete)
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async_with_path", failing_complete)
 
     response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
     assert response.status_code == 200
@@ -459,11 +459,11 @@ async def test_oauth_initiate_background_task_marks_authorized_on_success(client
         ),
     )
 
-    async def complete(_self, account, flow):
-        del account, flow
+    async def complete(_self, flow, token_path, outlook_type):
+        del flow, token_path, outlook_type
         return {"access_token": "token"}
 
-    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", complete)
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async_with_path", complete)
 
     response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
     assert response.status_code == 200
@@ -490,11 +490,11 @@ async def test_oauth_initiate_background_task_marks_error_from_result(client, au
         ),
     )
 
-    async def complete(_self, account, flow):
-        del account, flow
+    async def complete(_self, flow, token_path, outlook_type):
+        del flow, token_path, outlook_type
         return {"error": "authorization_pending", "error_description": "still waiting"}
 
-    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", complete)
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async_with_path", complete)
 
     response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
     assert response.status_code == 200
@@ -521,11 +521,11 @@ async def test_oauth_initiate_background_task_marks_expired_from_result(client, 
         ),
     )
 
-    async def complete(_self, account, flow):
-        del account, flow
+    async def complete(_self, flow, token_path, outlook_type):
+        del flow, token_path, outlook_type
         return {"error": "expired_token"}
 
-    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", complete)
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async_with_path", complete)
 
     response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
     assert response.status_code == 200
@@ -552,11 +552,11 @@ async def test_oauth_initiate_background_task_handles_cancellation(client, auth_
         ),
     )
 
-    async def cancelled(_self, account, flow):
-        del account, flow
+    async def cancelled(_self, flow, token_path, outlook_type):
+        del flow, token_path, outlook_type
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async", cancelled)
+    monkeypatch.setattr(accounts_api.OutlookScanner, "complete_device_flow_async_with_path", cancelled)
 
     response = await client.post(f"/api/v1/accounts/{account.id}/oauth/initiate", headers=auth_headers)
     assert response.status_code == 200

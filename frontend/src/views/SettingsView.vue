@@ -243,6 +243,8 @@ const pollOAuthStatus = async (accountId: number) => {
       }, 2000)
     } else if (status.status === 'expired' || status.status === 'error') {
       stopOAuthPolling()
+      const detail = status.detail || (status.status === 'expired' ? 'Device code expired. Please try again.' : 'Authorization failed. Please try again.')
+      toastRef.value?.addToast(detail, 'error')
     }
   } catch (error) {
     console.error('Failed to poll OAuth status', error)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import CurrentUser
 from app.models import EmailAccount
+
+logger = logging.getLogger(__name__)
 from app.schemas.email_account import (
     EmailAccountCreate,
     EmailAccountResponse,
@@ -85,12 +88,18 @@ def _default_oauth_token_path(account_id: int) -> str:
 
 
 def _attach_flow_task(account: EmailAccount, scanner: OutlookScanner, flow: dict[str, object], state: OAuthFlowState) -> None:
+    account_id = account.id
+    account_name = account.name
+    token_path = account.oauth_token_path
+    outlook_type = account.outlook_account_type
+
     async def runner() -> None:
         try:
-            result = await scanner.complete_device_flow_async(account, flow)
+            result = await scanner.complete_device_flow_async_with_path(flow, token_path, outlook_type)
         except asyncio.CancelledError:
             return
         except Exception as exc:
+            logger.error("Outlook device flow failed for account %s (%s): %s", account_name, account_id, exc)
             state.status = "error"
             state.detail = str(exc)
             return
@@ -98,6 +107,7 @@ def _attach_flow_task(account: EmailAccount, scanner: OutlookScanner, flow: dict
         if result.get("access_token"):
             state.status = "authorized"
             state.detail = None
+            logger.info("Outlook authorization completed for account %s (%s)", account_name, account_id)
             return
 
         expires_in = flow.get("expires_in")
@@ -106,8 +116,10 @@ def _attach_flow_task(account: EmailAccount, scanner: OutlookScanner, flow: dict
             state.detail = "Device code expired"
             return
 
+        error_msg = str(result.get("error_description") or result.get("error") or "Outlook authorization failed")
+        logger.error("Outlook authorization error for account %s (%s): %s", account_name, account_id, error_msg)
         state.status = "error"
-        state.detail = str(result.get("error_description") or result.get("error") or "Outlook authorization failed")
+        state.detail = error_msg
 
     state.task = asyncio.create_task(runner())
 
