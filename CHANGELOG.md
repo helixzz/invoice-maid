@@ -4,15 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
-
-### Fixed
-- Application loggers (`app.*`, `apscheduler`) now emit to stderr and are captured by the systemd journal. Previously only uvicorn access/error logs were visible because uvicorn configures only its own logger tree and the root logger had no handler, silently dropping `logger.info(...)` calls from application code.
-- Suppress the benign `(trapped) error reading bcrypt version` traceback from passlib when using bcrypt >= 4.1.
+## [0.3.0] - 2026-04-17
 
 ### Added
-- `LOG_LEVEL` environment variable (default `INFO`) for controlling application log verbosity. Accepts DEBUG, INFO, WARNING, ERROR, CRITICAL. Invalid values fall back to INFO.
-- `app.logging_config` module that installs a root-logger stderr handler at process startup with sensible per-library level overrides (SQLAlchemy engine at WARNING, passlib at ERROR).
+- Real-time scan progress: `GET /api/v1/scan/progress/stream` SSE endpoint pushes live updates for account, email, and attachment loops
+- `GET /api/v1/scan/progress` polling snapshot fallback
+- `ScanProgress` in-process singleton with per-account, per-email, and per-attachment signal points; weighted `overall_pct` computation
+- `POST /api/v1/scan/trigger` now returns `409` when a scan is already in progress (concurrent scan guard via asyncio lock)
+- JWT accepted via `?token=` query parameter for native `EventSource` connections (browsers cannot set Authorization headers on EventSource)
+- `useScanProgress` Vue composable: SSE-first with 2 s polling fallback and auto-reconnect
+- `ScanProgressBar` component: 3 nested progress bars (overall → per-account → per-email) with status line and done/error banners
+- Scan Operations tab now shows live progress while scanning with final fetchLogs refresh on completion
+- `LOG_LEVEL` environment variable (default `INFO`) for controlling application log verbosity
+- `app.logging_config` module: installs root-logger stderr handler at startup, suppresses benign passlib bcrypt version traceback, sets per-library log levels
+- Nginx SSE location block in deploy template (`proxy_buffering off`, `proxy_cache off`) — required for EventSource to work behind nginx
+
+### Fixed
+- Application loggers (`app.*`, `apscheduler`) previously had no root handler and silently dropped all `logger.info()` / `logger.warning()` calls; now routed to stderr and captured by the systemd journal
+- Suppress benign `(trapped) error reading bcrypt version` passlib traceback on bcrypt ≥ 4.1
 
 ## [0.2.1] - 2026-04-17
 
