@@ -665,7 +665,28 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
 
                     try:
                         scanner = ScannerFactory.get_scanner(account.type)
-                        emails = await scanner.scan(account, last_uid=account.last_scan_uid, options=options)
+                        scan_loop = asyncio.get_running_loop()
+
+                        def _publish_scan_progress(update: dict[str, Any]) -> None:
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    sp.update_progress(**update), scan_loop
+                                )
+                            except Exception:  # pragma: no cover
+                                pass
+
+                        scan_kwargs: dict[str, Any] = {
+                            "last_uid": account.last_scan_uid,
+                            "options": options,
+                        }
+                        try:
+                            emails = await scanner.scan(
+                                account,
+                                progress_callback=_publish_scan_progress,
+                                **scan_kwargs,
+                            )
+                        except TypeError:
+                            emails = await scanner.scan(account, **scan_kwargs)
                         log.emails_scanned = len(emails)
                         await sp.update_progress(
                             total_emails=len(emails),

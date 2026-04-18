@@ -2129,3 +2129,48 @@ async def test_scheduler_stamps_orphan_scan_logs_on_next_scan_start(
     assert cleaned.finished_at is not None, "orphan row must now have finished_at stamped"
     assert cleaned.error_message is not None
     assert "orphan" in (cleaned.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_publishes_progress_callbacks_from_scanner(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scheduler should pass a progress_callback to scanners that support it
+    and route the updates through sp.update_progress from the scanner's threadpool thread."""
+    await create_email_account(last_scan_uid=None)
+
+    class ProgressPublishingScanner:
+        _last_scan_state = None
+
+        async def scan(self, account, last_uid=None, options=None, progress_callback=None):
+            del account, last_uid, options
+            if progress_callback is not None:
+                progress_callback({"total_folders": 3, "current_folder_idx": 1, "folder_fetch_msg": "test"})
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda t: ProgressPublishingScanner())
+    monkeypatch.setattr(scheduler, "AIService", lambda s: MagicMock())
+
+    await scheduler.scan_all_accounts()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_falls_back_when_scanner_lacks_progress_callback_kwarg(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Older scanners without progress_callback kwarg must still work (TypeError fallback)."""
+    await create_email_account(last_scan_uid=None)
+
+    class LegacyScanner:
+        _last_scan_state = None
+
+        async def scan(self, account, last_uid=None, options=None):
+            del account, last_uid, options
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda t: LegacyScanner())
+    monkeypatch.setattr(scheduler, "AIService", lambda s: MagicMock())
+
+    await scheduler.scan_all_accounts()

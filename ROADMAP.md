@@ -147,7 +147,40 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
-## v0.8.0+ — Future
+## v0.7.8 — Released
+
+**Theme:** IMAP scan performance — STATUS pre-flight skip, folder-level progress, TCP keepalive, partial-state preservation
+
+After library research (imap-tools, OfflineIMAP, RFC 3501/7162) and live production monitoring confirmed that large-mailbox scans were bottlenecked on 4 independent problems, v0.7.8 ships the high-ROI subset as drop-in improvements:
+
+1. **STATUS pre-flight** (largest win on incremental scans): before selecting a folder, check its UIDNEXT and MESSAGES via `STATUS`. If unchanged since last scan, skip the folder entirely — often reducing a 20-folder scan to ~20 cheap STATUS round-trips instead of 20 full folder sweeps. Expected: 30–60 sec incremental scans where v0.7.7 took 30–60 min.
+2. **Bulk size 100 → 500** for pass-1 `UID FETCH`, a 3–8× speedup per imap-tools research.
+3. **Folder-level progress telemetry** exposed via `ScanProgress.total_folders` / `current_folder_idx` / `current_folder_name` / `folder_fetch_msg` and running `total_emails` updates every 200 messages, so operators see real progress instead of a frozen bar.
+4. **TCP keepalive** on IMAP sockets to detect silent NAT/firewall drops in ~100 s instead of hanging FETCHes for minutes.
+5. **Partial-state preservation** when the outer `with MailBox()` drops mid-scan (e.g. `ssl.SSLEOFError` during LOGOUT) — accumulated emails + completed-folder state now survive the drop.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.7.9+ — Deferred (from v0.7.8 research)
+
+Ranked by expected speedup, deferred because each requires larger refactors that didn't fit v0.7.8's ship-window:
+
+| # | Optimization | Expected ROI | Complexity |
+|---|---|---|---|
+| 1 | `UID SEARCH UID N+1:*` server-side filter (replaces client-side UID filtering) | 20–100× on incremental scans | S |
+| 2 | Generator streaming scanner → scheduler pipeline (starts classifying as emails arrive; ends the "accumulate everything in memory" phase) | 500 MB → ~50 MB RSS on 100k mailboxes; also unblocks LLM classification during fetch | M |
+| 3 | Reconnect-with-backoff wrapper (exponential backoff on QQ "System busy!", 90/180/300s; auto-reconnect after session drop) | reliability, prevents full-scan abort | M |
+| 4 | QQ-specific defensive config: `max_workers=1`, `bulk=200`, inter-folder sleep, reconnect-every-N-folders | unlocks practically-stable QQ scans | M |
+| 5 | Parallel per-folder fetch (2–3 connections per account) for Gmail/Outlook | 2–4× on large multi-folder accounts | M |
+| 6 | Bloom filter for cross-folder Message-ID dedup | O(1) lookup on Gmail All-Mail-style duplicates | S |
+| 7 | Selective header fetch (`BODY.PEEK[HEADER.FIELDS (...)]`) | 1.5–2× transfer reduction | M |
+| 8 | CONDSTORE / MODSEQ delta fetch (RFC 7162) on servers that advertise it | ∞ on revisits where CONDSTORE is supported (Gmail, Outlook, Dovecot; not QQ) | L |
+
+Reference: see internal research findings in the v0.7.8 PR description and the full synthesis in the librarian exploration that drove the release plan.
+
+---
 
 ### Known Issues
 

@@ -21,6 +21,10 @@ class ScanProgress:
     total_accounts: int = 0
     current_account_idx: int = 0
     current_account_name: str = ""
+    total_folders: int = 0
+    current_folder_idx: int = 0
+    current_folder_name: str = ""
+    folder_fetch_msg: str = ""
     total_emails: int = 0
     current_email_idx: int = 0
     current_email_subject: str = ""
