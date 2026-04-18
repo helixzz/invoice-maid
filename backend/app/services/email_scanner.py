@@ -27,7 +27,7 @@ import msal
 from msal.exceptions import MsalServiceError
 from cryptography.fernet import Fernet
 from imap_tools import AND, MailBox
-from imap_tools.errors import MailboxLoginError
+from imap_tools.errors import MailboxFetchError, MailboxLoginError
 
 from app.config import get_settings
 from app.models import EmailAccount
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 FIRST_SCAN_LIMIT: int | None = None
 
-IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError)
+IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError, MailboxFetchError)
 POP3_CONNECTION_ERRORS = (OSError, ssl.SSLError, poplib.error_proto)
 OUTLOOK_CONNECTION_ERRORS = (OSError, httpx.HTTPError, MsalServiceError)
 
@@ -353,51 +353,52 @@ class ImapScanner(BaseEmailScanner):
                         headers_only=True,
                         bulk=100,
                     )
-                except IMAP_CONNECTION_ERRORS as exc:
-                    logger.warning("IMAP fetch failed for folder %r (%s); skipping", folder_name, exc)
-                    state_out[folder_name] = {"uid": effective_prev_uid, "uidvalidity": current_uidvalidity}
-                    continue
+                    for msg in iterator:
+                        msg_uid = cast(str, getattr(msg, "uid", "") or "")
+                        if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
+                            continue
+                        headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
+                        message_id = ""
+                        for header_key in ("Message-ID", "Message-Id", "message-id"):
+                            if header_key in headers_map:
+                                message_id = headers_map[header_key].strip().strip("<>")
+                                break
+                        if message_id and message_id in seen_message_ids:
+                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                                highest_uid = msg_uid
+                            continue
+                        if message_id:
+                            seen_message_ids.add(message_id)
 
-                for msg in iterator:
-                    msg_uid = cast(str, getattr(msg, "uid", "") or "")
-                    if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
-                        continue
-                    headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
-                    message_id = ""
-                    for header_key in ("Message-ID", "Message-Id", "message-id"):
-                        if header_key in headers_map:
-                            message_id = headers_map[header_key].strip().strip("<>")
-                            break
-                    if message_id and message_id in seen_message_ids:
-                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
-                            highest_uid = msg_uid
-                        continue
-                    if message_id:
-                        seen_message_ids.add(message_id)
-
-                    received_at = _normalize_datetime(getattr(msg, "date", None))
-                    if options is not None and options.since is not None and received_at < options.since:
-                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
-                            highest_uid = msg_uid
-                        continue
-                    emails.append(
-                        RawEmail(
-                            uid=msg_uid,
-                            subject=cast(str, getattr(msg, "subject", "") or ""),
-                            body_text="",
-                            body_html="",
-                            from_addr=cast(str, getattr(msg, "from_", "") or ""),
-                            received_at=received_at,
-                            attachments=[],
-                            body_links=[],
-                            headers=headers_map,
-                            is_hydrated=False,
-                            folder=folder_name,
-                            message_id=message_id,
+                        received_at = _normalize_datetime(getattr(msg, "date", None))
+                        if options is not None and options.since is not None and received_at < options.since:
+                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                                highest_uid = msg_uid
+                            continue
+                        emails.append(
+                            RawEmail(
+                                uid=msg_uid,
+                                subject=cast(str, getattr(msg, "subject", "") or ""),
+                                body_text="",
+                                body_html="",
+                                from_addr=cast(str, getattr(msg, "from_", "") or ""),
+                                received_at=received_at,
+                                attachments=[],
+                                body_links=[],
+                                headers=headers_map,
+                                is_hydrated=False,
+                                folder=folder_name,
+                                message_id=message_id,
+                            )
                         )
+                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
+                            highest_uid = msg_uid
+                except IMAP_CONNECTION_ERRORS as exc:
+                    logger.warning(
+                        "IMAP fetch failed for folder %r (%s); partial results for this folder will be saved and we will continue to the next folder",
+                        folder_name,
+                        exc,
                     )
-                    if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
-                        highest_uid = msg_uid
 
                 state_out[folder_name] = {"uid": highest_uid or "", "uidvalidity": current_uidvalidity}
 
