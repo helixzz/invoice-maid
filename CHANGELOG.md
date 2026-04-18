@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.9] - 2026-04-19
+
+### Why this release matters
+
+v0.7.8 added rich per-folder scan telemetry to the backend (`total_folders`, `current_folder_idx`, `current_folder_name`, `folder_fetch_msg`, running `total_emails` updates every 200 messages) and the `/api/v1/scan/progress` endpoint surfaces them correctly — but the Vue dashboard was still rendering only the v0.7.4-era fields, so users watching a live scan still saw "Account: helixzz@helixzz.com" and nothing else. v0.7.9 wires the frontend up so the telemetry produced by v0.7.8 actually reaches the user.
+
+### Added
+
+- **Frontend folder telemetry rendering** in `ScanProgressBar.vue`:
+  - New "Folder X/Y" line in the header card showing the current folder index, total folder count, and folder name, displayed as soon as the scanner publishes `total_folders`.
+  - New "Fetching …" status line showing the scanner's own `folder_fetch_msg` (e.g. `"INBOX: +3800 msgs"`, `"Archive: unchanged, skipped"`, `"Other/Log Archive: 0 msgs fetched"`) so operators see what the IMAP session is doing moment-to-moment.
+  - New dedicated **Folders progress bar** (violet, between the Account and Emails bars) showing `current_folder_idx / total_folders` as a percentage. Visible whenever the scanner is iterating folders.
+  - The status line tail under the account header now appends folder context and falls back to `folder_fetch_msg` when no email-level details are available yet.
+- **`ScanProgressData` TypeScript interface** extended with the four new fields (`total_folders`, `current_folder_idx`, `current_folder_name`, `folder_fetch_msg`). Default values added so existing callers don't need updates.
+- **`statusLine` computed** in `useScanProgress()` composable now composes a richer one-liner using folder position + folder name when available, e.g. `"Account: helixzz@helixzz.com | Folder 3/22: Archive | Archive: +1400 msgs"`.
+
+### Why this was a separate release
+
+The backend telemetry was shipped in v0.7.8 and has been flowing to the API since then — this release is a pure frontend-rendering update with no backend code changes.
+
 ## [0.7.8] - 2026-04-19
 
 ### Why this release matters

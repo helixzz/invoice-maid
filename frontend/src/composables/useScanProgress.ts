@@ -6,6 +6,10 @@ export interface ScanProgressData {
   total_accounts: number
   current_account_idx: number
   current_account_name: string
+  total_folders: number
+  current_folder_idx: number
+  current_folder_name: string
+  folder_fetch_msg: string
   total_emails: number
   current_email_idx: number
   current_email_subject: string
@@ -30,6 +34,10 @@ const defaultProgress: ScanProgressData = {
   total_accounts: 0,
   current_account_idx: 0,
   current_account_name: '',
+  total_folders: 0,
+  current_folder_idx: 0,
+  current_folder_name: '',
+  folder_fetch_msg: '',
   total_emails: 0,
   current_email_idx: 0,
   current_email_subject: '',
@@ -61,10 +69,16 @@ export function useScanProgress() {
     if (progress.value.phase === 'idle') return 'Ready'
     if (progress.value.phase === 'done') return 'Scan complete'
     if (progress.value.phase === 'error') return 'Scan failed'
-    
+
     let parts = []
     if (progress.value.current_account_name) {
       parts.push(`Account: ${progress.value.current_account_name}`)
+    }
+    if (progress.value.total_folders > 0 && progress.value.current_folder_name) {
+      parts.push(`Folder ${progress.value.current_folder_idx}/${progress.value.total_folders}: ${progress.value.current_folder_name}`)
+    }
+    if (progress.value.folder_fetch_msg && !progress.value.current_email_subject) {
+      parts.push(progress.value.folder_fetch_msg)
     }
     if (progress.value.current_email_subject) {
       parts.push(`Email: ${progress.value.current_email_subject}`)
@@ -72,7 +86,7 @@ export function useScanProgress() {
     if (progress.value.current_attachment_name) {
       parts.push(`File: ${progress.value.current_attachment_name}`)
     }
-    
+
     return parts.length > 0 ? parts.join(' | ') : 'Scanning...'
   })
 

@@ -51,6 +51,17 @@ const outcomeClass = (outcome: string) => {
               <span class="text-slate-400 text-xs">Account</span>
               <span class="font-medium text-slate-800 truncate">{{ props.progress.current_account_name }}</span>
             </div>
+            <div v-if="props.progress.total_folders > 0" class="flex items-center gap-2 text-slate-600">
+              <span class="text-slate-400 text-xs">Folder</span>
+              <span class="font-mono text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded flex-shrink-0">
+                {{ props.progress.current_folder_idx }}/{{ props.progress.total_folders }}
+              </span>
+              <span class="font-medium text-slate-800 truncate">{{ props.progress.current_folder_name || '—' }}</span>
+            </div>
+            <div v-if="props.progress.folder_fetch_msg" class="flex items-center gap-2 text-slate-500">
+              <span class="text-slate-400 text-xs">Fetching</span>
+              <span class="text-xs italic truncate">{{ props.progress.folder_fetch_msg }}</span>
+            </div>
             <div v-if="props.progress.current_email_subject" class="flex items-center gap-2 text-slate-600">
               <span class="text-slate-400 text-xs">Email</span>
               <span class="font-medium text-slate-800 truncate">{{ props.progress.current_email_subject }}</span>
@@ -126,6 +137,19 @@ const outcomeClass = (outcome: string) => {
         </div>
         <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
           <div class="bg-indigo-500 h-2 rounded-full transition-all duration-300 ease-out" :style="`width: ${props.progress.account_pct}%`"></div>
+        </div>
+      </div>
+
+      <div v-if="props.progress.total_folders > 0" class="space-y-2">
+        <div class="flex justify-between text-xs font-medium text-slate-600">
+          <span>Folders ({{ props.progress.current_folder_idx }} / {{ props.progress.total_folders }}) <span v-if="props.progress.current_folder_name" class="text-slate-500">— {{ props.progress.current_folder_name }}</span></span>
+          <span>{{ Math.round((props.progress.current_folder_idx / Math.max(props.progress.total_folders, 1)) * 100) }}%</span>
+        </div>
+        <div class="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+          <div class="bg-violet-500 h-1.5 rounded-full transition-all duration-300 ease-out" :style="`width: ${(props.progress.current_folder_idx / Math.max(props.progress.total_folders, 1)) * 100}%`"></div>
+        </div>
+        <div v-if="props.progress.folder_fetch_msg" class="text-xs text-slate-500 italic truncate">
+          {{ props.progress.folder_fetch_msg }}
         </div>
       </div>
 
