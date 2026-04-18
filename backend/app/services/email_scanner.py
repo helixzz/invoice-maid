@@ -99,8 +99,9 @@ oauth_registry = OAuthFlowRegistry()
 @dataclass
 class RawAttachment:
     filename: str
-    payload: bytes
     content_type: str
+    size: int | None = None
+    payload: bytes | None = None
 
 
 @dataclass
@@ -114,16 +115,27 @@ class RawEmail:
     attachments: list[RawAttachment] = field(default_factory=list)
     body_links: list[str] = field(default_factory=list)
     headers: dict[str, str] = field(default_factory=dict)
+    is_hydrated: bool = True
 
 
 class BaseEmailScanner(ABC):
     @abstractmethod
     async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
-        """Scan for new emails since last_uid. Returns list of new emails."""
+        """Scan for emails since ``last_uid``. IMAP and Outlook return metadata-only
+        ``RawEmail`` objects (``is_hydrated=False``, empty body + empty attachments);
+        POP3 returns fully-hydrated objects because POP3 has no efficient partial fetch."""
 
     @abstractmethod
     async def test_connection(self, account: EmailAccount) -> bool:
         """Test if connection to email account is valid."""
+
+    async def hydrate_email(self, account: EmailAccount, email: RawEmail) -> RawEmail:
+        """Fetch body + attachment payloads for a previously metadata-only email.
+
+        Default implementation is a no-op for scanners that already return hydrated
+        emails (POP3). IMAP and Outlook override to perform the lazy second fetch.
+        """
+        return email
 
 
 def _derive_fernet_key(secret: str) -> bytes:
@@ -202,41 +214,78 @@ class ImapScanner(BaseEmailScanner):
             criteria = AND(seen=False) if last_uid is None else "ALL"
             limit = FIRST_SCAN_LIMIT if last_uid is None else None
 
-            for msg in mailbox.fetch(criteria, limit=limit, reverse=True):
+            for msg in mailbox.fetch(
+                criteria,
+                limit=limit,
+                reverse=True,
+                mark_seen=False,
+                headers_only=True,
+                bulk=100,
+            ):
                 if last_uid and not _is_uid_newer(getattr(msg, "uid", None), last_uid):
                     continue
 
-                attachments: list[RawAttachment] = []
-                for att in getattr(msg, "attachments", []):
-                    filename = getattr(att, "filename", None)
-                    ext = Path(filename or "").suffix.lower()
-                    if ext not in INVOICE_EXTENSIONS:
-                        continue
-                    attachments.append(
-                        RawAttachment(
-                            filename=_resolve_filename(filename, f"attachment{ext or '.bin'}"),
-                            payload=cast(bytes, getattr(att, "payload", b"")),
-                            content_type=getattr(att, "content_type", None) or "application/octet-stream",
-                        )
-                    )
-
-                body_text = cast(str, getattr(msg, "text", "") or "")
-                body_html = cast(str, getattr(msg, "html", "") or "")
                 emails.append(
                     RawEmail(
                         uid=cast(str, getattr(msg, "uid", "") or ""),
                         subject=cast(str, getattr(msg, "subject", "") or ""),
-                        body_text=body_text,
-                        body_html=body_html,
+                        body_text="",
+                        body_html="",
                         from_addr=cast(str, getattr(msg, "from_", "") or ""),
                         received_at=_normalize_datetime(getattr(msg, "date", None)),
-                        attachments=attachments,
-                        body_links=_extract_urls(body_text, body_html),
+                        attachments=[],
+                        body_links=[],
                         headers={key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()},
+                        is_hydrated=False,
                     )
                 )
 
         return emails
+
+    async def hydrate_email(self, account: EmailAccount, email: RawEmail) -> RawEmail:
+        if email.is_hydrated:
+            return email
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, functools.partial(self._hydrate_sync, account, email)
+        )
+
+    def _hydrate_sync(self, account: EmailAccount, email: RawEmail) -> RawEmail:
+        password = decrypt_password(account.password_encrypted)
+        try:
+            with MailBox(account.host or "", port=account.port or 993).login(
+                account.username, password
+            ) as mailbox:
+                for msg in mailbox.fetch(
+                    AND(uid=email.uid), mark_seen=False, limit=1, bulk=False
+                ):
+                    attachments: list[RawAttachment] = []
+                    for att in getattr(msg, "attachments", []):
+                        filename = getattr(att, "filename", None)
+                        ext = Path(filename or "").suffix.lower()
+                        if ext not in INVOICE_EXTENSIONS:
+                            continue
+                        payload = cast(bytes, getattr(att, "payload", b""))
+                        attachments.append(
+                            RawAttachment(
+                                filename=_resolve_filename(filename, f"attachment{ext or '.bin'}"),
+                                content_type=getattr(att, "content_type", None) or "application/octet-stream",
+                                size=len(payload),
+                                payload=payload,
+                            )
+                        )
+                    body_text = cast(str, getattr(msg, "text", "") or "")
+                    body_html = cast(str, getattr(msg, "html", "") or "")
+                    email.body_text = body_text
+                    email.body_html = body_html
+                    email.attachments = attachments
+                    email.body_links = _extract_urls(body_text, body_html)
+                    email.is_hydrated = True
+                    return email
+        except IMAP_CONNECTION_ERRORS as exc:
+            logger.warning("IMAP hydrate failed for uid=%s: %s", email.uid, exc)
+        email.is_hydrated = True
+        return email
 
     async def test_connection(self, account: EmailAccount) -> bool:
         try:
@@ -441,7 +490,7 @@ class OutlookScanner(BaseEmailScanner):
         params: dict[str, str] = {
             "$top": "200",
             "$orderby": "receivedDateTime desc",
-            "$select": "id,internetMessageId,subject,body,from,receivedDateTime,hasAttachments",
+            "$select": "id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments",
         }
         if last_uid is None:
             params["$filter"] = self._recent_message_filter()
@@ -461,12 +510,7 @@ class OutlookScanner(BaseEmailScanner):
                     if last_uid and message_uid == last_uid:
                         return emails
 
-                    body = cast(dict[str, Any], item.get("body") or {})
-                    body_type = str(body.get("contentType") or "").lower()
-                    raw_body = str(body.get("content") or "")
-                    body_text = raw_body if body_type == "text" else _html_to_text(raw_body)
-                    body_html = raw_body if body_type == "html" else ""
-                    attachments = await self._fetch_attachments(client, headers, cast(str, item.get("id") or ""))
+                    body_preview = str(item.get("bodyPreview") or "")
                     sender = cast(dict[str, Any], item.get("from") or {})
                     email_address = cast(dict[str, Any], sender.get("emailAddress") or {})
 
@@ -474,13 +518,14 @@ class OutlookScanner(BaseEmailScanner):
                         RawEmail(
                             uid=message_uid,
                             subject=str(item.get("subject") or ""),
-                            body_text=body_text,
-                            body_html=body_html,
+                            body_text=body_preview,
+                            body_html="",
                             from_addr=str(email_address.get("address") or ""),
                             received_at=_normalize_datetime(item.get("receivedDateTime")),
-                            attachments=attachments,
-                            body_links=_extract_urls(body_text, body_html),
-                            headers={},
+                            attachments=[],
+                            body_links=[],
+                            headers={"_graph_id": cast(str, item.get("id") or ""), "_has_attachments": str(bool(item.get("hasAttachments")))},
+                            is_hydrated=False,
                         )
                     )
 
@@ -491,6 +536,38 @@ class OutlookScanner(BaseEmailScanner):
                 params = {}
 
         return emails
+
+    async def hydrate_email(self, account: EmailAccount, email: RawEmail) -> RawEmail:
+        if email.is_hydrated:
+            return email
+        graph_id = email.headers.get("_graph_id", "")
+        has_attachments = email.headers.get("_has_attachments", "False") == "True"
+        if not graph_id:
+            email.is_hydrated = True
+            return email
+        try:
+            access_token = await self._acquire_access_token(account)
+            headers_auth = {"Authorization": f"Bearer {access_token}"}
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                body_resp = await client.get(
+                    f"{GRAPH_BASE_URL}/me/messages/{graph_id}",
+                    headers=headers_auth,
+                    params={"$select": "body"},
+                )
+                body_resp.raise_for_status()
+                body = cast(dict[str, Any], body_resp.json().get("body") or {})
+                body_type = str(body.get("contentType") or "").lower()
+                raw_body = str(body.get("content") or "")
+                email.body_text = raw_body if body_type == "text" else _html_to_text(raw_body)
+                email.body_html = raw_body if body_type == "html" else ""
+                email.body_links = _extract_urls(email.body_text, email.body_html)
+
+                if has_attachments:
+                    email.attachments = await self._fetch_attachments(client, headers_auth, graph_id)
+        except OUTLOOK_CONNECTION_ERRORS as exc:
+            logger.warning("Outlook hydrate failed for uid=%s: %s", email.uid, exc)
+        email.is_hydrated = True
+        return email
 
     async def test_connection(self, account: EmailAccount) -> bool:
         try:

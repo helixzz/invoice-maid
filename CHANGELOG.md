@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.2] - 2026-04-18
+
+### Changed
+- **Metadata-first email fetch** — IMAP and Outlook scanners no longer download email bodies or attachment payloads during the initial scan pass. Only subject/from/date/size metadata is fetched. Bodies and attachments are retrieved lazily, only after the tier-1 classifier says the message might be an invoice. On large mailboxes (10k+ messages) this avoids downloading hundreds of megabytes of newsletter bodies and promotional attachments that immediately get discarded as non-invoice.
+- **IMAP scan** uses `imap-tools` `headers_only=True` + `mark_seen=False` + `bulk=100` — drastically reducing per-message bandwidth and IMAP round-trips.
+- **IMAP hydrate** opens a fresh short-lived IMAP connection per classified message and fetches the full MIME via `AND(uid=...)`. Scoped to individual messages, avoiding long-held connections during LLM classification latency.
+- **Outlook scan** drops the eager `/attachments?$top=50` call. Pass 1 requests `$select=id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments` — bodyPreview (up to 255 chars) is enough for the tier-1 classifier.
+- **Outlook hydrate** fetches full body via `$select=body`, then `/attachments` only when `hasAttachments=true`.
+- **POP3 stays eager** — the protocol's `TOP` command is unreliable for extracting attachment metadata across all server implementations. Documented as the one protocol exception.
+- **Hydration concurrency cap** — new `HYDRATION_CONCURRENCY=5` semaphore per account ensures we don't overwhelm IMAP servers with 50 simultaneous new connections for the second-pass fetch.
+
+### Fixed
+- **Hydration failure is non-fatal** — if a second-pass fetch fails (IMAP connection error, Outlook HTTP error), the message is skipped with a warning log; the scan continues processing other messages.
+
+### Tests
+- 331 tests, 100% coverage. New tests verify: IMAP `hydrate_email` fetches body+attachments and handles connection failures gracefully, Outlook `hydrate_email` skips `/attachments` endpoint when `hasAttachments=false`, POP3 default hydrate is a no-op, scheduler calls `hydrate_email` only for tier-1 positive/ambiguous emails (spam emails never trigger the second-pass fetch).
+
 ## [0.7.1] - 2026-04-18
 
 ### Changed

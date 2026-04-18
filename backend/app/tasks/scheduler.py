@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 EMAIL_CONCURRENCY = 50
 _email_semaphore = asyncio.Semaphore(EMAIL_CONCURRENCY)
 
+HYDRATION_CONCURRENCY = 5
+_hydration_semaphore = asyncio.Semaphore(HYDRATION_CONCURRENCY)
+
 
 @dataclass
 class _EmailResult:
@@ -243,6 +246,8 @@ async def _process_single_email(
     settings: Settings,
     log_id: int,
     account_id: int,
+    scanner: Any = None,
+    account: Any = None,
 ) -> _EmailResult:
     """Process one email with its own DB session. Safe for concurrent execution."""
     async with _email_semaphore:
@@ -250,6 +255,17 @@ async def _process_single_email(
             result = _EmailResult(last_uid=email_data.uid)
             try:
                 t1 = classifier.classify_tier1(email_data)
+                needs_full_body = (
+                    scanner is not None
+                    and account is not None
+                    and not getattr(email_data, "is_hydrated", True)
+                    and (t1 is None or t1.is_invoice)
+                )
+                if needs_full_body:
+                    async with _hydration_semaphore:
+                        email_data = await scanner.hydrate_email(account, email_data)
+                    t1 = classifier.classify_tier1(email_data)
+
                 if t1 is not None:
                     is_invoice = t1.is_invoice
                     classification_tier = 1
@@ -289,7 +305,9 @@ async def _process_single_email(
                     return result
 
                 raw_items: list[tuple[str, bytes]] = [
-                    (att.filename, att.payload) for att in email_data.attachments
+                    (att.filename, att.payload)
+                    for att in email_data.attachments
+                    if att.payload is not None
                 ]
                 if analysis is not None and analysis.should_download:
                     url = analysis.best_download_url
@@ -612,6 +630,8 @@ async def scan_all_accounts() -> None:
                                 settings=settings,
                                 log_id=log.id,
                                 account_id=account.id,
+                                scanner=scanner,
+                                account=account,
                             )
                             for email in emails
                         ]

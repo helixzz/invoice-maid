@@ -1847,3 +1847,77 @@ async def test_llm_returns_unknown_does_not_overwrite_parser_semantic_fields(
     assert invoices[0].item_summary == ""
     assert invoices[0].amount == Decimal("99.00")
     assert invoices[0].invoice_date == date(2024, 9, 1)
+
+
+@pytest.mark.asyncio
+async def test_lazy_hydration_fires_only_for_invoice_candidates(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+
+    spam_email = RawEmail(
+        uid="spam-1",
+        subject="50% off newsletter promo",
+        body_text="",
+        body_html="",
+        from_addr="newsletter@promo.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=[],
+        is_hydrated=False,
+    )
+    invoice_email = RawEmail(
+        uid="inv-1",
+        subject="发票来了",
+        body_text="",
+        body_html="",
+        from_addr="billing@company.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=[],
+        is_hydrated=False,
+    )
+
+    hydrate_calls: list[str] = []
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [spam_email, invoice_email]
+
+        async def hydrate_email(self, account, email):
+            del account
+            hydrate_calls.append(email.uid)
+            email.body_text = "增值税电子普通发票 价税合计 税额 发票号码"
+            email.attachments = [
+                RawAttachment(filename="invoice.pdf", content_type="application/pdf", payload=b"pdf")
+            ]
+            email.is_hydrated = True
+            return email
+
+    parsed = ParsedInvoice(
+        invoice_no="88899900011122233344",
+        buyer="Buyer",
+        seller="Seller",
+        amount=Decimal("10.00"),
+        invoice_date=date(2024, 1, 1),
+        invoice_type="增值税电子普通发票",
+        item_summary="服务费",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+        confidence=0.9,
+        extraction_method="qr",
+    )
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    assert "spam-1" not in hydrate_calls
+    assert "inv-1" in hydrate_calls
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "88899900011122233344"
