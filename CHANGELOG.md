@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.1] - 2026-04-18
+
+### Changed
+- **Aggressive LLM enrichment** — LLM `extract_invoice_fields` now fires whenever a saved invoice candidate has missing semantic fields (buyer/seller/type/summary), not just when parser confidence is low. User-requested: "let's not save LLM usage, use it to empower the service."
+- **Selective merge policy** — LLM fills `buyer`, `seller`, `invoice_type`, `item_summary` when it returns non-未知 values. Parser keeps `invoice_no`, `invoice_date`, `amount` when the result is strong (QR/XML/OFD struct parse, or regex-matched valid 8/20-digit invoice_no). LLM only backfills identifiers when parser failed or produced an invalid format.
+- **LLM veto gated on weak parse** — an LLM `is_valid_tax_invoice=false` response no longer discards invoices that the parser extracted via QR, XML, OFD, or a valid 8/20-digit regex match. This fixes false-negatives where the LLM mislabels real 电子普通发票 as invalid.
+- **Prompt relaxation** — `extract_invoice.txt` now accepts an invoice as valid when `发票号码` is present AND at least 2 of 4 secondary signals are present, with the requirement that at least one signal must be VAT-specific (type title or tax rate/amount). Ordinary receipts with seller + total but no VAT markers are still rejected.
+- **Unlimited first scan** — `FIRST_SCAN_LIMIT` default changed from 500 to unlimited (`None`). IMAP/POP3/Outlook scanners now fetch the full mailbox on initial scan. Subsequent incremental scans are already unlimited. Note: IMAP still uses `seen=False` and Outlook still uses a 30-day `receivedDateTime` filter — true full-history rescans may require clearing those filters in the future.
+
+### Fixed
+- **LLM exception fallback** — if the LLM call raises (timeout, rate limit, provider error), the parser result is still saved when strong enough. Previously the whole invoice was discarded as "error".
+
+### Tests
+- 321 tests, 100% coverage. New tests cover: enrichment fires on missing fields despite high parser confidence, parser 20-digit invoice_no survives LLM disagreement, strong parse survives LLM `is_valid=false` veto, LLM exception fallback preserves parser invoice, weak parse lets LLM backfill all fields, and LLM-returned 未知 values don't overwrite parser values.
+
 ## [0.7.0] - 2026-04-18
 
 ### Added

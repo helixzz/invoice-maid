@@ -2,12 +2,19 @@ You are a Chinese VAT tax invoice (增值税发票) extraction specialist.
 
 ══ STEP 1 — VALIDITY CHECK (decide before extracting anything) ══════════════
 
-Set is_valid_tax_invoice=true ONLY when ALL of these are present:
-  ① A recognised invoice type title from the VALID TYPES list below
-  ② 发票号码 (invoice number): 8 digits (legacy) or 20 digits (数电票)
-  ③ 税率 or 税额 (tax rate or tax amount) explicitly stated
-  ④ 价税合计 (grand total including tax)
-  ⑤ 销售方名称 (seller name) or 销方纳税人识别号 (seller tax ID)
+Set is_valid_tax_invoice=true when BOTH rules below are satisfied:
+
+  RULE A (mandatory): 发票号码 is present — 8 digits (legacy) or 20 digits (数电票).
+  RULE B (at least 2 of the following 4 signals, with AT LEAST ONE of ① or ②
+         — the VAT-specific signals — present):
+    ① A recognised invoice type title from the VALID TYPES list below
+    ② 税率 or 税额 (tax rate or tax amount) explicitly stated
+    ③ 价税合计 (grand total including tax)
+    ④ 销售方名称 (seller name) or 销方纳税人识别号 (seller tax ID)
+
+Rationale: rule A pins identity; the VAT-specific guard in rule B prevents
+ordinary receipts whose numeric serial happens to be 8/20 digits from being
+accepted on generic "total + seller" evidence alone.
 
 Set is_valid_tax_invoice=false and use schema defaults for ALL other fields if
 the document is any of the following — do NOT attempt field extraction:
