@@ -1921,3 +1921,59 @@ async def test_lazy_hydration_fires_only_for_invoice_candidates(
     invoices = (await db.execute(select(Invoice))).scalars().all()
     assert len(invoices) == 1
     assert invoices[0].invoice_no == "88899900011122233344"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_rejects_scam_after_llm_merge(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="scam-1",
+        subject="发票已开具",
+        body_text="please check attachment",
+        body_html="",
+        from_addr="sender@company.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", content_type="application/pdf", payload=b"pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="88834814",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码 88834814",
+        confidence=0.7,
+        amount=Decimal("1.07"),
+        invoice_date=date(2024, 1, 1),
+        invoice_type="增值税电子普通发票",
+        extraction_method="regex",
+        is_vat_document=True,
+    )
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={
+            "buyer": "代开各行业发票联系微信gn81186",
+            "seller": "摩拜出行服务有限公司",
+            "invoice_no": "88834814",
+            "invoice_type": "增值税电子普通发票",
+            "amount": Decimal("1.07"),
+            "confidence": 0.9,
+            "is_valid_tax_invoice": True,
+        }
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert invoices == []
+    scam_logs = [log for log in extraction_logs if log.outcome == "not_vat_invoice"]
+    assert len(scam_logs) == 1
+    assert "scam signal" in (scam_logs[0].error_detail or "")

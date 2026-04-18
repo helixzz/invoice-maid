@@ -23,7 +23,7 @@ from app.database import get_db
 from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
 from app.schemas.invoice import VALID_INVOICE_TYPES
 from app.services.ai_service import AIService, _resolve_safelink
-from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders
+from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders, is_scam_text
 from app.services.email_scanner import ScannerFactory, _is_uid_newer
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import parse as parse_invoice
@@ -407,6 +407,27 @@ async def _process_single_email(
 
                                 parsed.extraction_method = "llm"
                                 parsed.confidence = max(extracted.confidence, parsed.confidence)
+
+                        scam_text = " ".join(
+                            s for s in (parsed.buyer, parsed.seller, parsed.item_summary) if s
+                        )
+                        scam_hit, scam_reason = is_scam_text(scam_text)
+                        if scam_hit:
+                            db.add(
+                                _record_extraction_log(
+                                    scan_log_id=log_id,
+                                    email_uid=email_data.uid,
+                                    email_subject=email_data.subject,
+                                    attachment_filename=filename,
+                                    outcome="not_vat_invoice",
+                                    classification_tier=classification_tier,
+                                    invoice_no=parsed.invoice_no,
+                                    confidence=parsed.confidence,
+                                    error_detail=f"scam signal: {scam_reason}",
+                                )
+                            )
+                            await db.commit()
+                            continue
 
                         final_type = parsed.invoice_type or ""
                         type_is_valid = (

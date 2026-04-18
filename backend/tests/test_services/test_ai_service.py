@@ -67,7 +67,7 @@ async def test_analyze_email_uses_cache_and_persists_v2_key(db, settings, monkey
     assert analyzed.best_download_url == "https://example.com/invoice.xml"
     assert len(chat.calls) == 1
     cache = (await db.execute(__import__("sqlalchemy").select(LLMCache))).scalar_one()
-    assert cache.prompt_type == "analyze_email_v2"
+    assert cache.prompt_type == "analyze_email_v3"
     cached = await service.analyze_email(
         db,
         "subject",
@@ -127,8 +127,8 @@ async def test_analyze_email_cache_hit_returns_email_analysis(db, settings, monk
     )
     db.add(
         LLMCache(
-            content_hash=service._content_hash("analyze_email_v2", content),
-            prompt_type="analyze_email_v2",
+            content_hash=service._content_hash("analyze_email_v3", content),
+            prompt_type="analyze_email_v3",
             response_json=cached_result.model_dump_json(),
         )
     )
