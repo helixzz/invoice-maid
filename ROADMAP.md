@@ -202,7 +202,7 @@ Reference: see internal research findings in the v0.7.8 PR description and the f
 
 ### Planned improvements
 
-- Dark mode
+- **Automatic light/dark mode switch** (user-requested 2026-04-19) — respect `prefers-color-scheme` media query by default, with a manual toggle in the top bar to override to "Light / Dark / Auto". Persist preference in `localStorage`. Helps users viewing the dashboard at night. Stack-appropriate: Tailwind has `dark:` variants built in, so the lift is a `useColorMode` composable + adding `dark:` classes across `InvoiceList`, `InvoiceDetail`, `SettingsView`, and `ScanProgressBar`. Estimated effort: M (maybe 4-6 hours of CSS variant work).
 - PWA / installable app
 - Faceted filter sidebar
 - Vendor name normalization
