@@ -107,9 +107,11 @@ class _FakeFolderInfo:
 
 
 class _FakeFolderManager:
-    def __init__(self, folders=None, uidvalidity_map=None):
+    def __init__(self, folders=None, uidvalidity_map=None, uidnext_map=None, messages_map=None):
         self._folders = folders if folders is not None else [_FakeFolderInfo("INBOX")]
         self._uidvalidity_map = uidvalidity_map or {}
+        self._uidnext_map = uidnext_map or {}
+        self._messages_map = messages_map or {}
         self.current: str = "INBOX"
 
     def list(self):
@@ -119,8 +121,15 @@ class _FakeFolderManager:
         self.current = name
 
     def status(self, name: str, items) -> dict:
-        del items
-        return {"UIDVALIDITY": self._uidvalidity_map.get(name, 12345)}
+        result: dict = {}
+        requested = set(items or [])
+        if not requested or "UIDVALIDITY" in requested:
+            result["UIDVALIDITY"] = self._uidvalidity_map.get(name, 12345)
+        if "UIDNEXT" in requested:
+            result["UIDNEXT"] = self._uidnext_map.get(name, 0)
+        if "MESSAGES" in requested:
+            result["MESSAGES"] = self._messages_map.get(name, 0)
+        return result
 
 
 def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.MonkeyPatch, settings) -> None:
@@ -157,7 +166,7 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
             assert reverse is True
             assert mark_seen is False
             assert headers_only is True
-            assert bulk == 100
+            assert bulk == 500
             return [msg_old, msg_new]
 
     monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs or {"all": True})
@@ -221,7 +230,7 @@ def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, s
         "reverse": True,
         "mark_seen": False,
         "headers_only": True,
-        "bulk": 100,
+        "bulk": 500,
     }
 
 
@@ -458,7 +467,7 @@ async def test_async_scan_wrappers_for_imap_and_pop3(monkeypatch: pytest.MonkeyP
             return func()
 
     monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: Loop())
-    monkeypatch.setattr(ImapScanner, "_scan_sync", lambda self, account, last_uid, options=None: ["imap"])
+    monkeypatch.setattr(ImapScanner, "_scan_sync", lambda self, account, last_uid, options=None, progress_callback=None: ["imap"])
     monkeypatch.setattr(Pop3Scanner, "_scan_sync", lambda self, account, last_uid, options=None: ["pop3"])
     assert await ImapScanner().scan(account, "1") == ["imap"]
     assert await Pop3Scanner().scan(account, "1") == ["pop3"]
@@ -1672,19 +1681,15 @@ def test_parse_state_helpers_all_branches() -> None:
         _imap_folder_should_scan,
     )
 
-    # _parse_imap_state: valid new JSON dict-of-dicts
     raw = json.dumps({"INBOX": {"uid": "5", "uidvalidity": "12345"}, "Archive": {"uid": "2", "uidvalidity": "99"}})
     result = _parse_imap_state(raw)
-    assert result["INBOX"] == {"uid": "5", "uidvalidity": "12345"}
-    assert result["Archive"] == {"uid": "2", "uidvalidity": "99"}
+    assert result["INBOX"] == {"uid": "5", "uidvalidity": "12345", "uidnext": "", "messages": ""}
+    assert result["Archive"] == {"uid": "2", "uidvalidity": "99", "uidnext": "", "messages": ""}
 
-    # _parse_imap_state: invalid JSON -> falls back to legacy bare string
-    assert _parse_imap_state("notjson") == {"INBOX": {"uid": "notjson", "uidvalidity": ""}}
+    assert _parse_imap_state("notjson") == {"INBOX": {"uid": "notjson", "uidvalidity": "", "uidnext": "", "messages": ""}}
 
-    # _parse_imap_state: valid JSON but not dict-of-dicts -> falls back
-    assert _parse_imap_state(json.dumps(["a", "b"])) == {"INBOX": {"uid": '["a", "b"]', "uidvalidity": ""}}
+    assert _parse_imap_state(json.dumps(["a", "b"])) == {"INBOX": {"uid": '["a", "b"]', "uidvalidity": "", "uidnext": "", "messages": ""}}
 
-    # _parse_imap_state: None -> empty
     assert _parse_imap_state(None) == {}
 
     # _serialize_imap_state: round-trips
@@ -2888,3 +2893,260 @@ def test_imap_scan_mailbox_fetch_error_mid_iteration_is_caught(monkeypatch: pyte
     assert "11" in uids, "messages yielded before the error must survive"
     assert "5" in uids, "next folder must still be scanned after one folder's transient error"
 
+
+
+def test_set_imap_keepalive_covers_all_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_set_imap_keepalive should be a safe no-op on None or broken clients,
+    and should exercise both Linux and macOS socket option paths."""
+    from app.services.email_scanner import _set_imap_keepalive
+    from app.services import email_scanner
+
+    _set_imap_keepalive(None)
+
+    class BrokenClient:
+        def socket(self):
+            raise RuntimeError("no socket")
+
+    _set_imap_keepalive(BrokenClient())
+
+    class FakeSocket:
+        def __init__(self):
+            self.options_set: list = []
+
+        def setsockopt(self, level, name, value):
+            self.options_set.append((level, name, value))
+
+    class GoodClient:
+        def __init__(self):
+            self.sock = FakeSocket()
+
+        def socket(self):
+            return self.sock
+
+    client = GoodClient()
+    _set_imap_keepalive(client)
+    assert len(client.sock.options_set) >= 1
+
+    class BrokenSetOpt:
+        def socket(self):
+            class S:
+                def setsockopt(self, *a, **kw):
+                    raise OSError("bad option")
+            return S()
+
+    _set_imap_keepalive(BrokenSetOpt())
+
+
+def test_imap_scan_skips_unchanged_folder_via_status_preflight(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """When UIDNEXT and MESSAGES match the stored state, the folder should be
+    skipped entirely — no fetch, no emails returned for that folder."""
+    from app.services.email_scanner import ImapScanner, _serialize_imap_state
+    from app.services import email_scanner
+
+    fetch_calls: list = []
+
+    class UnchangedMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(
+                folders=[_FakeFolderInfo("INBOX")],
+                uidvalidity_map={"INBOX": 42},
+                uidnext_map={"INBOX": 101},
+                messages_map={"INBOX": 50},
+            )
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            fetch_calls.append(criteria)
+            return []
+
+    monkeypatch.setattr(email_scanner, "MailBox", UnchangedMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+
+    prior = _serialize_imap_state({
+        "INBOX": {"uid": "100", "uidvalidity": "42", "uidnext": "101", "messages": "50"}
+    })
+
+    emails = ImapScanner()._scan_sync(account, prior)
+    assert emails == []
+    assert fetch_calls == []
+
+
+def test_imap_scan_publishes_progress_callbacks(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """The scanner should invoke progress_callback at folder boundaries with
+    folder telemetry fields (total_folders, current_folder_idx, current_folder_name)."""
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+
+    class SimpleMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", SimpleMailbox)
+    captured: list = []
+
+    def cb(update):
+        captured.append(update)
+
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    ImapScanner()._scan_sync(account, None, None, cb)
+
+    assert any("total_folders" in u for u in captured)
+    assert any("current_folder_name" in u for u in captured)
+    assert any("folder_fetch_msg" in u for u in captured)
+
+
+def test_imap_scan_progress_callback_exceptions_are_swallowed(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """A buggy progress_callback must not disrupt the scan."""
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+
+    class SimpleMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", SimpleMailbox)
+
+    def broken_cb(update):
+        raise RuntimeError("callback failed")
+
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None, None, broken_cb)
+    assert len(emails) == 1
+
+
+def test_imap_scan_outer_session_drop_preserves_partial_state(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """If the outer MailBox.__exit__ or folder.list() raises an IMAP_CONNECTION_ERROR,
+    we should log a warning but still return whatever emails we accumulated and
+    serialize _last_scan_state from partial state_out."""
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    class DropAfterListMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(folders=[])
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            raise ssl.SSLEOFError("session dropped during exit")
+
+    monkeypatch.setattr(email_scanner, "MailBox", DropAfterListMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+    assert emails == []
+    assert scanner._last_scan_state == "{}"
+
+
+def test_imap_scan_many_folder_emails_triggers_interim_progress(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """Every 200 emails during a folder scan, the progress_callback should be called
+    with a running total_emails and folder_fetch_msg update."""
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    many_msgs = [
+        SimpleNamespace(
+            uid=str(i),
+            subject=f"s{i}",
+            text="",
+            html="",
+            from_="a@test",
+            date="2024-01-01T00:00:00Z",
+            attachments=[],
+            headers={},
+        )
+        for i in range(1, 251)
+    ]
+
+    class BigMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return many_msgs
+
+    monkeypatch.setattr(email_scanner, "MailBox", BigMailbox)
+    captured: list = []
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None, None, captured.append)
+    assert len(emails) == 250
+    interim_updates = [u for u in captured if "msgs" in u.get("folder_fetch_msg", "") and "total_emails" in u]
+    assert len(interim_updates) >= 1

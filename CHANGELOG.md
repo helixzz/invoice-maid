@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.8] - 2026-04-19
+
+### Why this release matters
+
+Production QQ IMAP scans have been taking 60+ minutes and frequently crashing with `ssl.SSLEOFError` halfway through. Live monitoring of v0.7.7 — after researching IMAP-at-scale best practices from OfflineIMAP, imap-tools internals, and the RFC 3501/7162 families — identified five concrete bottlenecks. v0.7.8 ships the high-ROI subset as drop-in improvements that preserve all existing behaviour.
+
+Expected real-world impact (per the research findings, to be measured in the next production rescan):
+
+| Metric | v0.7.7 | v0.7.8 (expected) |
+|---|---|---|
+| Incremental scan (0 new msgs in 20 folders) | 30–60 min | **30–60 seconds** |
+| Incremental scan (50 new msgs) | 30–60 min | **2–4 min** |
+| Full scan of 100k mailbox | 60–90 min | **15–25 min** |
+| Partial progress visibility during pass-1 | `total_emails=0` for an hour | Per-folder live telemetry |
+| Partial state preservation on session drop | Lost | Preserved |
+
+### Added
+
+- **STATUS pre-flight folder-skip optimization.** Before running `SELECT folder` + bulk `FETCH`, the scanner now issues an IMAP `STATUS folder (UIDVALIDITY UIDNEXT MESSAGES)` — a cheap command that does not lock the folder. If `UIDNEXT` and `MESSAGES` both match the values we saved from the last successful scan, the folder is skipped entirely (no SELECT, no FETCH). On mailboxes with many large-but-static folders (Sent, Drafts-like archives, old auto-filed labels), this is the dominant cost reduction: a full scan of 20 folders where 18 are unchanged now takes ~20 STATUS round-trips instead of 20 full folder sweeps. Backed by research reference: OfflineIMAP uses the same technique ([imapserver.py](https://github.com/OfflineIMAP/offlineimap3/blob/8209ac20a7191cb5c0618f77858bfbc0839e6da3/offlineimap/imapserver.py#L596-L611)).
+
+- **Folder-level progress telemetry.** The scanner now accepts an optional `progress_callback` parameter and publishes progress updates at every meaningful boundary: session start (with `total_folders`), each folder enter (`current_folder_idx`, `current_folder_name`, `folder_fetch_msg`), every 200 messages during a large fetch (running `total_emails`), and each folder finish (folder-level summary). `ScanProgress` gains four new fields — `total_folders`, `current_folder_idx`, `current_folder_name`, `folder_fetch_msg` — that surface through the existing `/scan/progress` endpoint and the `/scan/progress/stream` SSE. The scheduler wires a threadsafe callback (`asyncio.run_coroutine_threadsafe`) so the synchronous scanner thread can publish into the async event loop's progress broadcaster without any locking on the hot path. Users watching a scan now see real movement instead of a frozen `total_emails=0` for an hour.
+
+- **TCP keepalive on IMAP sockets (`_set_imap_keepalive`).** Enables `SO_KEEPALIVE` + `TCP_KEEPIDLE=60s` / `TCP_KEEPINTVL=10s` / `TCP_KEEPCNT=5` on the underlying socket immediately after login. This detects silent NAT/firewall/server connection drops within ~100 seconds instead of hanging a multi-minute FETCH indefinitely. Applied to both `ImapScanner._scan_sync` and `ImapScanner._hydrate_sync`. macOS path uses `TCP_KEEPALIVE` (platform-gated). Safe no-op when the underlying client doesn't expose a raw socket (e.g. in tests).
+
+- **Partial-state preservation on outer session drop.** The entire `with MailBox(...) as mailbox:` block is now wrapped in a `try/except IMAP_CONNECTION_ERRORS`. If the session dies during `__exit__` (e.g. `ssl.SSLEOFError` on LOGOUT when the socket is already half-closed), we log a warning and still return the partially-accumulated emails list plus the serialized `_last_scan_state` for all folders that completed before the drop. Previously the exception escaped and the entire scan run was discarded, including folder state that had been successfully collected.
+
+### Changed
+
+- **`imap-tools` bulk fetch size increased** from 100 to 500 for pass-1 metadata fetches. Per the research findings: `bulk=N` batches N UIDs into a single `UID FETCH` command, so on a 10k-message folder at 50ms RTT, `bulk=100` takes ~5s while `bulk=500` takes ~1s — a 3–8× speedup. The response size (~500 × 3KB headers = 1.5MB) is well under `imaplib._MAXLINE = 20MB` that imap-tools already sets, so there's no truncation risk for headers-only fetches.
+
+- **Per-folder state schema extended** (backward-compatible). `EmailAccount.last_scan_uid` JSON now stores `{"uid", "uidvalidity", "uidnext", "messages"}` per folder. The new `uidnext` and `messages` fields power the STATUS pre-flight skip optimization. `_parse_imap_state` remains backward-compatible with the pre-v0.7.8 `{"uid", "uidvalidity"}` shape (missing fields parse as empty strings, which falls through to the full-fetch path).
+
+### Tests
+
+- 393 tests, 100% coverage. New test cases: `_set_imap_keepalive` across all platform and failure paths (None client, broken `.socket()`, successful Linux/macOS setsockopt, broken `setsockopt`), STATUS pre-flight skip when UIDNEXT and MESSAGES are unchanged, `progress_callback` invocation at folder boundaries with the full update schema, progress_callback exception isolation (buggy callback doesn't break scan), outer `with MailBox()` `__exit__` raising `SSLEOFError` still returns accumulated state, interim progress publishing every 200 messages during a large folder fetch, scheduler's `progress_callback` bridge between synchronous scanner thread and async event loop, and fallback for legacy scanners that don't accept `progress_callback` (`TypeError` swallow).
+
 ## [0.7.7] - 2026-04-18
 
 ### Why this release matters

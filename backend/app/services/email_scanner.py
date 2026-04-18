@@ -10,6 +10,7 @@ from email.utils import parsedate_to_datetime
 import functools
 import hashlib
 import imaplib
+import socket
 import json
 import logging
 import poplib
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import httpx
 import msal
@@ -134,6 +135,7 @@ class BaseEmailScanner(ABC):
         account: EmailAccount,
         last_uid: str | None = None,
         options: ScanOptions | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[RawEmail]:
         """Scan for emails. IMAP and Outlook enumerate folders and return metadata-only
         RawEmail objects (is_hydrated=False); POP3 returns fully-hydrated objects because
@@ -204,6 +206,28 @@ def _normalize_datetime(value: datetime | str | None) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _set_imap_keepalive(imap_client: Any) -> None:
+    """Enable TCP keepalive on the IMAP socket so NAT/firewall/server silent
+    connection drops are detected within ~100s instead of hanging a full-mailbox
+    FETCH for minutes. Safe no-op on platforms that don't expose TCP_KEEPIDLE."""
+    if imap_client is None:
+        return
+    try:
+        sock = imap_client.socket()
+    except Exception:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+        elif hasattr(socket, "TCP_KEEPALIVE"):  # pragma: no cover
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60)
+    except Exception:
+        pass
+
+
 def _is_uid_newer(candidate: str | None, previous: str | None) -> bool:
     if not candidate:
         return False
@@ -231,17 +255,27 @@ def _imap_folder_should_scan(flags: tuple[str, ...]) -> bool:
 
 def _parse_imap_state(raw: str | None) -> dict[str, dict[str, str]]:
     """Parse `last_scan_uid` into a per-folder state dict.
-    Accepts the new JSON format {folder: {uid, uidvalidity}} and legacy
-    string form (treated as INBOX state with unknown UIDVALIDITY)."""
+    Accepts the new JSON format {folder: {uid, uidvalidity, uidnext?, messages?}}
+    and legacy string form (treated as INBOX state with unknown UIDVALIDITY).
+    Extra keys (uidnext, messages) from STATUS are preserved for the
+    unchanged-folder skip optimization."""
     if not raw:
         return {}
     try:
         data = json.loads(raw)
         if isinstance(data, dict) and all(isinstance(v, dict) for v in data.values()):
-            return {str(k): {"uid": str(v.get("uid") or ""), "uidvalidity": str(v.get("uidvalidity") or "")} for k, v in data.items()}
+            return {
+                str(k): {
+                    "uid": str(v.get("uid") or ""),
+                    "uidvalidity": str(v.get("uidvalidity") or ""),
+                    "uidnext": str(v.get("uidnext") or ""),
+                    "messages": str(v.get("messages") or ""),
+                }
+                for k, v in data.items()
+            }
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
-    return {"INBOX": {"uid": str(raw), "uidvalidity": ""}}
+    return {"INBOX": {"uid": str(raw), "uidvalidity": "", "uidnext": "", "messages": ""}}
 
 
 def _serialize_imap_state(state: dict[str, dict[str, str]]) -> str:
@@ -291,10 +325,11 @@ class ImapScanner(BaseEmailScanner):
         account: EmailAccount,
         last_uid: str | None = None,
         options: ScanOptions | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[RawEmail]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, functools.partial(self._scan_sync, account, last_uid, options)
+            None, functools.partial(self._scan_sync, account, last_uid, options, progress_callback)
         )
 
     def _scan_sync(
@@ -302,6 +337,7 @@ class ImapScanner(BaseEmailScanner):
         account: EmailAccount,
         last_uid: str | None,
         options: ScanOptions | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[RawEmail]:
         password = decrypt_password(account.password_encrypted)
         emails: list[RawEmail] = []
@@ -314,96 +350,168 @@ class ImapScanner(BaseEmailScanner):
         state_out: dict[str, dict[str, str]] = {}
         criteria = _build_imap_criteria(options)
 
-        with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
-            folders = list(mailbox.folder.list())
-            for folder_info in folders:
-                folder_name = getattr(folder_info, "name", "") or ""
-                folder_flags = tuple(getattr(folder_info, "flags", ()) or ())
-                if not folder_name or not _imap_folder_should_scan(folder_flags):
-                    continue
-
+        def _publish(update: dict[str, Any]) -> None:
+            if progress_callback is not None:
                 try:
-                    mailbox.folder.set(folder_name)
-                except IMAP_CONNECTION_ERRORS as exc:
-                    logger.warning("IMAP folder %r could not be selected (%s); skipping", folder_name, exc)
-                    continue
+                    progress_callback(update)
+                except Exception as exc:
+                    logger.debug("progress_callback raised, ignoring: %s", exc)
 
-                prev = state_in.get(folder_name, {})
-                prev_uid = prev.get("uid") or ""
-                prev_uidvalidity = prev.get("uidvalidity") or ""
+        try:
+            with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
+                _set_imap_keepalive(getattr(mailbox, "client", None))
+                all_folders = list(mailbox.folder.list())
+                scannable_folders = [
+                    f for f in all_folders
+                    if getattr(f, "name", "") and _imap_folder_should_scan(tuple(getattr(f, "flags", ()) or ()))
+                ]
+                _publish({"total_folders": len(scannable_folders), "current_folder_idx": 0, "folder_fetch_msg": ""})
 
-                current_uidvalidity = ""
-                try:
-                    status = mailbox.folder.status(folder_name, ["UIDVALIDITY"])
-                    current_uidvalidity = str(status.get("UIDVALIDITY") or "")
-                except (IMAP_CONNECTION_ERRORS + (Exception,)):
+                for folder_idx, folder_info in enumerate(scannable_folders):
+                    folder_name = getattr(folder_info, "name", "") or ""
+                    _publish({
+                        "current_folder_idx": folder_idx + 1,
+                        "current_folder_name": folder_name,
+                        "folder_fetch_msg": f"selecting {folder_name}",
+                    })
+
+                    try:
+                        mailbox.folder.set(folder_name)
+                    except IMAP_CONNECTION_ERRORS as exc:
+                        logger.warning("IMAP folder %r could not be selected (%s); skipping", folder_name, exc)
+                        continue
+
+                    prev = state_in.get(folder_name, {})
+                    prev_uid = prev.get("uid") or ""
+                    prev_uidvalidity = prev.get("uidvalidity") or ""
+                    prev_uidnext = prev.get("uidnext") or ""
+                    prev_messages = prev.get("messages") or ""
+
                     current_uidvalidity = ""
+                    current_uidnext = ""
+                    current_messages = ""
+                    try:
+                        status = mailbox.folder.status(folder_name, ["UIDVALIDITY", "UIDNEXT", "MESSAGES"])
+                        current_uidvalidity = str(status.get("UIDVALIDITY") or "")
+                        current_uidnext = str(status.get("UIDNEXT") or "")
+                        current_messages = str(status.get("MESSAGES") or "")
+                    except (IMAP_CONNECTION_ERRORS + (Exception,)):
+                        pass
 
-                uidvalidity_changed = bool(prev_uidvalidity) and bool(current_uidvalidity) and prev_uidvalidity != current_uidvalidity
-                effective_prev_uid = "" if uidvalidity_changed or not prev_uid else prev_uid
-                limit = FIRST_SCAN_LIMIT if not effective_prev_uid else None
-                highest_uid = effective_prev_uid
+                    uidvalidity_changed = bool(prev_uidvalidity) and bool(current_uidvalidity) and prev_uidvalidity != current_uidvalidity
 
-                try:
-                    iterator = mailbox.fetch(
-                        criteria,
-                        limit=limit,
-                        reverse=True,
-                        mark_seen=False,
-                        headers_only=True,
-                        bulk=100,
-                    )
-                    for msg in iterator:
-                        msg_uid = cast(str, getattr(msg, "uid", "") or "")
-                        if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
-                            continue
-                        headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
-                        message_id = ""
-                        for header_key in ("Message-ID", "Message-Id", "message-id"):
-                            if header_key in headers_map:
-                                message_id = headers_map[header_key].strip().strip("<>")
-                                break
-                        if message_id and message_id in seen_message_ids:
-                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
-                                highest_uid = msg_uid
-                            continue
-                        if message_id:
-                            seen_message_ids.add(message_id)
-
-                        received_at = _normalize_datetime(getattr(msg, "date", None))
-                        if options is not None and options.since is not None and received_at < options.since:
-                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
-                                highest_uid = msg_uid
-                            continue
-                        emails.append(
-                            RawEmail(
-                                uid=msg_uid,
-                                subject=cast(str, getattr(msg, "subject", "") or ""),
-                                body_text="",
-                                body_html="",
-                                from_addr=cast(str, getattr(msg, "from_", "") or ""),
-                                received_at=received_at,
-                                attachments=[],
-                                body_links=[],
-                                headers=headers_map,
-                                is_hydrated=False,
-                                folder=folder_name,
-                                message_id=message_id,
-                            )
+                    if (
+                        not uidvalidity_changed
+                        and prev_uidnext
+                        and current_uidnext
+                        and prev_uidnext == current_uidnext
+                        and prev_messages == current_messages
+                    ):
+                        logger.info(
+                            "IMAP folder %r unchanged (UIDNEXT=%s, MESSAGES=%s); skipping fetch",
+                            folder_name,
+                            current_uidnext,
+                            current_messages,
                         )
-                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
-                            highest_uid = msg_uid
-                except IMAP_CONNECTION_ERRORS as exc:
-                    logger.warning(
-                        "IMAP fetch failed for folder %r (%s); partial results for this folder will be saved and we will continue to the next folder",
-                        folder_name,
-                        exc,
-                    )
+                        state_out[folder_name] = {
+                            "uid": prev_uid,
+                            "uidvalidity": current_uidvalidity,
+                            "uidnext": current_uidnext,
+                            "messages": current_messages,
+                        }
+                        _publish({"folder_fetch_msg": f"{folder_name}: unchanged, skipped"})
+                        continue
 
-                state_out[folder_name] = {"uid": highest_uid or "", "uidvalidity": current_uidvalidity}
+                    effective_prev_uid = "" if uidvalidity_changed or not prev_uid else prev_uid
+                    limit = FIRST_SCAN_LIMIT if not effective_prev_uid else None
+                    highest_uid = effective_prev_uid
+                    folder_emails_this_run = 0
+
+                    _publish({"folder_fetch_msg": f"fetching {folder_name} (~{current_messages or '?'} msgs)"})
+
+                    try:
+                        iterator = mailbox.fetch(
+                            criteria,
+                            limit=limit,
+                            reverse=True,
+                            mark_seen=False,
+                            headers_only=True,
+                            bulk=500,
+                        )
+                        for msg in iterator:
+                            msg_uid = cast(str, getattr(msg, "uid", "") or "")
+                            if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
+                                continue
+                            headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
+                            message_id = ""
+                            for header_key in ("Message-ID", "Message-Id", "message-id"):
+                                if header_key in headers_map:
+                                    message_id = headers_map[header_key].strip().strip("<>")
+                                    break
+                            if message_id and message_id in seen_message_ids:
+                                if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                                    highest_uid = msg_uid
+                                continue
+                            if message_id:
+                                seen_message_ids.add(message_id)
+
+                            received_at = _normalize_datetime(getattr(msg, "date", None))
+                            if options is not None and options.since is not None and received_at < options.since:
+                                if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                                    highest_uid = msg_uid
+                                continue
+                            emails.append(
+                                RawEmail(
+                                    uid=msg_uid,
+                                    subject=cast(str, getattr(msg, "subject", "") or ""),
+                                    body_text="",
+                                    body_html="",
+                                    from_addr=cast(str, getattr(msg, "from_", "") or ""),
+                                    received_at=received_at,
+                                    attachments=[],
+                                    body_links=[],
+                                    headers=headers_map,
+                                    is_hydrated=False,
+                                    folder=folder_name,
+                                    message_id=message_id,
+                                )
+                            )
+                            folder_emails_this_run += 1
+                            if folder_emails_this_run % 200 == 0:
+                                _publish({
+                                    "folder_fetch_msg": f"{folder_name}: +{folder_emails_this_run} msgs",
+                                    "total_emails": len(emails),
+                                })
+                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
+                                highest_uid = msg_uid
+                    except IMAP_CONNECTION_ERRORS as exc:
+                        logger.warning(
+                            "IMAP fetch failed for folder %r (%s); partial results for this folder will be saved and we will continue to the next folder",
+                            folder_name,
+                            exc,
+                        )
+
+                    state_out[folder_name] = {
+                        "uid": highest_uid or "",
+                        "uidvalidity": current_uidvalidity,
+                        "uidnext": current_uidnext,
+                        "messages": current_messages,
+                    }
+                    _publish({
+                        "folder_fetch_msg": f"{folder_name}: {folder_emails_this_run} msgs fetched",
+                        "total_emails": len(emails),
+                    })
+        except IMAP_CONNECTION_ERRORS as exc:
+            logger.warning(
+                "IMAP session dropped during scan of %s (%s); preserving partial progress from %d folder(s) before the drop",
+                account.name,
+                exc,
+                len(state_out),
+            )
 
         emails.sort(key=lambda e: e.received_at)
         self._last_scan_state = _serialize_imap_state(state_out)
+        _publish({"folder_fetch_msg": f"{len(emails)} emails across {len(state_out)} folders"})
         return emails
 
     async def hydrate_email(self, account: EmailAccount, email: RawEmail) -> RawEmail:
@@ -421,6 +529,7 @@ class ImapScanner(BaseEmailScanner):
             with MailBox(account.host or "", port=account.port or 993).login(
                 account.username, password
             ) as mailbox:
+                _set_imap_keepalive(getattr(mailbox, "client", None))
                 try:
                     mailbox.folder.set(folder_name)
                 except IMAP_CONNECTION_ERRORS as exc:
@@ -481,7 +590,9 @@ class Pop3Scanner(BaseEmailScanner):
         account: EmailAccount,
         last_uid: str | None = None,
         options: ScanOptions | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[RawEmail]:
+        del progress_callback
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, functools.partial(self._scan_sync, account, last_uid, options)
@@ -684,6 +795,7 @@ class OutlookScanner(BaseEmailScanner):
         account: EmailAccount,
         last_uid: str | None = None,
         options: ScanOptions | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[RawEmail]:
         access_token = await self._acquire_access_token(account)
         headers = {"Authorization": f"Bearer {access_token}"}
