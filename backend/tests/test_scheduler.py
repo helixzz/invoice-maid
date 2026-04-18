@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.tasks.scheduler as scheduler
-from app.models import ExtractionLog, Invoice, ScanLog, WebhookLog
+from app.models import EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
 from app.schemas.invoice import EmailAnalysis, InvoiceFormat, InvoicePlatform, UrlKind
 from app.services import scan_progress as sp
 from app.services.email_scanner import RawAttachment, RawEmail
@@ -1977,3 +1977,83 @@ async def test_scheduler_rejects_scam_after_llm_merge(
     scam_logs = [log for log in extraction_logs if log.outcome == "not_vat_invoice"]
     assert len(scam_logs) == 1
     assert "scam signal" in (scam_logs[0].error_detail or "")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_scanner_last_scan_state(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await create_email_account(last_scan_uid=None)
+
+    class FakeScannerWithState:
+        _last_scan_state = '{"INBOX": {"uid": "999", "uidvalidity": "123"}}'
+
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScannerWithState())
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: MagicMock())
+
+    await scheduler.scan_all_accounts()
+
+    result = await db.execute(select(EmailAccount))
+    account = result.scalars().first()
+    assert account.last_scan_uid == '{"INBOX": {"uid": "999", "uidvalidity": "123"}}'
+
+
+@pytest.mark.asyncio
+async def test_scheduler_falls_back_to_email_uid_if_no_scan_state(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+
+    class FakeScannerNoState:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [
+                RawEmail(
+                    uid="uid-42",
+                    subject="test",
+                    body_text="",
+                    body_html="",
+                    from_addr="a@test",
+                    received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+                )
+            ]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScannerNoState())
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+
+    await scheduler.scan_all_accounts()
+
+    result = await db.execute(select(EmailAccount))
+    account = result.scalars().first()
+    assert account.last_scan_uid == "uid-42"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_scan_state_unchanged_does_not_update(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing_state = '{"INBOX": {"uid": "42", "uidvalidity": "123"}}'
+    await create_email_account(last_scan_uid=existing_state)
+
+    class FakeScannerSameState:
+        _last_scan_state = '{"INBOX": {"uid": "42", "uidvalidity": "123"}}'
+
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScannerSameState())
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: MagicMock())
+
+    await scheduler.scan_all_accounts()
+
+    result = await db.execute(select(EmailAccount))
+    account = result.scalars().first()
+    assert account.last_scan_uid == existing_state

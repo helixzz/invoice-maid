@@ -116,14 +116,18 @@ class RawEmail:
     body_links: list[str] = field(default_factory=list)
     headers: dict[str, str] = field(default_factory=dict)
     is_hydrated: bool = True
+    folder: str = ""
+    message_id: str = ""
 
 
 class BaseEmailScanner(ABC):
     @abstractmethod
     async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
-        """Scan for emails since ``last_uid``. IMAP and Outlook return metadata-only
-        ``RawEmail`` objects (``is_hydrated=False``, empty body + empty attachments);
-        POP3 returns fully-hydrated objects because POP3 has no efficient partial fetch."""
+        """Scan for emails. IMAP and Outlook enumerate folders and return metadata-only
+        RawEmail objects (is_hydrated=False); POP3 returns fully-hydrated objects because
+        POP3 has no efficient partial fetch. Caller should persist the value of
+        ``_last_scan_state`` back to ``EmailAccount.last_scan_uid`` after a scan
+        completes, if set."""
 
     @abstractmethod
     async def test_connection(self, account: EmailAccount) -> bool:
@@ -201,45 +205,155 @@ def _resolve_filename(name: str | None, fallback: str) -> str:
     return cleaned or fallback
 
 
+IMAP_SKIP_FLAGS = frozenset({r"\noselect", r"\drafts", r"\trash", r"\all"})
+
+
+def _imap_folder_should_scan(flags: tuple[str, ...]) -> bool:
+    flags_lower = {str(f).lower() for f in (flags or ())}
+    if flags_lower & IMAP_SKIP_FLAGS:
+        return False
+    return True
+
+
+def _parse_imap_state(raw: str | None) -> dict[str, dict[str, str]]:
+    """Parse `last_scan_uid` into a per-folder state dict.
+    Accepts the new JSON format {folder: {uid, uidvalidity}} and legacy
+    string form (treated as INBOX state with unknown UIDVALIDITY)."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and all(isinstance(v, dict) for v in data.values()):
+            return {str(k): {"uid": str(v.get("uid") or ""), "uidvalidity": str(v.get("uidvalidity") or "")} for k, v in data.items()}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return {"INBOX": {"uid": str(raw), "uidvalidity": ""}}
+
+
+def _serialize_imap_state(state: dict[str, dict[str, str]]) -> str:
+    return json.dumps(state, ensure_ascii=False)
+
+
+def _parse_graph_state(raw: str | None) -> dict[str, str]:
+    """Parse Graph per-folder last-receivedDateTime state.
+    New JSON format: {folder_id: last_received_dt}. Legacy: bare string is
+    the most-recent internetMessageId (kept as "__legacy_uid__" key so we
+    still honour it once, then switch to the new format)."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return {str(k): str(v or "") for k, v in data.items()}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return {"__legacy_uid__": str(raw)}
+
+
+def _serialize_graph_state(state: dict[str, str]) -> str:
+    return json.dumps(state, ensure_ascii=False)
+
+
 class ImapScanner(BaseEmailScanner):
     async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, functools.partial(self._scan_sync, account, last_uid))
+        return await loop.run_in_executor(
+            None, functools.partial(self._scan_sync, account, last_uid)
+        )
 
     def _scan_sync(self, account: EmailAccount, last_uid: str | None) -> list[RawEmail]:
         password = decrypt_password(account.password_encrypted)
         emails: list[RawEmail] = []
+        seen_message_ids: set[str] = set()
+
+        state_in = _parse_imap_state(last_uid)
+        state_out: dict[str, dict[str, str]] = {}
 
         with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
-            criteria = AND(seen=False) if last_uid is None else "ALL"
-            limit = FIRST_SCAN_LIMIT if last_uid is None else None
-
-            for msg in mailbox.fetch(
-                criteria,
-                limit=limit,
-                reverse=True,
-                mark_seen=False,
-                headers_only=True,
-                bulk=100,
-            ):
-                if last_uid and not _is_uid_newer(getattr(msg, "uid", None), last_uid):
+            folders = list(mailbox.folder.list())
+            for folder_info in folders:
+                folder_name = getattr(folder_info, "name", "") or ""
+                folder_flags = tuple(getattr(folder_info, "flags", ()) or ())
+                if not folder_name or not _imap_folder_should_scan(folder_flags):
                     continue
 
-                emails.append(
-                    RawEmail(
-                        uid=cast(str, getattr(msg, "uid", "") or ""),
-                        subject=cast(str, getattr(msg, "subject", "") or ""),
-                        body_text="",
-                        body_html="",
-                        from_addr=cast(str, getattr(msg, "from_", "") or ""),
-                        received_at=_normalize_datetime(getattr(msg, "date", None)),
-                        attachments=[],
-                        body_links=[],
-                        headers={key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()},
-                        is_hydrated=False,
-                    )
-                )
+                try:
+                    mailbox.folder.set(folder_name)
+                except IMAP_CONNECTION_ERRORS as exc:
+                    logger.warning("IMAP folder %r could not be selected (%s); skipping", folder_name, exc)
+                    continue
 
+                prev = state_in.get(folder_name, {})
+                prev_uid = prev.get("uid") or ""
+                prev_uidvalidity = prev.get("uidvalidity") or ""
+
+                current_uidvalidity = ""
+                try:
+                    status = mailbox.folder.status(folder_name, ["UIDVALIDITY"])
+                    current_uidvalidity = str(status.get("UIDVALIDITY") or "")
+                except (IMAP_CONNECTION_ERRORS + (Exception,)):
+                    current_uidvalidity = ""
+
+                uidvalidity_changed = bool(prev_uidvalidity) and bool(current_uidvalidity) and prev_uidvalidity != current_uidvalidity
+                effective_prev_uid = "" if uidvalidity_changed or not prev_uid else prev_uid
+                limit = FIRST_SCAN_LIMIT if not effective_prev_uid else None
+                highest_uid = effective_prev_uid
+
+                try:
+                    iterator = mailbox.fetch(
+                        "ALL",
+                        limit=limit,
+                        reverse=True,
+                        mark_seen=False,
+                        headers_only=True,
+                        bulk=100,
+                    )
+                except IMAP_CONNECTION_ERRORS as exc:
+                    logger.warning("IMAP fetch failed for folder %r (%s); skipping", folder_name, exc)
+                    state_out[folder_name] = {"uid": effective_prev_uid, "uidvalidity": current_uidvalidity}
+                    continue
+
+                for msg in iterator:
+                    msg_uid = cast(str, getattr(msg, "uid", "") or "")
+                    if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
+                        continue
+                    headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
+                    message_id = ""
+                    for header_key in ("Message-ID", "Message-Id", "message-id"):
+                        if header_key in headers_map:
+                            message_id = headers_map[header_key].strip().strip("<>")
+                            break
+                    if message_id and message_id in seen_message_ids:
+                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                            highest_uid = msg_uid
+                        continue
+                    if message_id:
+                        seen_message_ids.add(message_id)
+
+                    received_at = _normalize_datetime(getattr(msg, "date", None))
+                    emails.append(
+                        RawEmail(
+                            uid=msg_uid,
+                            subject=cast(str, getattr(msg, "subject", "") or ""),
+                            body_text="",
+                            body_html="",
+                            from_addr=cast(str, getattr(msg, "from_", "") or ""),
+                            received_at=received_at,
+                            attachments=[],
+                            body_links=[],
+                            headers=headers_map,
+                            is_hydrated=False,
+                            folder=folder_name,
+                            message_id=message_id,
+                        )
+                    )
+                    if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
+                        highest_uid = msg_uid
+
+                state_out[folder_name] = {"uid": highest_uid or "", "uidvalidity": current_uidvalidity}
+
+        emails.sort(key=lambda e: e.received_at)
+        self._last_scan_state = _serialize_imap_state(state_out)
         return emails
 
     async def hydrate_email(self, account: EmailAccount, email: RawEmail) -> RawEmail:
@@ -252,10 +366,18 @@ class ImapScanner(BaseEmailScanner):
 
     def _hydrate_sync(self, account: EmailAccount, email: RawEmail) -> RawEmail:
         password = decrypt_password(account.password_encrypted)
+        folder_name = email.folder or "INBOX"
         try:
             with MailBox(account.host or "", port=account.port or 993).login(
                 account.username, password
             ) as mailbox:
+                try:
+                    mailbox.folder.set(folder_name)
+                except IMAP_CONNECTION_ERRORS as exc:
+                    logger.warning("IMAP hydrate cannot select folder %r for uid=%s: %s", folder_name, email.uid, exc)
+                    email.is_hydrated = True
+                    return email
+
                 for msg in mailbox.fetch(
                     AND(uid=email.uid), mark_seen=False, limit=1, bulk=False
                 ):
@@ -484,58 +606,127 @@ def _get_outlook_msal_params_from_type(outlook_type: str) -> tuple[str, str]:
 class OutlookScanner(BaseEmailScanner):
     SCOPES = ["Mail.Read"]
 
+    SKIP_WELL_KNOWN_FOLDERS = frozenset({
+        "drafts",
+        "deleteditems",
+        "outbox",
+    })
+
     async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
         access_token = await self._acquire_access_token(account)
         headers = {"Authorization": f"Bearer {access_token}"}
-        params: dict[str, str] = {
-            "$top": "200",
-            "$orderby": "receivedDateTime desc",
-            "$select": "id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments",
-        }
-        if last_uid is None:
-            params["$filter"] = self._recent_message_filter()
-
+        state_in = _parse_graph_state(last_uid)
+        state_out: dict[str, str] = {}
+        seen_message_ids: set[str] = set()
         emails: list[RawEmail] = []
-        next_url = f"{GRAPH_BASE_URL}/me/mailFolders/inbox/messages"
-        email_limit = FIRST_SCAN_LIMIT if last_uid is None else None
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            while next_url and (email_limit is None or len(emails) < email_limit):
-                response = await client.get(next_url, headers=headers, params=params if next_url.endswith("/messages") else None)
+            folders = [f async for f in self._iter_mail_folders(client, headers)]
+            for folder in folders:
+                if self._should_skip_folder(folder):
+                    continue
+                folder_id = cast(str, folder.get("id") or "")
+                folder_name = cast(str, folder.get("displayName") or folder.get("wellKnownName") or "")
+                if not folder_id:
+                    continue
+
+                prev_dt = state_in.get(folder_id, "") or state_in.get("__legacy_uid__", "")
+                highest_dt = prev_dt
+                params: dict[str, str] = {
+                    "$top": "200",
+                    "$orderby": "receivedDateTime asc",
+                    "$select": "id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments",
+                }
+                if prev_dt:
+                    params["$filter"] = f"receivedDateTime gt {prev_dt}"
+
+                next_url: str | None = f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/messages"
+                email_limit = FIRST_SCAN_LIMIT if not prev_dt else None
+
+                while next_url and (email_limit is None or len(emails) < email_limit):
+                    response = await client.get(next_url, headers=headers, params=params or None)
+                    response.raise_for_status()
+                    payload = response.json()
+                    params = {}
+
+                    for item in payload.get("value", []):
+                        message_uid = cast(str, item.get("internetMessageId") or item.get("id") or "")
+                        if message_uid and message_uid in seen_message_ids:
+                            continue
+                        if message_uid:
+                            seen_message_ids.add(message_uid)
+
+                        received_dt_str = cast(str, item.get("receivedDateTime") or "")
+                        body_preview = str(item.get("bodyPreview") or "")
+                        sender = cast(dict[str, Any], item.get("from") or {})
+                        email_address = cast(dict[str, Any], sender.get("emailAddress") or {})
+
+                        emails.append(
+                            RawEmail(
+                                uid=message_uid,
+                                subject=str(item.get("subject") or ""),
+                                body_text=body_preview,
+                                body_html="",
+                                from_addr=str(email_address.get("address") or ""),
+                                received_at=_normalize_datetime(item.get("receivedDateTime")),
+                                attachments=[],
+                                body_links=[],
+                                headers={
+                                    "_graph_id": cast(str, item.get("id") or ""),
+                                    "_graph_folder_id": folder_id,
+                                    "_has_attachments": str(bool(item.get("hasAttachments"))),
+                                },
+                                is_hydrated=False,
+                                folder=folder_name,
+                                message_id=message_uid,
+                            )
+                        )
+                        if received_dt_str and (not highest_dt or received_dt_str > highest_dt):
+                            highest_dt = received_dt_str
+
+                        if email_limit is not None and len(emails) >= email_limit:
+                            break
+
+                    next_url = cast(str | None, payload.get("@odata.nextLink"))
+
+                if highest_dt:
+                    state_out[folder_id] = highest_dt
+
+        self._last_scan_state = _serialize_graph_state(state_out)
+        return emails
+
+    async def _iter_mail_folders(self, client: Any, headers: dict[str, str]):
+        seen_urls: set[str] = set()
+        stack: list[str] = [f"{GRAPH_BASE_URL}/me/mailFolders?$top=100"]
+        while stack:
+            url = stack.pop()
+            while url:
+                if url in seen_urls:
+                    break
+                seen_urls.add(url)
+                response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
+                for folder in payload.get("value", []):
+                    yield folder
+                    folder_id = cast(str, folder.get("id") or "")
+                    if folder_id and int(folder.get("childFolderCount") or 0) > 0:
+                        child_url = f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/childFolders?$top=100"
+                        if child_url not in seen_urls:  # pragma: no branch
+                            stack.append(child_url)
+                url = cast(str | None, payload.get("@odata.nextLink"))
 
-                for item in payload.get("value", []):
-                    message_uid = cast(str, item.get("internetMessageId") or item.get("id") or "")
-                    if last_uid and message_uid == last_uid:
-                        return emails
-
-                    body_preview = str(item.get("bodyPreview") or "")
-                    sender = cast(dict[str, Any], item.get("from") or {})
-                    email_address = cast(dict[str, Any], sender.get("emailAddress") or {})
-
-                    emails.append(
-                        RawEmail(
-                            uid=message_uid,
-                            subject=str(item.get("subject") or ""),
-                            body_text=body_preview,
-                            body_html="",
-                            from_addr=str(email_address.get("address") or ""),
-                            received_at=_normalize_datetime(item.get("receivedDateTime")),
-                            attachments=[],
-                            body_links=[],
-                            headers={"_graph_id": cast(str, item.get("id") or ""), "_has_attachments": str(bool(item.get("hasAttachments")))},
-                            is_hydrated=False,
-                        )
-                    )
-
-                    if email_limit is not None and len(emails) >= email_limit:
-                        break
-
-                next_url = cast(str | None, payload.get("@odata.nextLink"))
-                params = {}
-
-        return emails
+    def _should_skip_folder(self, folder: dict[str, Any]) -> bool:
+        well_known = str(folder.get("wellKnownName") or "").lower()
+        if well_known in self.SKIP_WELL_KNOWN_FOLDERS:
+            return True
+        odata_type = str(folder.get("@odata.type") or "")
+        if odata_type == "#microsoft.graph.mailSearchFolder":
+            return True
+        total = folder.get("totalItemCount")
+        if isinstance(total, int) and total == 0:
+            return True
+        return False
 
     async def hydrate_email(self, account: EmailAccount, email: RawEmail) -> RawEmail:
         if email.is_hydrated:
