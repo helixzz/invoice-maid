@@ -62,7 +62,112 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
-## v0.5.0+ — Future
+## v0.7.1 — Released
+
+**Theme:** Aggressive LLM enrichment + selective merge + prompt relaxation
+
+Regex-extracted invoices were saving with buyer/seller/type as `未知` because the LLM extraction stage only fired when parser confidence was below 0.6. v0.7.1 makes LLM enrichment mandatory whenever semantic fields are missing (even if parser confidence is high), with selective merge: LLM wins for buyer/seller/invoice_type/item_summary, parser wins for invoice_no/invoice_date/amount when the parser result is strong (QR, XML, OFD, or regex-matched 8/20-digit invoice_no). Prompt relaxed to accept invoices with `发票号码` + any 2 of 4 secondary signals. `FIRST_SCAN_LIMIT` default changed to unlimited.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.7.2 — Released
+
+**Theme:** Metadata-first lazy email fetch
+
+IMAP and Outlook scanners previously downloaded full MIME + every attachment payload for every message before classification. A 10k-email mailbox pulled gigabytes that were ~90% discarded as non-invoice. v0.7.2 adds two-phase scanning: pass 1 fetches subject/from/body-preview only; pass 2 (`hydrate_email`) fetches full body and attachments only after tier-1 classifier says invoice-related. Opens a fresh short-lived IMAP connection per classified message to avoid holding connections through LLM latency.
+
+**Production impact:** QQ mailbox scan 51min → 16min (3.1× faster).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.7.3 — Released
+
+**Theme:** Anti-scam three-layer defense
+
+Invoice-fraud / phishing emails ("代开各行业发票联系微信gn81186", "有发票開丨微信在附件上") were slipping through the pipeline because tier-1 saw `发票` in the subject, tier-3 LLM couldn't distinguish scam from genuine, and the extraction-time LLM was happy to hallucinate buyer/seller from ad copy. v0.7.3 adds (a) tier-1 classifier phrase/contact/obfuscated-digit detection via a new `is_scam_text()` helper, (b) a dedicated "诈骗 / 虚假发票邮件" rejection section in the `analyze_email` prompt, and (c) a STEP 0 scam rejection layer in `extract_invoice.txt`. Scheduler adds a post-extraction sanity check that re-inspects resolved buyer/seller against the same heuristic.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.7.4 — Released
+
+**Theme:** Dual-model AI test + scan operations transparency
+
+The "Test Connection" endpoint only tested the chat model, leaving embedding-model misconfiguration to fail silently during semantic search. Scan operations page rendered extraction details with no classification tier, parse method, or aggregate summary. v0.7.4 adds: parallel chat + embed test via `asyncio.gather`, granular openai error types (auth/404/403/429/timeout/connection/400), embedding dimension mismatch warnings, new `GET /scan/logs/{id}/summary` endpoint, persisted `classification_tier` / `parse_method` / `parse_format` / `download_outcome` columns on `ExtractionLog` (migration `0006`), and frontend T1/T2/T3 badges plus summary cards above the extraction list.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.7.5 — Released
+
+**Theme:** Multi-folder email scan (IMAP + Outlook)
+
+Three silent scan-coverage gaps closed at once:
+
+1. IMAP first scans used `AND(seen=False)` — already-read invoices at first-scan time were invisible forever.
+2. IMAP and Outlook were hardcoded to INBOX only — Archive / Junk / custom folders never scanned.
+3. Outlook first scan had a 30-day `receivedDateTime` cap — invoices older than 30 days never fetched.
+
+v0.7.5 enumerates all mail folders for both IMAP (via `MailBox.folder.list()` with flag-based skip of `\Drafts` / `\Trash` / `\Noselect` / `\All`) and Outlook Graph (recursive `/me/mailFolders` + `childFolders` with skip of `drafts` / `deleteditems` / `outbox` / `mailSearchFolder`). Per-folder UID + UIDVALIDITY state for IMAP, per-folder `receivedDateTime` watermark for Outlook. Cross-folder dedup by `Message-ID` / `internetMessageId`. `EmailAccount.last_scan_uid` widened `VARCHAR(255)` → `TEXT` (migration `0007`).
+
+**Production impact:** Outlook account: 470 emails → 35,631 emails scanned (76× coverage), 7 → 208 invoices saved.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.7.6 — Released
+
+**Theme:** Per-invocation manual-scan options (unread_only + since)
+
+Previously a manual scan had one implicit behavior — "fetch everything new since last time" — and `full=true` was the only override available, blowing away all incremental state. v0.7.6 adds two controls applied consistently across IMAP / POP3 / Outlook:
+
+- **`unread_only`** — server-side `AND(seen=False)` for IMAP, `$filter=isRead eq false` for Graph, no-op for POP3 (with UI warning banner)
+- **`since`** — server-side `AND(date_gte=date)` + client-side datetime refinement for IMAP (SINCE is RFC 3501 DATE-granularity), `$filter=receivedDateTime ge X` for Graph, client-side `Date` header filter for POP3
+
+UI adds a two-control panel in Settings → Scan Operations: "Only unread messages" checkbox and a time-range dropdown (All time / 7d / 30d / 6m / 1y / Custom). `POST /scan/trigger` now accepts a JSON body `{full, unread_only, since}`; legacy `?full=true` query param is preserved for backward compat.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.8.0+ — Future
+
+### Known Issues
+
+| Issue | Notes |
+|-------|-------|
+| **Email tracking pixel URLs downloaded as fake PDFs** | The body-link scanner follows all URLs in invoice-related emails, including email tracking pixels (e.g. `linktrace.triggerdelivery.com`). These return HTML/images, not PDFs. Parser fails with "No /Root object" and moves on. Fix: URL pre-filter should check Content-Type header before attempting PDF parse. |
+| **Nuonuo e-invoice download links return QR-code HTML pages** | Chinese e-invoice platforms (`nnfp.jss.com.cn`, `fp.nuonuo.com`) serve invoice download links that redirect to interactive QR-code web pages, not direct PDF/XML downloads. The CDN/anti-crawl protection on these platforms blocks server-side download. Fix: document that scanning for this platform family requires the PDF to be attached to the email, not just linked. Alternatively, explore a browser-based fetch path or nuonuo open API. |
+| **SQLite `database is locked` under EMAIL_CONCURRENCY=50** | Pre-existing, surfaces more visibly during v0.7.5 full rescans because all folders are processed. Tune IMAP-specific concurrency or switch to WAL busy-timeout. |
+
+### Planned improvements
+
+- Dark mode
+- PWA / installable app
+- Faceted filter sidebar
+- Vendor name normalization
+- Scheduled digest email notifications
+- In-app backup / restore
+- Drag-and-drop manual invoice upload
+- Keyboard shortcuts
+- Re-extract button (re-run LLM on stored file)
+- Multi-user support
+- Docker Compose setup
+- Structured JSON logging
+- Excel export (via openpyxl)
+- Inline-image QR decoding (deferred from v0.7.2)
+- Per-account scan concurrency tuning
+
+---
+
+## v0.5.0+ — Future (historical pre-0.7.x planning, superseded)
 
 ### Known Issues
 
@@ -189,4 +294,4 @@ Expected impact: **90%+ of emails resolved locally**, LLM called for <10%, massi
 
 ---
 
-> **Documentation rule:** CHANGELOG.md and README.md are updated with every release. No exceptions.
+> **Documentation rule:** CHANGELOG.md, README.md, and ROADMAP.md are updated with every release. No exceptions.
