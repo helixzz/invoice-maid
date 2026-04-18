@@ -9,3 +9,5 @@ exclude_lines =
     if __name__ == .__main__.:
     raise NotImplementedError
     \.\.\.
+    if TYPE_CHECKING:
+    if typing\.TYPE_CHECKING:
