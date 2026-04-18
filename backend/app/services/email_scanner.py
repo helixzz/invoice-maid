@@ -120,14 +120,28 @@ class RawEmail:
     message_id: str = ""
 
 
+@dataclass
+class ScanOptions:
+    unread_only: bool = False
+    since: datetime | None = None
+    reset_state: bool = False
+
+
 class BaseEmailScanner(ABC):
     @abstractmethod
-    async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
+    async def scan(
+        self,
+        account: EmailAccount,
+        last_uid: str | None = None,
+        options: ScanOptions | None = None,
+    ) -> list[RawEmail]:
         """Scan for emails. IMAP and Outlook enumerate folders and return metadata-only
         RawEmail objects (is_hydrated=False); POP3 returns fully-hydrated objects because
         POP3 has no efficient partial fetch. Caller should persist the value of
         ``_last_scan_state`` back to ``EmailAccount.last_scan_uid`` after a scan
-        completes, if set."""
+        completes, if set. When ``options`` is provided, its filters (``unread_only``,
+        ``since``) layer on top of the incremental UID/datetime state; when
+        ``options.reset_state`` is True, existing state is discarded before scanning."""
 
     @abstractmethod
     async def test_connection(self, account: EmailAccount) -> bool:
@@ -234,6 +248,23 @@ def _serialize_imap_state(state: dict[str, dict[str, str]]) -> str:
     return json.dumps(state, ensure_ascii=False)
 
 
+def _build_imap_criteria(options: ScanOptions | None) -> Any:
+    """Compose an imap-tools criteria from ScanOptions. IMAP SINCE is
+    DATE-granularity per RFC 3501, so date_gte truncates to the local date;
+    the scan loop still applies an exact datetime filter client-side."""
+    if options is None:
+        return "ALL"
+    kwargs: dict[str, Any] = {}
+    if options.unread_only:
+        kwargs["seen"] = False
+    if options.since is not None:
+        local_since = options.since.astimezone() if options.since.tzinfo else options.since
+        kwargs["date_gte"] = local_since.date()
+    if not kwargs:
+        return "ALL"
+    return AND(**kwargs)
+
+
 def _parse_graph_state(raw: str | None) -> dict[str, str]:
     """Parse Graph per-folder last-receivedDateTime state.
     New JSON format: {folder_id: last_received_dt}. Legacy: bare string is
@@ -255,19 +286,33 @@ def _serialize_graph_state(state: dict[str, str]) -> str:
 
 
 class ImapScanner(BaseEmailScanner):
-    async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
+    async def scan(
+        self,
+        account: EmailAccount,
+        last_uid: str | None = None,
+        options: ScanOptions | None = None,
+    ) -> list[RawEmail]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, functools.partial(self._scan_sync, account, last_uid)
+            None, functools.partial(self._scan_sync, account, last_uid, options)
         )
 
-    def _scan_sync(self, account: EmailAccount, last_uid: str | None) -> list[RawEmail]:
+    def _scan_sync(
+        self,
+        account: EmailAccount,
+        last_uid: str | None,
+        options: ScanOptions | None = None,
+    ) -> list[RawEmail]:
         password = decrypt_password(account.password_encrypted)
         emails: list[RawEmail] = []
         seen_message_ids: set[str] = set()
 
-        state_in = _parse_imap_state(last_uid)
+        if options is not None and options.reset_state:
+            state_in: dict[str, dict[str, str]] = {}
+        else:
+            state_in = _parse_imap_state(last_uid)
         state_out: dict[str, dict[str, str]] = {}
+        criteria = _build_imap_criteria(options)
 
         with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
             folders = list(mailbox.folder.list())
@@ -301,7 +346,7 @@ class ImapScanner(BaseEmailScanner):
 
                 try:
                     iterator = mailbox.fetch(
-                        "ALL",
+                        criteria,
                         limit=limit,
                         reverse=True,
                         mark_seen=False,
@@ -331,6 +376,10 @@ class ImapScanner(BaseEmailScanner):
                         seen_message_ids.add(message_id)
 
                     received_at = _normalize_datetime(getattr(msg, "date", None))
+                    if options is not None and options.since is not None and received_at < options.since:
+                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                            highest_uid = msg_uid
+                        continue
                     emails.append(
                         RawEmail(
                             uid=msg_uid,
@@ -426,13 +475,26 @@ class ImapScanner(BaseEmailScanner):
 class Pop3Scanner(BaseEmailScanner):
     _MAX_RECENT_IDS = 1000
 
-    async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
+    async def scan(
+        self,
+        account: EmailAccount,
+        last_uid: str | None = None,
+        options: ScanOptions | None = None,
+    ) -> list[RawEmail]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, functools.partial(self._scan_sync, account, last_uid))
+        return await loop.run_in_executor(
+            None, functools.partial(self._scan_sync, account, last_uid, options)
+        )
 
-    def _scan_sync(self, account: EmailAccount, last_uid: str | None) -> list[RawEmail]:
+    def _scan_sync(
+        self,
+        account: EmailAccount,
+        last_uid: str | None,
+        options: ScanOptions | None = None,
+    ) -> list[RawEmail]:
         password = decrypt_password(account.password_encrypted)
-        known_ids = self._load_recent_ids(last_uid)
+        effective_last_uid = None if (options is not None and options.reset_state) else last_uid
+        known_ids = self._load_recent_ids(effective_last_uid)
         emails: list[RawEmail] = []
 
         mailbox = poplib.POP3_SSL(account.host or "", account.port or 995)
@@ -440,7 +502,7 @@ class Pop3Scanner(BaseEmailScanner):
             mailbox.user(account.username)
             mailbox.pass_(password)
             total_messages = len(mailbox.list()[1])
-            if last_uid is not None:
+            if effective_last_uid is not None:
                 start_index = 1
             elif FIRST_SCAN_LIMIT is None:
                 start_index = 1
@@ -454,6 +516,10 @@ class Pop3Scanner(BaseEmailScanner):
                 message_id = self._message_id_for(msg, index)
                 if message_id in known_ids:
                     break
+
+                received_at = _normalize_datetime(msg.get("Date"))
+                if options is not None and options.since is not None and received_at < options.since:
+                    continue
 
                 attachments: list[RawAttachment] = []
                 body_text_parts: list[str] = []
@@ -500,7 +566,7 @@ class Pop3Scanner(BaseEmailScanner):
                         body_text=body_text,
                         body_html=body_html,
                         from_addr=str(msg.get("From") or ""),
-                        received_at=_normalize_datetime(msg.get("Date")),
+                        received_at=received_at,
                         attachments=attachments,
                         body_links=_extract_urls(body_text, body_html),
                         headers={key: str(value) for key, value in msg.items()},
@@ -612,10 +678,18 @@ class OutlookScanner(BaseEmailScanner):
         "outbox",
     })
 
-    async def scan(self, account: EmailAccount, last_uid: str | None = None) -> list[RawEmail]:
+    async def scan(
+        self,
+        account: EmailAccount,
+        last_uid: str | None = None,
+        options: ScanOptions | None = None,
+    ) -> list[RawEmail]:
         access_token = await self._acquire_access_token(account)
         headers = {"Authorization": f"Bearer {access_token}"}
-        state_in = _parse_graph_state(last_uid)
+        if options is not None and options.reset_state:
+            state_in: dict[str, str] = {}
+        else:
+            state_in = _parse_graph_state(last_uid)
         state_out: dict[str, str] = {}
         seen_message_ids: set[str] = set()
         emails: list[RawEmail] = []
@@ -637,8 +711,17 @@ class OutlookScanner(BaseEmailScanner):
                     "$orderby": "receivedDateTime asc",
                     "$select": "id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments",
                 }
+                filter_clauses: list[str] = []
                 if prev_dt:
-                    params["$filter"] = f"receivedDateTime gt {prev_dt}"
+                    filter_clauses.append(f"receivedDateTime gt {prev_dt}")
+                if options is not None:
+                    if options.unread_only:
+                        filter_clauses.append("isRead eq false")
+                    if options.since is not None:
+                        since_iso = options.since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        filter_clauses.append(f"receivedDateTime ge {since_iso}")
+                if filter_clauses:
+                    params["$filter"] = " and ".join(filter_clauses)
 
                 next_url: str | None = f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/messages"
                 email_limit = FIRST_SCAN_LIMIT if not prev_dt else None
