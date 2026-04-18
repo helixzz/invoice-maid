@@ -126,10 +126,13 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
             assert password == "secret"
             return _FakeContextManager(self)
 
-        def fetch(self, criteria, limit, reverse):
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
             del criteria
             assert limit is None
             assert reverse is True
+            assert mark_seen is False
+            assert headers_only is True
+            assert bulk == 100
             return [msg_old, msg_new]
 
     monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs or {"all": True})
@@ -149,8 +152,11 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
 
     assert len(emails) == 1
     assert emails[0].uid == "3"
-    assert emails[0].body_links == ["https://invoice.test"]
-    assert emails[0].attachments[0].filename == "invoice.pdf"
+    assert emails[0].is_hydrated is False
+    assert emails[0].body_text == ""
+    assert emails[0].body_html == ""
+    assert emails[0].body_links == []
+    assert emails[0].attachments == []
 
 
 def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, settings) -> None:
@@ -165,8 +171,8 @@ def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, s
             assert password == "secret"
             return _FakeContextManager(self)
 
-        def fetch(self, criteria, limit, reverse):
-            captured.update({"criteria": criteria, "limit": limit, "reverse": reverse})
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            captured.update({"criteria": criteria, "limit": limit, "reverse": reverse, "mark_seen": mark_seen, "headers_only": headers_only, "bulk": bulk})
             return []
 
     monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs or {"all": True})
@@ -183,7 +189,177 @@ def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, s
 
     ImapScanner()._scan_sync(account, None)
 
-    assert captured == {"criteria": {"seen": False}, "limit": FIRST_SCAN_LIMIT, "reverse": True}
+    assert captured == {
+        "criteria": {"seen": False},
+        "limit": FIRST_SCAN_LIMIT,
+        "reverse": True,
+        "mark_seen": False,
+        "headers_only": True,
+        "bulk": 100,
+    }
+
+
+@pytest.mark.asyncio
+async def test_imap_hydrate_email_returns_early_if_already_hydrated(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    account = EmailAccount(
+        id=1,
+        name="imap",
+        type="imap",
+        host="imap.example.com",
+        port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = email_scanner.RawEmail(
+        uid="1",
+        subject="s",
+        body_text="already body",
+        body_html="",
+        from_addr="a@test",
+        received_at=datetime.now(timezone.utc),
+        is_hydrated=True,
+    )
+    result = await ImapScanner().hydrate_email(account, email)
+    assert result is email
+    assert result.body_text == "already body"
+
+
+@pytest.mark.asyncio
+async def test_imap_hydrate_email_fetches_body_and_attachments(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    msg = SimpleNamespace(
+        uid="3",
+        subject="s",
+        text="body https://x.test",
+        html="<p>html</p>",
+        from_="a@test",
+        date="2024-01-01T00:00:00Z",
+        attachments=[
+            SimpleNamespace(filename="invoice.pdf", payload=b"PDFBYTES", content_type="application/pdf"),
+            SimpleNamespace(filename="note.txt", payload=b"noop", content_type="text/plain"),
+        ],
+    )
+
+    class FakeMailbox:
+        def __init__(self, host, port):
+            del host, port
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, reverse, headers_only
+            assert mark_seen is False
+            assert limit == 1
+            assert bulk is False
+            return [msg]
+
+    monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs)
+    monkeypatch.setattr(email_scanner, "MailBox", FakeMailbox)
+    account = EmailAccount(
+        id=1,
+        name="imap",
+        type="imap",
+        host="imap.example.com",
+        port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = email_scanner.RawEmail(
+        uid="3",
+        subject="s",
+        body_text="",
+        body_html="",
+        from_addr="",
+        received_at=datetime.now(timezone.utc),
+        is_hydrated=False,
+    )
+    result = await ImapScanner().hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert result.body_text == "body https://x.test"
+    assert result.body_links == ["https://x.test"]
+    assert len(result.attachments) == 1
+    assert result.attachments[0].filename == "invoice.pdf"
+    assert result.attachments[0].payload == b"PDFBYTES"
+    assert result.attachments[0].size == len(b"PDFBYTES")
+
+
+@pytest.mark.asyncio
+async def test_imap_hydrate_email_handles_connection_failure(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    class BrokenMailbox:
+        def __init__(self, host, port):
+            del host, port
+
+        def login(self, username, password):
+            del username, password
+            raise OSError("imap broken")
+
+    monkeypatch.setattr(email_scanner, "MailBox", BrokenMailbox)
+    warnings: list[str] = []
+    monkeypatch.setattr(email_scanner.logger, "warning", lambda msg, *args: warnings.append(msg % args))
+
+    account = EmailAccount(
+        id=1,
+        name="imap",
+        type="imap",
+        host="imap.example.com",
+        port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = email_scanner.RawEmail(
+        uid="3",
+        subject="s",
+        body_text="",
+        body_html="",
+        from_addr="",
+        received_at=datetime.now(timezone.utc),
+        is_hydrated=False,
+    )
+    result = await ImapScanner().hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert result.attachments == []
+    assert any("IMAP hydrate failed" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_imap_hydrate_email_handles_empty_fetch(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    class EmptyMailbox:
+        def __init__(self, host, port):
+            del host, port
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return []
+
+    monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs)
+    monkeypatch.setattr(email_scanner, "MailBox", EmptyMailbox)
+
+    account = EmailAccount(
+        id=1,
+        name="imap",
+        type="imap",
+        host="imap.example.com",
+        port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = email_scanner.RawEmail(
+        uid="3",
+        subject="s",
+        body_text="",
+        body_html="",
+        from_addr="",
+        received_at=datetime.now(timezone.utc),
+        is_hydrated=False,
+    )
+    result = await ImapScanner().hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert result.attachments == []
 
 
 @pytest.mark.asyncio
@@ -645,13 +821,18 @@ async def test_outlook_scanner_scan_connection_and_helpers(monkeypatch: pytest.M
                                 "id": "graph-1",
                                 "internetMessageId": "uid-1",
                                 "subject": "Invoice",
-                                "body": {"contentType": "html", "content": "<p>hello https://invoice.test</p>"},
+                                "bodyPreview": "hello https://invoice.test",
                                 "from": {"emailAddress": {"address": "sender@test"}},
                                 "receivedDateTime": "2024-01-01T00:00:00Z",
+                                "hasAttachments": True,
                             }
                         ],
                         "@odata.nextLink": None,
                     }
+                )
+            if "/attachments" not in url and "/messages/" in url:
+                return FakeResponse(
+                    {"body": {"contentType": "html", "content": "<p>hello https://invoice.test</p>"}}
                 )
             return FakeResponse(
                 {
@@ -678,8 +859,13 @@ async def test_outlook_scanner_scan_connection_and_helpers(monkeypatch: pytest.M
 
     emails = await scanner.scan(account)
     assert emails[0].uid == "uid-1"
-    assert emails[0].attachments[0].filename == "invoice.pdf"
-    assert emails[0].body_links == ["https://invoice.test"]
+    assert emails[0].is_hydrated is False
+    assert emails[0].attachments == []
+    assert emails[0].body_links == []
+    hydrated = await scanner.hydrate_email(account, emails[0])
+    assert hydrated.attachments[0].filename == "invoice.pdf"
+    assert hydrated.body_links == ["https://invoice.test"]
+    assert hydrated.is_hydrated is True
     assert await scanner.test_connection(account) is True
 
     failures: list[str] = []
@@ -1225,3 +1411,120 @@ async def test_acquire_token_sync_raises_when_no_token_path() -> None:
     account = email_scanner.EmailAccount(id=99, name="no-path", type="outlook", username="a@b.com", oauth_token_path=None)
     with pytest.raises(RuntimeError, match="Outlook authorization required"):
         scanner._acquire_token_sync(account)
+
+
+@pytest.mark.asyncio
+async def test_pop3_hydrate_email_default_is_noop(settings) -> None:
+    scanner = email_scanner.Pop3Scanner()
+    account = EmailAccount(
+        id=10, name="pop", type="pop3", host="pop.example.com", port=995,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = email_scanner.RawEmail(
+        uid="1", subject="s", body_text="hi", body_html="", from_addr="a",
+        received_at=datetime.now(timezone.utc), is_hydrated=True,
+    )
+    assert await scanner.hydrate_email(account, email) is email
+
+
+@pytest.mark.asyncio
+async def test_outlook_hydrate_email_returns_early_if_hydrated(settings) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=11, name="o", type="outlook", username="client-id")
+    email = email_scanner.RawEmail(
+        uid="1", subject="s", body_text="body", body_html="", from_addr="a",
+        received_at=datetime.now(timezone.utc), is_hydrated=True,
+    )
+    assert await scanner.hydrate_email(account, email) is email
+
+
+@pytest.mark.asyncio
+async def test_outlook_hydrate_email_returns_early_if_graph_id_missing(settings) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=11, name="o", type="outlook", username="client-id")
+    email = email_scanner.RawEmail(
+        uid="1", subject="s", body_text="", body_html="", from_addr="a",
+        received_at=datetime.now(timezone.utc), is_hydrated=False, headers={},
+    )
+    result = await scanner.hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert result.body_text == ""
+
+
+@pytest.mark.asyncio
+async def test_outlook_hydrate_email_handles_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=11, name="o", type="outlook", username="client-id")
+    email = email_scanner.RawEmail(
+        uid="1", subject="s", body_text="", body_html="", from_addr="a",
+        received_at=datetime.now(timezone.utc), is_hydrated=False,
+        headers={"_graph_id": "g1", "_has_attachments": "True"},
+    )
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            del url, headers, params
+            raise httpx.HTTPError("graph down")
+
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", FailingClient)
+    warnings: list[str] = []
+    monkeypatch.setattr(email_scanner.logger, "warning", lambda m, *args: warnings.append(m % args))
+
+    result = await scanner.hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert any("Outlook hydrate failed" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_outlook_hydrate_email_without_attachments_skips_attachments_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=11, name="o", type="outlook", username="client-id")
+    email = email_scanner.RawEmail(
+        uid="1", subject="s", body_text="", body_html="", from_addr="a",
+        received_at=datetime.now(timezone.utc), is_hydrated=False,
+        headers={"_graph_id": "g1", "_has_attachments": "False"},
+    )
+    calls: list[str] = []
+
+    class FakeResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"body": {"contentType": "text", "content": "text body"}}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            calls.append(url)
+            return FakeResp()
+
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", FakeClient)
+
+    result = await scanner.hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert result.body_text == "text body"
+    assert all("/attachments" not in c for c in calls)
