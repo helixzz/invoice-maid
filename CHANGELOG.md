@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.4] - 2026-04-18
+
+### Added
+- **Dual-model AI connection test** — `POST /settings/ai/test-connection` now tests BOTH the chat model and the embedding model in parallel via `asyncio.gather`. Returns structured per-model status: `{ok, chat: {ok, model, latency_ms, detail, ...}, embed: {ok, model, dim, latency_ms, detail, ...}}`. Previously only the chat model was tested, silently leaving misconfigured embedding models to fail later during semantic search indexing.
+- **Granular openai error handling** — the test endpoint distinguishes `auth` (401), `model_not_found` (404), `permission` (403), `rate_limited` (429 — treated as soft pass since endpoint is reachable), `timeout`, `connection`, `bad_request` (400), and `unknown` error types with human-readable messages.
+- **Embedding dimension validation** — if the embedding model returns a different vector size than the configured `EMBED_DIM`, the test emits `dim_mismatch: true` with a WARNING message so users know to update the config before sqlite-vec silently rejects embeddings.
+- **Two-dot status indicators** — Settings › AI 模型 page now shows separate green/red/gray dots next to both the chat model input and the embedding model input, each reflecting its own test result. Tooltip shows model name, latency, and detail.
+- **`classification_tier` in extraction log API** — the tier (1/2/3) was captured in the DB since v0.4.0 but never exposed through `GET /scan/logs/{id}/extractions`. Now returned and rendered as a T1/T2/T3 badge per extraction row.
+- **Parse metadata persistence** — new `parse_method` (qr/xml_xpath/ofd_struct/regex/llm), `parse_format` (pdf/xml/ofd), and `download_outcome` columns on `extraction_logs`. Populated by the scheduler at `saved`, `not_vat_invoice`, `low_confidence`, `duplicate` outcomes. Migration: `0006_extraction_parse_metadata`.
+- **`GET /scan/logs/{id}/summary` endpoint** — returns aggregate counts by outcome, parse_method, and classification_tier for a scan log. Enables per-scan at-a-glance statistics without pulling every extraction record.
+- **Scan summary cards in UI** — clicking a scan log now shows outcome count cards plus parse-method and classification-tier breakdowns above the extraction detail list.
+- **Extraction row badges** — each extraction row now surfaces `classification_tier` (indigo T-badge), `parse_method`+`parse_format` (purple badge), and color-coded outcome badges (green for saved, amber for low_confidence/not_vat_invoice, slate for skipped/duplicate, red for error).
+
+### Changed
+- **Test endpoint response shape** — backwards-incompatible: clients reading `{ok, model, detail}` now need to read `{ok, chat: {...}, embed: {...}}`. Frontend updated.
+
+### Tests
+- 341 tests, 100% coverage. New: dual-model success path, dimension mismatch warning path, no-expected-dim path, per-openai-error-type matrix (auth / model_not_found / permission / rate_limited / timeout / bad_request / unknown), extraction log with parse metadata fields, scan summary aggregation endpoint (success + 404 + empty scan).
+
 ## [0.7.3] - 2026-04-18
 
 ### Added

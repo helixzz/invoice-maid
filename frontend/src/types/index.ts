@@ -128,10 +128,38 @@ export interface ExtractionLog {
   email_subject: string
   attachment_filename: string | null
   outcome: string
+  classification_tier: number | null
+  parse_method: string | null
+  parse_format: string | null
+  download_outcome: string | null
   invoice_no: string | null
   confidence: number | null
   error_detail: string | null
   created_at: string
+}
+
+export interface ExtractionSummary {
+  scan_log_id: number
+  total: number
+  outcomes: Record<string, number>
+  parse_methods: Record<string, number>
+  classification_tiers: Record<string, number>
+}
+
+export interface AIConnectionTestResult {
+  ok: boolean
+  model: string
+  detail?: string
+  latency_ms?: number
+  error_type?: string
+  dim?: number
+  dim_mismatch?: boolean
+}
+
+export interface AIConnectionTestResponse {
+  ok: boolean
+  chat: AIConnectionTestResult
+  embed: AIConnectionTestResult
 }
 
 export interface SavedView {

@@ -134,6 +134,9 @@ def _record_extraction_log(
     attachment_filename: str | None,
     outcome: str,
     classification_tier: int | None = None,
+    parse_method: str | None = None,
+    parse_format: str | None = None,
+    download_outcome: str | None = None,
     invoice_no: str | None = None,
     confidence: float | None = None,
     error_detail: str | None = None,
@@ -145,6 +148,9 @@ def _record_extraction_log(
         attachment_filename=attachment_filename,
         outcome=outcome,
         classification_tier=classification_tier,
+        parse_method=parse_method,
+        parse_format=parse_format,
+        download_outcome=download_outcome,
         invoice_no=invoice_no,
         confidence=confidence,
         error_detail=_truncate_error_detail(error_detail),
@@ -421,6 +427,8 @@ async def _process_single_email(
                                     attachment_filename=filename,
                                     outcome="not_vat_invoice",
                                     classification_tier=classification_tier,
+                                    parse_method=parsed.extraction_method,
+                                    parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                     confidence=parsed.confidence,
                                     error_detail=f"scam signal: {scam_reason}",
@@ -453,6 +461,8 @@ async def _process_single_email(
                                     attachment_filename=filename,
                                     outcome="not_vat_invoice",
                                     classification_tier=classification_tier,
+                                    parse_method=parsed.extraction_method,
+                                    parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                     confidence=parsed.confidence,
                                     error_detail=f"type={final_type!r} llm_rejected={llm_rejected}",
@@ -471,6 +481,8 @@ async def _process_single_email(
                                     attachment_filename=filename,
                                     outcome="low_confidence",
                                     classification_tier=classification_tier,
+                                    parse_method=parsed.extraction_method,
+                                    parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                     confidence=parsed.confidence,
                                     error_detail=(
@@ -494,6 +506,8 @@ async def _process_single_email(
                                     attachment_filename=filename,
                                     outcome="duplicate",
                                     classification_tier=classification_tier,
+                                    parse_method=parsed.extraction_method,
+                                    parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                 )
                             )
@@ -540,6 +554,8 @@ async def _process_single_email(
                                     attachment_filename=filename,
                                     outcome="duplicate",
                                     classification_tier=classification_tier,
+                                    parse_method=parsed.extraction_method,
+                                    parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                 )
                             )
@@ -554,6 +570,8 @@ async def _process_single_email(
                                 attachment_filename=filename,
                                 outcome="saved",
                                 classification_tier=classification_tier,
+                                parse_method=parsed.extraction_method,
+                                parse_format=parsed.source_format,
                                 invoice_no=parsed.invoice_no,
                                 confidence=parsed.confidence,
                             )

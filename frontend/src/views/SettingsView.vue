@@ -16,6 +16,7 @@ import type {
   ClassifierSettingsResponse,
   ClassifierSettingsUpdate,
   ExtractionLog,
+  ExtractionSummary,
   OAuthInitiateResponse,
   OAuthStatusResponse
 } from '@/types'
@@ -49,6 +50,10 @@ const availableModels = ref<string[]>([])
 const loadingModels = ref(false)
 const modelsFetchFailed = ref(false)
 const aiConnectionOk = ref<boolean | null>(null)
+const aiChatOk = ref<boolean | null>(null)
+const aiEmbedOk = ref<boolean | null>(null)
+const aiChatDetail = ref<string>('')
+const aiEmbedDetail = ref<string>('')
 
 // Classifier Settings
 const classifierSettings = ref<ClassifierSettingsResponse | null>(null)
@@ -93,6 +98,8 @@ const fetchAISettings = async () => {
     const res = await api.getAISettings()
     aiSettings.value = res
     aiConnectionOk.value = null
+    aiChatOk.value = null
+    aiEmbedOk.value = null
     aiSettingsForm.value = {
       llm_base_url: res.llm_base_url,
       llm_model: res.llm_model,
@@ -127,16 +134,39 @@ const fetchAIModels = async () => {
 const testAIConnection = async () => {
   loadingModels.value = true
   aiConnectionOk.value = null
+  aiChatOk.value = null
+  aiEmbedOk.value = null
+  aiChatDetail.value = ''
+  aiEmbedDetail.value = ''
   try {
     const res = await api.testAIConnection()
     aiConnectionOk.value = res.ok
-    if (res.ok) {
-      toastRef.value?.addToast(`Model ${res.model} connected successfully`, 'success')
+    aiChatOk.value = res.chat.ok
+    aiEmbedOk.value = res.embed.ok
+    aiChatDetail.value = res.chat.detail || res.chat.error_type || ''
+    aiEmbedDetail.value = res.embed.detail || res.embed.error_type || ''
+
+    const chatLabel = `Chat (${res.chat.model})${res.chat.latency_ms ? ` · ${res.chat.latency_ms}ms` : ''}`
+    const embedLabel = `Embed (${res.embed.model})${res.embed.dim ? ` · ${res.embed.dim}d` : ''}${res.embed.latency_ms ? ` · ${res.embed.latency_ms}ms` : ''}`
+
+    if (res.chat.ok) {
+      toastRef.value?.addToast(`${chatLabel}: OK`, 'success')
     } else {
-      toastRef.value?.addToast(`Model ${res.model} failed: ${res.detail}`, 'error')
+      toastRef.value?.addToast(`${chatLabel} failed: ${res.chat.detail}`, 'error')
+    }
+    if (res.embed.ok) {
+      if (res.embed.dim_mismatch) {
+        toastRef.value?.addToast(`${embedLabel}: ${res.embed.detail}`, 'error')
+      } else {
+        toastRef.value?.addToast(`${embedLabel}: OK`, 'success')
+      }
+    } else {
+      toastRef.value?.addToast(`${embedLabel} failed: ${res.embed.detail}`, 'error')
     }
   } catch (error) {
     aiConnectionOk.value = false
+    aiChatOk.value = false
+    aiEmbedOk.value = false
     toastRef.value?.addToast('AI connection test failed', 'error')
   } finally {
     loadingModels.value = false
@@ -174,6 +204,7 @@ const loadingLogs = ref(false)
 const scanning = ref(false)
 const expandedLogId = ref<number | null>(null)
 const extractionLogs = ref<Record<number, ExtractionLog[]>>({})
+const extractionSummaries = ref<Record<number, ExtractionSummary>>({})
 const loadingExtractionLogs = ref<Record<number, boolean>>({})
 
 const toggleLogExpansion = async (logId: number) => {
@@ -187,7 +218,14 @@ const toggleLogExpansion = async (logId: number) => {
   if (!extractionLogs.value[logId]) {
     loadingExtractionLogs.value[logId] = true
     try {
-      extractionLogs.value[logId] = await api.getExtractionLogs(logId)
+      const [logs, summary] = await Promise.all([
+        api.getExtractionLogs(logId),
+        api.getScanLogSummary(logId).catch(() => null),
+      ])
+      extractionLogs.value[logId] = logs
+      if (summary) {
+        extractionSummaries.value[logId] = summary
+      }
     } catch (error) {
       console.error('Failed to load extraction logs', error)
       toastRef.value?.addToast('Failed to load extraction details', 'error')
@@ -720,16 +758,53 @@ onMounted(() => {
                       No emails processed in this scan.
                     </div>
                     <div v-else class="space-y-3">
+                      <div v-if="extractionSummaries[log.id]" class="mb-3">
+                        <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Summary</div>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+                          <div v-for="(count, outcome) in extractionSummaries[log.id].outcomes" :key="outcome"
+                               class="bg-white border border-slate-200 rounded-lg p-2 text-center shadow-sm">
+                            <div class="text-xs text-slate-500 uppercase tracking-wide">{{ outcome }}</div>
+                            <div class="text-lg font-semibold text-slate-800">{{ count }}</div>
+                          </div>
+                        </div>
+                        <div v-if="Object.keys(extractionSummaries[log.id].parse_methods).length > 0"
+                             class="flex flex-wrap gap-2 mt-2 text-xs text-slate-600">
+                          <span class="font-medium text-slate-500 uppercase tracking-wide">Parse methods:</span>
+                          <span v-for="(count, method) in extractionSummaries[log.id].parse_methods" :key="method"
+                                class="inline-flex items-center gap-1 bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded">
+                            <span class="font-mono">{{ method }}</span><span class="text-purple-500">·</span><span>{{ count }}</span>
+                          </span>
+                        </div>
+                        <div v-if="Object.keys(extractionSummaries[log.id].classification_tiers).length > 0"
+                             class="flex flex-wrap gap-2 mt-1 text-xs text-slate-600">
+                          <span class="font-medium text-slate-500 uppercase tracking-wide">Classification:</span>
+                          <span v-for="(count, tier) in extractionSummaries[log.id].classification_tiers" :key="tier"
+                                class="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded">
+                            <span class="font-mono">{{ tier }}</span><span class="text-indigo-500">·</span><span>{{ count }}</span>
+                          </span>
+                        </div>
+                      </div>
                       <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Extraction Details</div>
                       <div v-for="ext in extractionLogs[log.id]" :key="ext.id" class="bg-white border border-slate-200 rounded-lg p-3 text-sm flex flex-col gap-2 shadow-sm">
                         <div class="flex items-center justify-between gap-4">
                           <div class="flex-1 font-medium text-slate-800 truncate" :title="ext.email_subject">{{ ext.email_subject || 'No Subject' }}</div>
-                          <div class="flex items-center gap-2">
+                          <div class="flex items-center gap-2 flex-wrap">
+                            <span v-if="ext.classification_tier"
+                                  class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                  :title="'Classification tier ' + ext.classification_tier">
+                              T{{ ext.classification_tier }}
+                            </span>
+                            <span v-if="ext.parse_method"
+                                  class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200"
+                                  :title="'Parse method: ' + ext.parse_method">
+                              {{ ext.parse_method }}<span v-if="ext.parse_format" class="ml-1 text-purple-500">· {{ ext.parse_format }}</span>
+                            </span>
                             <span 
                               class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border"
                               :class="{
-                                'bg-green-50 text-green-700 border-green-200': ext.outcome === 'success',
-                                'bg-slate-100 text-slate-700 border-slate-200': ext.outcome === 'skipped' || ext.outcome === 'no_invoice',
+                                'bg-green-50 text-green-700 border-green-200': ext.outcome === 'saved' || ext.outcome === 'success',
+                                'bg-slate-100 text-slate-700 border-slate-200': ext.outcome === 'skipped_seen' || ext.outcome === 'not_invoice' || ext.outcome === 'duplicate',
+                                'bg-amber-50 text-amber-700 border-amber-200': ext.outcome === 'low_confidence' || ext.outcome === 'not_vat_invoice',
                                 'bg-red-50 text-red-700 border-red-200': ext.outcome === 'error' || ext.outcome === 'failed'
                               }"
                             >
@@ -811,8 +886,8 @@ onMounted(() => {
                   <input v-else type="text" v-model="aiSettingsForm.llm_model" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
                   <span
                     class="inline-flex h-3 w-3 rounded-full"
-                    :class="aiConnectionOk === null ? 'bg-slate-300' : aiConnectionOk ? 'bg-green-500' : 'bg-red-500'"
-                    :title="aiConnectionOk === null ? 'Not tested' : aiConnectionOk ? 'Connection OK' : 'Connection failed'"
+                    :class="aiChatOk === null ? 'bg-slate-300' : aiChatOk ? 'bg-green-500' : 'bg-red-500'"
+                    :title="aiChatOk === null ? 'Not tested' : aiChatOk ? `Chat model OK · ${aiChatDetail}` : `Chat model failed · ${aiChatDetail}`"
                   ></span>
                   <button type="button" @click="fetchAIModels" :disabled="loadingModels" class="inline-flex items-center px-3 py-2 border border-slate-300 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors" title="Refresh Models">
                     <svg v-if="loadingModels" class="animate-spin h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -827,11 +902,16 @@ onMounted(() => {
                   <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
                   <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
                 </label>
-                <div class="flex space-x-2">
+                <div class="flex items-center space-x-2">
                   <select v-if="availableModels.length > 0 && !modelsFetchFailed" v-model="aiSettingsForm.llm_embed_model" class="block w-full py-2 px-3 border border-slate-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                     <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
                   </select>
                   <input v-else type="text" v-model="aiSettingsForm.llm_embed_model" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
+                  <span
+                    class="inline-flex h-3 w-3 rounded-full"
+                    :class="aiEmbedOk === null ? 'bg-slate-300' : aiEmbedOk ? 'bg-green-500' : 'bg-red-500'"
+                    :title="aiEmbedOk === null ? 'Not tested' : aiEmbedOk ? `Embed model OK · ${aiEmbedDetail}` : `Embed model failed · ${aiEmbedDetail}`"
+                  ></span>
                   <button type="button" @click="fetchAIModels" :disabled="loadingModels" class="inline-flex items-center px-3 py-2 border border-slate-300 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors" title="Refresh Models">
                     <svg v-if="loadingModels" class="animate-spin h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                     <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>

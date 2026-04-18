@@ -236,3 +236,59 @@ async def test_list_extraction_logs_missing_scan_log_returns_404(client, auth_he
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Scan log not found"}
+
+
+async def test_list_extraction_logs_returns_new_parse_metadata_fields(client, auth_headers, create_scan_log, create_extraction_log) -> None:
+    scan_log = await create_scan_log()
+    await create_extraction_log(
+        scan_log=scan_log,
+        outcome="saved",
+        classification_tier=3,
+        parse_method="qr",
+        parse_format="pdf",
+        download_outcome="downloaded",
+    )
+    response = await client.get(f"/api/v1/scan/logs/{scan_log.id}/extractions", headers=auth_headers)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["classification_tier"] == 3
+    assert item["parse_method"] == "qr"
+    assert item["parse_format"] == "pdf"
+    assert item["download_outcome"] == "downloaded"
+
+
+async def test_scan_log_summary_aggregates_outcomes_methods_and_tiers(client, auth_headers, create_scan_log, create_extraction_log) -> None:
+    scan_log = await create_scan_log()
+    await create_extraction_log(scan_log=scan_log, outcome="saved", classification_tier=3, parse_method="qr")
+    await create_extraction_log(scan_log=scan_log, outcome="saved", classification_tier=1, parse_method="xml_xpath")
+    await create_extraction_log(scan_log=scan_log, outcome="not_invoice", classification_tier=1, parse_method=None)
+    await create_extraction_log(scan_log=scan_log, outcome="low_confidence", classification_tier=3, parse_method="regex")
+    await create_extraction_log(scan_log=scan_log, outcome="duplicate", classification_tier=3, parse_method="qr")
+
+    response = await client.get(f"/api/v1/scan/logs/{scan_log.id}/summary", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scan_log_id"] == scan_log.id
+    assert body["total"] == 5
+    assert body["outcomes"] == {"saved": 2, "not_invoice": 1, "low_confidence": 1, "duplicate": 1}
+    assert body["parse_methods"] == {"qr": 2, "xml_xpath": 1, "regex": 1}
+    assert body["classification_tiers"] == {"tier1": 2, "tier3": 3}
+
+
+async def test_scan_log_summary_missing_scan_returns_404(client, auth_headers) -> None:
+    response = await client.get("/api/v1/scan/logs/999/summary", headers=auth_headers)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Scan log not found"}
+
+
+async def test_scan_log_summary_empty_scan_has_zero_total(client, auth_headers, create_scan_log) -> None:
+    scan_log = await create_scan_log()
+    response = await client.get(f"/api/v1/scan/logs/{scan_log.id}/summary", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 0
+    assert body["outcomes"] == {}
+    assert body["parse_methods"] == {}
+    assert body["classification_tiers"] == {}
