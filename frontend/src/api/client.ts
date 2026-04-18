@@ -191,8 +191,13 @@ export const api = {
   },
 
   // Scan
-  async triggerScan(full: boolean = false): Promise<{status: string}> {
-    const res = await apiClient.post('/scan/trigger', null, { params: full ? { full: true } : {} })
+  async triggerScan(options?: {full?: boolean, unread_only?: boolean, since?: string | null}): Promise<{status: string}> {
+    const body = {
+      full: options?.full ?? false,
+      unread_only: options?.unread_only ?? false,
+      since: options?.since ?? null,
+    }
+    const res = await apiClient.post('/scan/trigger', body)
     return res.data
   },
 

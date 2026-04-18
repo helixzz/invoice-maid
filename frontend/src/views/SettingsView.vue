@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import Toast from '@/components/Toast.vue'
@@ -379,13 +379,53 @@ const fetchLogs = async () => {
   }
 }
 
+const scanOptionsForm = ref<{unread_only: boolean, since_preset: string, since_custom: string}>({
+  unread_only: false,
+  since_preset: 'all',
+  since_custom: '',
+})
+
+const sincePresets: {value: string, label: string}[] = [
+  {value: 'all', label: 'All time'},
+  {value: '7d', label: 'Last 7 days'},
+  {value: '30d', label: 'Last 30 days'},
+  {value: '6m', label: 'Last 6 months'},
+  {value: '1y', label: 'Last 1 year'},
+  {value: 'custom', label: 'Custom date…'},
+]
+
+const hasPop3Account = computed(() => accounts.value.some(a => a.type === 'pop3'))
+
+const resolveScanSince = (): string | null => {
+  const preset = scanOptionsForm.value.since_preset
+  if (preset === 'all') return null
+  if (preset === 'custom') {
+    if (!scanOptionsForm.value.since_custom) return null
+    return new Date(scanOptionsForm.value.since_custom).toISOString()
+  }
+  const now = new Date()
+  const delta: Record<string, number> = {'7d': 7, '30d': 30, '6m': 30 * 6, '1y': 365}
+  const days = delta[preset]
+  if (!days) return null
+  const since = new Date(now.getTime() - days * 86400 * 1000)
+  return since.toISOString()
+}
+
 const triggerScan = async (full: boolean = false) => {
   scanning.value = true
   try {
-    const res = await api.triggerScan(full)
-    toastRef.value?.addToast(`${full ? 'Full rescan' : 'Scan'} triggered: ${res.status}`, 'success')
-    // Connection will be handled by the watcher or connectScanProgress if it's already active
-    // We can also let the polling logic kick in. But ideally we just rely on SSE.
+    const since = resolveScanSince()
+    const res = await api.triggerScan({
+      full,
+      unread_only: scanOptionsForm.value.unread_only,
+      since,
+    })
+    const label = full ? 'Full rescan' : 'Scan'
+    const detailBits: string[] = []
+    if (scanOptionsForm.value.unread_only) detailBits.push('unread only')
+    if (since) detailBits.push(`since ${since.slice(0, 10)}`)
+    const suffix = detailBits.length ? ` (${detailBits.join(', ')})` : ''
+    toastRef.value?.addToast(`${label}${suffix} triggered: ${res.status}`, 'success')
     connectScanProgress()
   } catch (error) {
     console.error('Failed to trigger scan', error)
@@ -669,6 +709,38 @@ onMounted(() => {
             <div>
               <h3 class="text-lg leading-6 font-medium text-slate-900">Manual Scan</h3>
               <p class="mt-1 text-sm text-slate-500">Trigger an immediate scan across all active email accounts.</p>
+              <div class="mt-3 flex flex-col sm:flex-row sm:items-center gap-3 text-sm">
+                <label class="inline-flex items-center gap-2 text-slate-700">
+                  <input
+                    type="checkbox"
+                    v-model="scanOptionsForm.unread_only"
+                    :disabled="scanning"
+                    class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>Only unread messages</span>
+                </label>
+                <div class="inline-flex items-center gap-2">
+                  <label class="text-slate-700" for="scan-since-preset">Time range:</label>
+                  <select
+                    id="scan-since-preset"
+                    v-model="scanOptionsForm.since_preset"
+                    :disabled="scanning"
+                    class="rounded-md border-slate-300 text-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option v-for="p in sincePresets" :key="p.value" :value="p.value">{{ p.label }}</option>
+                  </select>
+                  <input
+                    v-if="scanOptionsForm.since_preset === 'custom'"
+                    type="datetime-local"
+                    v-model="scanOptionsForm.since_custom"
+                    :disabled="scanning"
+                    class="rounded-md border-slate-300 text-sm focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+              <p v-if="hasPop3Account && scanOptionsForm.unread_only" class="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">
+                Note: POP3 accounts don't support server-side unread filtering — this option is ignored for POP3 mailboxes.
+              </p>
               <p v-if="scanning" class="mt-2 text-sm font-medium text-blue-600 truncate max-w-lg" :title="scanStatusLine">
                 {{ scanStatusLine }}
               </p>

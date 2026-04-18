@@ -458,8 +458,8 @@ async def test_async_scan_wrappers_for_imap_and_pop3(monkeypatch: pytest.MonkeyP
             return func()
 
     monkeypatch.setattr(email_scanner.asyncio, "get_running_loop", lambda: Loop())
-    monkeypatch.setattr(ImapScanner, "_scan_sync", lambda self, account, last_uid: ["imap"])
-    monkeypatch.setattr(Pop3Scanner, "_scan_sync", lambda self, account, last_uid: ["pop3"])
+    monkeypatch.setattr(ImapScanner, "_scan_sync", lambda self, account, last_uid, options=None: ["imap"])
+    monkeypatch.setattr(Pop3Scanner, "_scan_sync", lambda self, account, last_uid, options=None: ["pop3"])
     assert await ImapScanner().scan(account, "1") == ["imap"]
     assert await Pop3Scanner().scan(account, "1") == ["pop3"]
 
@@ -2482,3 +2482,353 @@ async def test_outlook_iter_folders_child_url_already_seen_not_readded(monkeypat
     folders = [f async for f in scanner._iter_mail_folders(FakeClient(), {})]
     assert {f["id"] for f in folders} == {"f-root", "f-child"}
     assert calls.count(child_url) == 1
+
+
+def test_build_imap_criteria_all_modes() -> None:
+    from app.services.email_scanner import _build_imap_criteria, ScanOptions
+
+    assert _build_imap_criteria(None) == "ALL"
+    assert _build_imap_criteria(ScanOptions()) == "ALL"
+
+    result = _build_imap_criteria(ScanOptions(unread_only=True))
+    assert result != "ALL"
+
+    since_dt = datetime(2024, 6, 15, 10, 30, tzinfo=timezone.utc)
+    result_since = _build_imap_criteria(ScanOptions(since=since_dt))
+    assert result_since != "ALL"
+
+    naive_since = datetime(2024, 6, 15, 10, 30)
+    result_naive = _build_imap_criteria(ScanOptions(since=naive_since))
+    assert result_naive != "ALL"
+
+    combined = _build_imap_criteria(ScanOptions(unread_only=True, since=since_dt))
+    assert combined != "ALL"
+
+
+def test_imap_scan_options_unread_only(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, ScanOptions
+    from app.services import email_scanner
+
+    captured: dict[str, object] = {}
+
+    class FakeMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager()
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            captured["criteria"] = criteria
+            return []
+
+    monkeypatch.setattr(email_scanner, "MailBox", FakeMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    options = ScanOptions(unread_only=True)
+    ImapScanner()._scan_sync(account, None, options)
+    assert captured["criteria"] != "ALL"
+
+
+def test_imap_scan_options_since_client_side_filter(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, ScanOptions
+    from app.services import email_scanner
+
+    old_msg = SimpleNamespace(uid="1", subject="old", text="", html="", from_="a@test", date="2023-01-01T00:00:00Z", attachments=[], headers={})
+    new_msg = SimpleNamespace(uid="2", subject="new", text="", html="", from_="b@test", date="2025-01-01T00:00:00Z", attachments=[], headers={})
+
+    class FakeMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager()
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [old_msg, new_msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", FakeMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    since = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    emails = ImapScanner()._scan_sync(account, None, ScanOptions(since=since))
+    assert {e.uid for e in emails} == {"2"}
+
+
+def test_imap_scan_options_reset_state_discards_existing_state(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, ScanOptions, _serialize_imap_state
+    from app.services import email_scanner
+
+    msg = SimpleNamespace(uid="5", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+
+    class FakeMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager()
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", FakeMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    prior_state = _serialize_imap_state({"INBOX": {"uid": "999", "uidvalidity": "12345"}})
+    emails = ImapScanner()._scan_sync(account, prior_state, ScanOptions(reset_state=True))
+    assert len(emails) == 1
+    assert emails[0].uid == "5"
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_options_unread_only_adds_filter(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner, ScanOptions
+    scanner = OutlookScanner()
+    account = EmailAccount(id=50, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder = {"id": "fi", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 1, "childFolderCount": 0}
+    captured_params: list = []
+
+    class FakeResp:
+        def __init__(self, d): self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder], "@odata.nextLink": None})
+            captured_params.append(params)
+            return FakeResp({"value": [], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+    await scanner.scan(account, last_uid=None, options=ScanOptions(unread_only=True))
+    assert captured_params and captured_params[0] is not None
+    assert "isRead eq false" in captured_params[0].get("$filter", "")
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_options_since_adds_filter(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner, ScanOptions
+    scanner = OutlookScanner()
+    account = EmailAccount(id=51, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder = {"id": "fi", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 1, "childFolderCount": 0}
+    captured_params: list = []
+
+    class FakeResp:
+        def __init__(self, d): self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder], "@odata.nextLink": None})
+            captured_params.append(params)
+            return FakeResp({"value": [], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+    since = datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)
+    await scanner.scan(account, last_uid=None, options=ScanOptions(since=since))
+    assert captured_params and captured_params[0] is not None
+    flt = captured_params[0].get("$filter", "")
+    assert "receivedDateTime ge 2024-06-15T12:00:00Z" in flt
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_options_combined_with_incremental_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner, ScanOptions
+    import json as _json
+    scanner = OutlookScanner()
+    account = EmailAccount(id=52, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder = {"id": "fi", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 1, "childFolderCount": 0}
+    captured_params: list = []
+
+    class FakeResp:
+        def __init__(self, d): self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder], "@odata.nextLink": None})
+            captured_params.append(params)
+            return FakeResp({"value": [], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+    prior_state = _json.dumps({"fi": "2024-01-01T00:00:00Z"})
+    since = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    await scanner.scan(account, last_uid=prior_state, options=ScanOptions(unread_only=True, since=since))
+    assert captured_params and captured_params[0] is not None
+    flt = captured_params[0].get("$filter", "")
+    assert "receivedDateTime gt 2024-01-01T00:00:00Z" in flt
+    assert "isRead eq false" in flt
+    assert "receivedDateTime ge 2024-06-01" in flt
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_options_reset_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner, ScanOptions
+    import json as _json
+    scanner = OutlookScanner()
+    account = EmailAccount(id=53, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder = {"id": "fi", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 1, "childFolderCount": 0}
+    captured_params: list = []
+
+    class FakeResp:
+        def __init__(self, d): self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder], "@odata.nextLink": None})
+            captured_params.append(params)
+            return FakeResp({"value": [], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+    prior_state = _json.dumps({"fi": "2024-01-01T00:00:00Z"})
+    await scanner.scan(account, last_uid=prior_state, options=ScanOptions(reset_state=True))
+    assert captured_params and captured_params[0] is not None
+    flt = captured_params[0].get("$filter", "")
+    assert "receivedDateTime gt" not in flt
+
+
+def test_pop3_scan_options_since_filters_old_messages(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import Pop3Scanner, ScanOptions
+    from app.services import email_scanner
+    import poplib as real_poplib
+
+    scanner = Pop3Scanner()
+    account = EmailAccount(
+        id=60, name="pop3", type="pop3", host="pop.example.com", port=995,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+
+    old_raw = b"From: a@test\r\nDate: Mon, 01 Jan 2023 00:00:00 +0000\r\nSubject: old\r\nMessage-ID: <old@test>\r\n\r\nbody"
+    new_raw = b"From: b@test\r\nDate: Mon, 01 Jan 2025 00:00:00 +0000\r\nSubject: new\r\nMessage-ID: <new@test>\r\n\r\nbody"
+
+    class FakePop3:
+        def __init__(self, host, port):
+            del host, port
+
+        def user(self, u): del u
+        def pass_(self, p): del p
+        def list(self):
+            return (b"+OK", [b"1 123", b"2 234"], 0)
+        def retr(self, idx):
+            if idx == 1:
+                return (b"+OK", old_raw.split(b"\r\n"), 0)
+            return (b"+OK", new_raw.split(b"\r\n"), 0)
+        def quit(self): pass
+        def close(self): pass
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", FakePop3)
+    since = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    emails = scanner._scan_sync(account, None, ScanOptions(since=since))
+    assert [e.subject for e in emails] == ["new"]
+
+
+def test_pop3_scan_options_unread_only_is_noop(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import Pop3Scanner, ScanOptions
+    from app.services import email_scanner
+
+    scanner = Pop3Scanner()
+    account = EmailAccount(
+        id=61, name="pop3", type="pop3", host="pop.example.com", port=995,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+
+    raw = b"From: a@test\r\nDate: Mon, 01 Jan 2025 00:00:00 +0000\r\nSubject: msg\r\nMessage-ID: <msg@test>\r\n\r\nbody"
+
+    class FakePop3:
+        def __init__(self, host, port):
+            del host, port
+
+        def user(self, u): del u
+        def pass_(self, p): del p
+        def list(self):
+            return (b"+OK", [b"1 100"], 0)
+        def retr(self, idx):
+            del idx
+            return (b"+OK", raw.split(b"\r\n"), 0)
+        def quit(self): pass
+        def close(self): pass
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", FakePop3)
+    emails_no_opt = scanner._scan_sync(account, None, None)
+    emails_unread = scanner._scan_sync(account, None, ScanOptions(unread_only=True))
+    assert len(emails_no_opt) == len(emails_unread) == 1
+
+
+def test_pop3_scan_options_reset_state_ignores_previous_uid(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import Pop3Scanner, ScanOptions
+    from app.services import email_scanner
+    import json as _json
+
+    scanner = Pop3Scanner()
+    account = EmailAccount(
+        id=62, name="pop3", type="pop3", host="pop.example.com", port=995,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    raw = b"From: a@test\r\nDate: Mon, 01 Jan 2025 00:00:00 +0000\r\nSubject: msg\r\nMessage-ID: <m@test>\r\n\r\nbody"
+
+    class FakePop3:
+        def __init__(self, host, port):
+            del host, port
+
+        def user(self, u): del u
+        def pass_(self, p): del p
+        def list(self):
+            return (b"+OK", [b"1 100"], 0)
+        def retr(self, idx):
+            del idx
+            return (b"+OK", raw.split(b"\r\n"), 0)
+        def quit(self): pass
+        def close(self): pass
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", FakePop3)
+    prior_uids = _json.dumps(["m@test"])
+    emails = scanner._scan_sync(account, prior_uids, ScanOptions(reset_state=True))
+    assert len(emails) == 1

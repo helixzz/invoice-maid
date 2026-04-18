@@ -24,7 +24,7 @@ from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLo
 from app.schemas.invoice import VALID_INVOICE_TYPES
 from app.services.ai_service import AIService, _resolve_safelink
 from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders, is_scam_text
-from app.services.email_scanner import ScannerFactory, _is_uid_newer
+from app.services.email_scanner import ScanOptions, ScannerFactory, _is_uid_newer
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import parse as parse_invoice
 from app.services.search_service import store_embedding
@@ -619,7 +619,7 @@ async def _process_single_email(
     return _EmailResult()
 
 
-async def scan_all_accounts() -> None:
+async def scan_all_accounts(options: ScanOptions | None = None) -> None:
     """Iterate active email accounts and ingest new invoices."""
     settings = get_settings()
     ai = AIService(settings)
@@ -654,7 +654,7 @@ async def scan_all_accounts() -> None:
 
                     try:
                         scanner = ScannerFactory.get_scanner(account.type)
-                        emails = await scanner.scan(account, last_uid=account.last_scan_uid)
+                        emails = await scanner.scan(account, last_uid=account.last_scan_uid, options=options)
                         log.emails_scanned = len(emails)
                         await sp.update_progress(
                             total_emails=len(emails),

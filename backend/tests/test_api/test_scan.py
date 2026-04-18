@@ -292,3 +292,65 @@ async def test_scan_log_summary_empty_scan_has_zero_total(client, auth_headers, 
     assert body["outcomes"] == {}
     assert body["parse_methods"] == {}
     assert body["classification_tiers"] == {}
+
+
+async def test_trigger_scan_with_body_options_passes_to_scheduler(client, auth_headers, db, create_email_account, monkeypatch) -> None:
+    task_calls: list[object] = []
+    monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
+
+    captured_options: list = []
+
+    async def fake_scan_all_accounts(options=None):
+        captured_options.append(options)
+
+    monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)
+    await create_email_account()
+
+    response = await client.post(
+        "/api/v1/scan/trigger",
+        headers=auth_headers,
+        json={"full": False, "unread_only": True, "since": "2024-06-15T00:00:00Z"},
+    )
+    assert response.status_code == 200
+    for coro in task_calls:
+        await coro
+
+
+async def test_trigger_scan_body_full_overrides_query(client, auth_headers, db, create_email_account, monkeypatch) -> None:
+    task_calls: list[object] = []
+    monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
+
+    async def fake_scan_all_accounts(options=None):
+        del options
+
+    monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)
+    account = await create_email_account()
+    account.last_scan_uid = "old-state"
+    await db.commit()
+
+    response = await client.post(
+        "/api/v1/scan/trigger",
+        headers=auth_headers,
+        json={"full": True, "unread_only": False, "since": None},
+    )
+    assert response.status_code == 200
+    await db.refresh(account)
+    assert account.last_scan_uid is None
+    for coro in task_calls:
+        await coro
+
+
+async def test_trigger_scan_body_absent_still_works(client, auth_headers, db, create_email_account, monkeypatch) -> None:
+    task_calls: list[object] = []
+    monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
+
+    async def fake_scan_all_accounts(options=None):
+        del options
+
+    monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)
+    await create_email_account()
+
+    response = await client.post("/api/v1/scan/trigger", headers=auth_headers)
+    assert response.status_code == 200
+    for coro in task_calls:
+        await coro

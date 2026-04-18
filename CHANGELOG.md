@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.6] - 2026-04-18
+
+### Why this release matters
+
+Previously a manual scan was one button with one implicit behaviour: "fetch everything new since last time." Users who wanted to target a specific time window (e.g. "just re-scan the last 30 days after I fixed a classifier rule") or narrow to unread messages only had to rely on `full=true` which blew away ALL incremental state and re-scanned the entire mailbox.
+
+v0.7.6 adds per-invocation manual-scan controls:
+
+- **`unread_only`** — only fetch messages that have not been read yet
+- **`since`** — only fetch messages received on or after a chosen point in time, with UI presets (Last 7 days, Last 30 days, Last 6 months, Last 1 year, All time) plus a custom date-time picker
+- **Consistent UI across IMAP / POP3 / Outlook** — the same two controls apply to every account type
+
+### Added
+
+- **Backend: `ScanOptions` dataclass** on `app.services.email_scanner`:
+  - `unread_only: bool` — when True, scanners apply server-side unread filtering where the protocol supports it
+  - `since: datetime | None` — applied server-side for Graph (exact datetime), server-side DATE-granularity + client-side datetime refinement for IMAP, pure client-side for POP3 (no server-side date filter exists)
+  - `reset_state: bool` — if True, existing per-folder state in `last_scan_uid` is discarded before scan; this is how `full=true` is now modelled under the hood
+- **IMAP `_build_imap_criteria(options)` helper** — composes `imap-tools.AND(seen=False, date_gte=...)` or falls back to `"ALL"`. IMAP SINCE is DATE-granularity per RFC 3501, so the scan loop applies an exact datetime filter client-side on `received_at`.
+- **Outlook `$filter` composition** — `receivedDateTime gt <incremental_watermark> and isRead eq false and receivedDateTime ge <options.since>` are combined with `and`. Incremental watermark is preserved; options layer on top unless `reset_state=True`.
+- **POP3 client-side since filter** — POP3 has no server-side date or seen/unseen capability; `since` is applied by filtering on the `Date` header after `RETR`. `unread_only` is deliberately a no-op (POP3 protocol has no seen flag). Frontend shows a warning explaining this when both POP3 accounts and `unread_only` are active.
+- **Scheduler `scan_all_accounts(options=None)`** — threads `ScanOptions` into every `scanner.scan()` call.
+- **`POST /scan/trigger` JSON body** — now accepts `{full, unread_only, since}` as a JSON body. Legacy `full=true` query param is still honoured when no body is provided, preserving v0.7.5 API compatibility.
+- **Frontend scan-options panel** in Settings → Scan Operations tab:
+  - Checkbox: "Only unread messages"
+  - Dropdown: time range (All time, 7d, 30d, 6m, 1y, Custom)
+  - Custom datetime picker shows only when "Custom date…" is selected
+  - POP3 warning banner appears when an enabled POP3 account is present and `unread_only` is checked
+  - Toast on trigger shows which filters were applied (e.g. `Scan (unread only, since 2024-06-15) triggered`)
+
+### Changed
+
+- **Frontend API client `triggerScan`** now takes an options object `{full, unread_only, since}` instead of a single boolean. All call sites updated to pass the new options.
+- **`POST /scan/trigger`** now accepts a JSON body. Legacy `?full=true` query param still works for backwards compat.
+
+### Tests
+
+- 383 tests, 100% coverage.
+- New tests cover: `_build_imap_criteria` across all four mode combinations (none / unread_only / since / both), IMAP `_scan_sync` with `unread_only`, IMAP client-side `since` filter, IMAP `reset_state=True` discarding existing per-folder state, Outlook `$filter` compositions for each option independently and combined with incremental state, Outlook `reset_state` path, POP3 client-side `since` filter against `Date` header, POP3 `unread_only` correctly behaving as no-op, POP3 `reset_state` ignoring prior `known_ids`, scheduler threading options end-to-end, API endpoint parsing JSON body, API endpoint bridging `body.full=True` to state reset, API endpoint with no body still working (backwards compat).
+
 ## [0.7.5] - 2026-04-18
 
 ### Why this release matters

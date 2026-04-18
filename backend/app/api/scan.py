@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 from sse_starlette import EventSourceResponse
 from sqlalchemy import func, select
@@ -16,6 +16,7 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import EmailAccount, ExtractionLog, ScanLog
 from app.services import scan_progress as sp
+from app.services.email_scanner import ScanOptions
 from app.tasks.scheduler import scan_all_accounts
 
 router = APIRouter(prefix="/scan", tags=["scan"])
@@ -23,6 +24,12 @@ router = APIRouter(prefix="/scan", tags=["scan"])
 
 class ScanTriggerResponse(BaseModel):
     status: str
+
+
+class ScanTriggerRequest(BaseModel):
+    full: bool = False
+    unread_only: bool = False
+    since: datetime | None = None
 
 
 class ScanLogResponse(BaseModel):
@@ -112,16 +119,25 @@ def _serialize_extraction(log: ExtractionLog) -> ExtractionLogResponse:
 async def trigger_scan(
     _current_user: CurrentUser,
     full: bool = False,
+    body: ScanTriggerRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> ScanTriggerResponse:
     if sp.is_scanning():
         raise HTTPException(status_code=409, detail="Scan already in progress")
-    if full:
+    effective_full = body.full if body is not None else full
+    unread_only = body.unread_only if body is not None else False
+    since = body.since if body is not None else None
+    if effective_full:
         result = await db.execute(select(EmailAccount).where(EmailAccount.is_active.is_(True)))
         for account in result.scalars().all():
             account.last_scan_uid = None
         await db.commit()
-    _ = asyncio.create_task(scan_all_accounts())
+    options = ScanOptions(
+        unread_only=unread_only,
+        since=since,
+        reset_state=effective_full,
+    )
+    _ = asyncio.create_task(scan_all_accounts(options=options))
     return ScanTriggerResponse(status="triggered")
 
 

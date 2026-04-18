@@ -76,7 +76,7 @@ async def test_scan_all_accounts_happy_path_with_embedding(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -131,7 +131,7 @@ async def test_scan_all_accounts_tier1_attachment_hit_avoids_llm_call(
     parsed = ParsedInvoice(invoice_no="INV-TIER1", raw_text="增值税电子普通发票 价税合计 税额 发票号码", confidence=0.9, invoice_type="增值税电子普通发票")
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -166,7 +166,7 @@ async def test_scan_all_accounts_tier3_uses_raw_body_and_from_for_llm(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -230,7 +230,7 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -267,7 +267,7 @@ async def test_scan_all_accounts_rollback_on_scanner_error(
     monkeypatch.setattr(db, "rollback", AsyncMock(return_value=None))
 
     class BrokenScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             raise RuntimeError("scanner failed")
 
@@ -456,7 +456,7 @@ async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_
     parsed_results = iter([ParsedInvoice(invoice_no=None, raw_text="增值税电子普通发票 价税合计 税额 发票号码", confidence=0.9, is_vat_document=True)])
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return emails
 
@@ -517,7 +517,7 @@ async def test_scan_all_accounts_embedding_failure_logs_warning(
     warnings: list[str] = []
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -564,7 +564,7 @@ async def test_scan_all_accounts_downloads_single_invoice_link(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -613,7 +613,7 @@ async def test_scan_all_accounts_resolves_safelink_before_download(
     parsed = ParsedInvoice(invoice_no="INV-SAFE-1", raw_text="增值税电子普通发票 价税合计 税额 发票号码", confidence=0.9, invoice_type="增值税电子普通发票")
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -657,7 +657,7 @@ async def test_scan_all_accounts_skips_failed_link_download(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -705,7 +705,7 @@ async def test_scan_all_accounts_skips_download_when_best_download_url_missing(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -754,7 +754,7 @@ async def test_scan_all_accounts_skips_seen_email_uid_and_attachment_pair(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -793,7 +793,7 @@ async def test_scan_all_accounts_logs_low_confidence_even_after_llm_enrichment(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -831,7 +831,7 @@ async def test_scan_all_accounts_rejects_llm_flagged_non_vat_invoice(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -876,7 +876,7 @@ async def test_scan_all_accounts_rejects_heuristic_non_vat_invoice_without_llm(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -920,7 +920,7 @@ async def test_scan_all_accounts_marks_amount_sentinel_as_low_confidence(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -956,7 +956,7 @@ async def test_scan_all_accounts_prioritizes_pdf_by_llm_hints(
     parse_calls: list[str] = []
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1007,7 +1007,7 @@ async def test_scan_all_accounts_prioritizes_pdf_download_when_no_attachment_str
     parse_calls: list[str] = []
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1072,7 +1072,7 @@ async def test_scan_all_accounts_sends_webhook_with_signature(
     captured: dict[str, object] = {}
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1161,7 +1161,7 @@ async def test_scan_all_accounts_webhook_failure_logs_warning_and_continues(
     warnings: list[str] = []
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1230,7 +1230,7 @@ async def test_scan_all_accounts_webhook_non_success_response_logs_warning(
     warnings: list[str] = []
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1476,7 +1476,7 @@ async def test_scan_all_accounts_counts_task_exception_and_error_result(
     ]
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return emails
 
@@ -1533,7 +1533,7 @@ async def test_scan_all_accounts_skips_webhook_when_disabled(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1578,7 +1578,7 @@ async def test_enrichment_fires_when_fields_missing_despite_high_confidence(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1630,7 +1630,7 @@ async def test_parser_invoice_no_wins_over_llm_for_valid_20digit(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1676,7 +1676,7 @@ async def test_strong_parse_survives_llm_rejection(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1723,7 +1723,7 @@ async def test_llm_exception_falls_back_to_parser_result(
     mock_ai_service.extract_invoice_fields.side_effect = RuntimeError("LLM timeout")
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1765,7 +1765,7 @@ async def test_weak_parse_llm_backfills_all_fields(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1826,7 +1826,7 @@ async def test_llm_returns_unknown_does_not_overwrite_parser_semantic_fields(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1881,7 +1881,7 @@ async def test_lazy_hydration_fires_only_for_invoice_candidates(
     hydrate_calls: list[str] = []
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [spam_email, invoice_email]
 
@@ -1960,7 +1960,7 @@ async def test_scheduler_rejects_scam_after_llm_merge(
     )
 
     class FakeScanner:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [email]
 
@@ -1988,7 +1988,7 @@ async def test_scheduler_persists_scanner_last_scan_state(
     class FakeScannerWithState:
         _last_scan_state = '{"INBOX": {"uid": "999", "uidvalidity": "123"}}'
 
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return []
 
@@ -2010,7 +2010,7 @@ async def test_scheduler_falls_back_to_email_uid_if_no_scan_state(
     await create_email_account(last_scan_uid=None)
 
     class FakeScannerNoState:
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return [
                 RawEmail(
@@ -2044,7 +2044,7 @@ async def test_scheduler_scan_state_unchanged_does_not_update(
     class FakeScannerSameState:
         _last_scan_state = '{"INBOX": {"uid": "42", "uidvalidity": "123"}}'
 
-        async def scan(self, account, last_uid=None):
+        async def scan(self, account, last_uid=None, options=None):
             del account, last_uid
             return []
 
@@ -2057,3 +2057,30 @@ async def test_scheduler_scan_state_unchanged_does_not_update(
     result = await db.execute(select(EmailAccount))
     account = result.scalars().first()
     assert account.last_scan_uid == existing_state
+
+
+@pytest.mark.asyncio
+async def test_scheduler_passes_options_to_scanner(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.email_scanner import ScanOptions
+
+    await create_email_account(last_scan_uid=None)
+    captured: list = []
+
+    class FakeScannerCapturesOpts:
+        async def scan(self, account, last_uid=None, options=None):
+            del account, last_uid
+            captured.append(options)
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda t: FakeScannerCapturesOpts())
+    monkeypatch.setattr(scheduler, "AIService", lambda s: MagicMock())
+
+    opts = ScanOptions(unread_only=True, since=None)
+    await scheduler.scan_all_accounts(options=opts)
+
+    assert len(captured) == 1
+    assert captured[0] is opts
+    assert captured[0].unread_only is True
