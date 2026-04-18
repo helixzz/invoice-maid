@@ -15,6 +15,8 @@ import type {
   ClassifierSettingsResponse,
   ClassifierSettingsUpdate,
   ExtractionLog,
+  ExtractionSummary,
+  AIConnectionTestResponse,
   SavedView,
   StatsAnalytics,
   OAuthInitiateResponse,
@@ -204,6 +206,11 @@ export const api = {
     return res.data
   },
 
+  async getScanLogSummary(scanLogId: number): Promise<ExtractionSummary> {
+    const res = await apiClient.get(`/scan/logs/${scanLogId}/summary`)
+    return res.data
+  },
+
   async getAISettings(): Promise<AISettingsResponse> {
     const res = await apiClient.get('/settings/ai')
     return res.data
@@ -218,7 +225,7 @@ export const api = {
     return res.data
   },
 
-  async testAIConnection(): Promise<{ok: boolean, model?: string, detail?: string}> {
+  async testAIConnection(): Promise<AIConnectionTestResponse> {
     const res = await apiClient.post('/settings/ai/test-connection')
     return res.data
   },

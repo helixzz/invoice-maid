@@ -186,13 +186,21 @@ async def test_get_ai_models_handles_upstream_failure(client, auth_headers, monk
 
 
 async def test_test_ai_connection_success(client, auth_headers, monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
+    chat_calls: list[dict[str, object]] = []
+    embed_calls: list[dict[str, object]] = []
 
     class FakeCompletions:
         async def create(self, **kwargs):
-            calls.append(kwargs)
+            chat_calls.append(kwargs)
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))]
+            )
+
+    class FakeEmbeddings:
+        async def create(self, **kwargs):
+            embed_calls.append(kwargs)
+            return SimpleNamespace(
+                data=[SimpleNamespace(embedding=[0.1] * 1536)]
             )
 
     class FakeAsyncOpenAI:
@@ -200,19 +208,92 @@ async def test_test_ai_connection_success(client, auth_headers, monkeypatch) -> 
             assert base_url == "https://llm.invalid/v1"
             assert api_key == "test-key"
             self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.embeddings = FakeEmbeddings()
 
     monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
 
     response = await client.post("/api/v1/settings/ai/test-connection", headers=auth_headers)
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "model": "test-model", "detail": "OK"}
-    assert calls == [{
+    body = response.json()
+    assert body["ok"] is True
+    assert body["chat"]["ok"] is True
+    assert body["chat"]["model"] == "test-model"
+    assert body["chat"]["detail"] == "OK"
+    assert "latency_ms" in body["chat"]
+    assert body["embed"]["ok"] is True
+    assert body["embed"]["model"] == "test-embed-model"
+    assert body["embed"]["dim"] == 1536
+    assert "latency_ms" in body["embed"]
+    assert chat_calls == [{
         "model": "test-model",
         "messages": [{"role": "user", "content": "Say OK"}],
         "max_tokens": 5,
         "timeout": 10.0,
     }]
+    assert embed_calls == [{
+        "model": "test-embed-model",
+        "input": "test",
+        "encoding_format": "float",
+        "timeout": 10.0,
+    }]
+
+
+async def test_test_ai_connection_dim_mismatch(client, auth_headers, monkeypatch) -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))])
+
+    class FakeEmbeddings:
+        async def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1] * 768)])
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, base_url, api_key):
+            del base_url, api_key
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.embeddings = FakeEmbeddings()
+
+    monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    response = await client.post("/api/v1/settings/ai/test-connection", headers=auth_headers)
+    body = response.json()
+    assert body["ok"] is True
+    assert body["embed"]["ok"] is True
+    assert body["embed"]["dim"] == 768
+    assert body["embed"]["dim_mismatch"] is True
+    assert "WARNING" in body["embed"]["detail"]
+
+
+async def test_test_ai_connection_no_expected_dim_skips_mismatch_check(client, auth_headers, monkeypatch, db) -> None:
+    db.add(AppSettings(key="embed_dim", value="0"))
+    await db.commit()
+    invalidate_ai_settings_cache()
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))])
+
+    class FakeEmbeddings:
+        async def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1] * 42)])
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, base_url, api_key):
+            del base_url, api_key
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.embeddings = FakeEmbeddings()
+
+    monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+    response = await client.post("/api/v1/settings/ai/test-connection", headers=auth_headers)
+    body = response.json()
+    assert body["embed"]["ok"] is True
+    assert body["embed"]["dim"] == 42
+    assert "dim_mismatch" not in body["embed"]
 
 
 async def test_test_ai_connection_failure(client, auth_headers, monkeypatch) -> None:
@@ -221,10 +302,16 @@ async def test_test_ai_connection_failure(client, auth_headers, monkeypatch) -> 
             del kwargs
             raise openai.APIConnectionError(message="boom", request=None)
 
+    class FakeEmbeddings:
+        async def create(self, **kwargs):
+            del kwargs
+            raise openai.APIConnectionError(message="boom", request=None)
+
     class FakeAsyncOpenAI:
         def __init__(self, *, base_url: str, api_key: str):
             del base_url, api_key
             self.chat = SimpleNamespace(completions=FakeCompletions())
+            self.embeddings = FakeEmbeddings()
 
     monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
 
@@ -233,8 +320,64 @@ async def test_test_ai_connection_failure(client, auth_headers, monkeypatch) -> 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is False
-    assert body["model"] == "test-model"
-    assert "boom" in body["detail"]
+    assert body["chat"]["ok"] is False
+    assert body["chat"]["model"] == "test-model"
+    assert body["embed"]["ok"] is False
+    assert body["embed"]["model"] == "test-embed-model"
+
+
+async def test_test_ai_connection_handles_each_openai_error(client, auth_headers, monkeypatch) -> None:
+    import httpx
+
+    class FakeRequest:
+        pass
+
+    mock_request = httpx.Request("POST", "https://llm.invalid/v1/chat/completions")
+    mock_response = httpx.Response(400, request=mock_request)
+
+    errors = [
+        openai.AuthenticationError(message="bad key", response=httpx.Response(401, request=mock_request), body=None),
+        openai.NotFoundError(message="no model", response=httpx.Response(404, request=mock_request), body=None),
+        openai.PermissionDeniedError(message="denied", response=httpx.Response(403, request=mock_request), body=None),
+        openai.RateLimitError(message="rate", response=httpx.Response(429, request=mock_request), body=None),
+        openai.APITimeoutError(request=mock_request),
+        openai.BadRequestError(message="bad", response=mock_response, body=None),
+        RuntimeError("unexpected"),
+    ]
+    expected_chat_error_types = ["auth", "model_not_found", "permission", "rate_limited", "timeout", "bad_request", "unknown"]
+    expected_chat_ok = [False, False, False, True, False, False, False]
+    expected_embed_error_types = expected_chat_error_types
+    expected_embed_ok = expected_chat_ok
+
+    for error, exp_err_type, exp_chat_ok, exp_embed_err, exp_embed_ok in zip(
+        errors, expected_chat_error_types, expected_chat_ok, expected_embed_error_types, expected_embed_ok
+    ):
+        chat_error = error
+        embed_error = error
+
+        class FakeCompletions:
+            async def create(self, **kwargs):
+                del kwargs
+                raise chat_error
+
+        class FakeEmbeddings:
+            async def create(self, **kwargs):
+                del kwargs
+                raise embed_error
+
+        class FakeAsyncOpenAI:
+            def __init__(self, *, base_url, api_key):
+                del base_url, api_key
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+                self.embeddings = FakeEmbeddings()
+
+        monkeypatch.setattr(ai_settings_api.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+        response = await client.post("/api/v1/settings/ai/test-connection", headers=auth_headers)
+        body = response.json()
+        assert body["chat"]["error_type"] == exp_err_type, f"chat error_type for {type(error).__name__}"
+        assert body["chat"]["ok"] == exp_chat_ok, f"chat ok for {type(error).__name__}"
+        assert body["embed"]["error_type"] == exp_embed_err, f"embed error_type for {type(error).__name__}"
+        assert body["embed"]["ok"] == exp_embed_ok, f"embed ok for {type(error).__name__}"
 
 
 async def test_settings_resolver_falls_back_to_settings_for_unknown_key(db, settings) -> None:

@@ -49,6 +49,10 @@ class ExtractionLogResponse(BaseModel):
     email_subject: str
     attachment_filename: str | None
     outcome: str
+    classification_tier: int | None
+    parse_method: str | None
+    parse_format: str | None
+    download_outcome: str | None
     invoice_no: str | None
     confidence: float | None
     error_detail: str | None
@@ -57,6 +61,14 @@ class ExtractionLogResponse(BaseModel):
 
 class ExtractionLogListResponse(BaseModel):
     items: list[ExtractionLogResponse]
+
+
+class ExtractionSummaryResponse(BaseModel):
+    scan_log_id: int
+    total: int
+    outcomes: dict[str, int]
+    parse_methods: dict[str, int]
+    classification_tiers: dict[str, int]
 
 
 def _serialize_log(log: ScanLog) -> ScanLogResponse:
@@ -85,6 +97,10 @@ def _serialize_extraction(log: ExtractionLog) -> ExtractionLogResponse:
         email_subject=log.email_subject,
         attachment_filename=log.attachment_filename,
         outcome=log.outcome,
+        classification_tier=log.classification_tier,
+        parse_method=log.parse_method,
+        parse_format=log.parse_format,
+        download_outcome=log.download_outcome,
         invoice_no=log.invoice_no,
         confidence=log.confidence,
         error_detail=log.error_detail,
@@ -184,3 +200,44 @@ async def list_extraction_logs(
     )
     extractions = list(result.scalars().all())
     return ExtractionLogListResponse(items=[_serialize_extraction(item) for item in extractions])
+
+
+@router.get("/logs/{log_id}/summary", response_model=ExtractionSummaryResponse)
+async def scan_log_summary(
+    log_id: int,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> ExtractionSummaryResponse:
+    log = await db.get(ScanLog, log_id)
+    if log is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan log not found")
+
+    outcome_rows = await db.execute(
+        select(ExtractionLog.outcome, func.count(ExtractionLog.id))
+        .where(ExtractionLog.scan_log_id == log_id)
+        .group_by(ExtractionLog.outcome)
+    )
+    method_rows = await db.execute(
+        select(ExtractionLog.parse_method, func.count(ExtractionLog.id))
+        .where(ExtractionLog.scan_log_id == log_id)
+        .where(ExtractionLog.parse_method.is_not(None))
+        .group_by(ExtractionLog.parse_method)
+    )
+    tier_rows = await db.execute(
+        select(ExtractionLog.classification_tier, func.count(ExtractionLog.id))
+        .where(ExtractionLog.scan_log_id == log_id)
+        .where(ExtractionLog.classification_tier.is_not(None))
+        .group_by(ExtractionLog.classification_tier)
+    )
+
+    outcomes = {row[0]: int(row[1]) for row in outcome_rows.all()}
+    parse_methods = {row[0]: int(row[1]) for row in method_rows.all() if row[0]}
+    tiers = {f"tier{int(row[0])}": int(row[1]) for row in tier_rows.all() if row[0] is not None}
+
+    return ExtractionSummaryResponse(
+        scan_log_id=log_id,
+        total=sum(outcomes.values()),
+        outcomes=outcomes,
+        parse_methods=parse_methods,
+        classification_tiers=tiers,
+    )

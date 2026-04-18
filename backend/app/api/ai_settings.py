@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -106,6 +108,87 @@ async def list_ai_models(
     return ModelListResponse(models=models)
 
 
+async def _test_chat_model(base_url: str, api_key: str, model: str) -> dict[str, Any]:
+    client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+    t0 = time.monotonic()
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=5,
+            timeout=10.0,
+        )
+        return {
+            "ok": True,
+            "model": model,
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+            "detail": (response.choices[0].message.content or "")[:200],
+        }
+    except openai.AuthenticationError:
+        return {"ok": False, "model": model, "error_type": "auth", "detail": "Invalid API key (401)"}
+    except openai.NotFoundError:
+        return {"ok": False, "model": model, "error_type": "model_not_found", "detail": f"Chat model '{model}' not found (404)"}
+    except openai.PermissionDeniedError:
+        return {"ok": False, "model": model, "error_type": "permission", "detail": "API key lacks access to this model (403)"}
+    except openai.RateLimitError:
+        return {"ok": True, "model": model, "error_type": "rate_limited", "detail": "Rate limited (429) — endpoint reachable"}
+    except openai.APITimeoutError:
+        return {"ok": False, "model": model, "error_type": "timeout", "detail": "Timed out after 10s"}
+    except openai.APIConnectionError as exc:
+        return {"ok": False, "model": model, "error_type": "connection", "detail": f"Cannot reach endpoint: {exc.__cause__ or exc}"[:500]}
+    except openai.BadRequestError as exc:
+        return {"ok": False, "model": model, "error_type": "bad_request", "detail": f"Provider rejected request (400): {str(exc)[:200]}"}
+    except Exception as exc:
+        return {"ok": False, "model": model, "error_type": "unknown", "detail": str(exc)[:500]}
+
+
+async def _test_embed_model(
+    base_url: str, api_key: str, model: str, expected_dim: int | None = None
+) -> dict[str, Any]:
+    client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+    t0 = time.monotonic()
+    try:
+        response = await client.embeddings.create(
+            model=model,
+            input="test",
+            encoding_format="float",
+            timeout=10.0,
+        )
+        embedding = response.data[0].embedding
+        dim = len(embedding)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        result: dict[str, Any] = {
+            "ok": True,
+            "model": model,
+            "dim": dim,
+            "latency_ms": latency_ms,
+            "detail": f"{dim}-dimensional embedding returned",
+        }
+        if expected_dim is not None and dim != expected_dim:
+            result["dim_mismatch"] = True
+            result["detail"] = (
+                f"WARNING: got {dim} dims, config expects {expected_dim}. "
+                "Update embed_dim to match, or semantic search will fail."
+            )
+        return result
+    except openai.AuthenticationError:
+        return {"ok": False, "model": model, "error_type": "auth", "detail": "Invalid API key (401)"}
+    except openai.NotFoundError:
+        return {"ok": False, "model": model, "error_type": "model_not_found", "detail": f"Embedding model '{model}' not found (404)"}
+    except openai.PermissionDeniedError:
+        return {"ok": False, "model": model, "error_type": "permission", "detail": "API key lacks access to this model (403)"}
+    except openai.RateLimitError:
+        return {"ok": True, "model": model, "error_type": "rate_limited", "detail": "Rate limited (429) — endpoint reachable"}
+    except openai.APITimeoutError:
+        return {"ok": False, "model": model, "error_type": "timeout", "detail": "Timed out after 10s"}
+    except openai.APIConnectionError as exc:
+        return {"ok": False, "model": model, "error_type": "connection", "detail": f"Cannot reach endpoint: {exc.__cause__ or exc}"[:500]}
+    except openai.BadRequestError as exc:
+        return {"ok": False, "model": model, "error_type": "bad_request", "detail": f"Provider rejected request (400): {str(exc)[:200]}"}
+    except Exception as exc:
+        return {"ok": False, "model": model, "error_type": "unknown", "detail": str(exc)[:500]}
+
+
 @router.post("/test-connection")
 async def test_ai_connection(
     _current_user: CurrentUser,
@@ -114,16 +197,17 @@ async def test_ai_connection(
     resolver = SettingsResolver(db)
     base_url = await resolver.get("LLM_BASE_URL")
     api_key = await resolver.get("LLM_API_KEY")
-    model = await resolver.get("LLM_MODEL")
+    chat_model = await resolver.get("LLM_MODEL")
+    embed_model = await resolver.get("LLM_EMBED_MODEL")
+    embed_dim_value = await resolver.get("EMBED_DIM")
+    expected_dim = int(embed_dim_value) if embed_dim_value else None
 
-    try:
-        client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "Say OK"}],
-            max_tokens=5,
-            timeout=10.0,
-        )
-        return {"ok": True, "model": model, "detail": response.choices[0].message.content}
-    except Exception as exc:
-        return {"ok": False, "model": model, "detail": str(exc)[:500]}
+    chat_result, embed_result = await asyncio.gather(
+        _test_chat_model(base_url, api_key, chat_model),
+        _test_embed_model(base_url, api_key, embed_model, expected_dim),
+    )
+    return {
+        "ok": bool(chat_result["ok"] and embed_result["ok"]),
+        "chat": chat_result,
+        "embed": embed_result,
+    }
