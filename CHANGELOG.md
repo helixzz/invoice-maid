@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.7] - 2026-04-18
+
+### Why this release matters
+
+Live production monitoring on v0.7.6 caught two real-world reliability bugs in a single scan:
+
+1. **QQ Mail returned `NO Data: [System busy!]`** during an IMAP `FETCH` after ~12 minutes of sustained scanning. The `MailboxFetchError` exception was raised by imap-tools **inside the `for msg in iterator:` loop** — but our `try/except IMAP_CONNECTION_ERRORS` only wrapped the `mailbox.fetch()` call that returned the iterator, not the iteration itself. Result: one transient server-side rate-limit killed the entire QQ account scan, losing all per-folder progress.
+
+2. **The scheduler's outer exception handler stamped `scan_log.finished_at` on error**, but in at least one observed case the stamping itself failed silently (swallowed by `except Exception: pass`) after a `db.rollback()` side effect, leaving `scan_log` row #16 stuck at `finished_at=NULL` indefinitely. Orphan "running" logs accumulated until the next service restart (handled only by the `lifespan` startup cleanup in `main.py`).
+
+Both are shipped as fixes in this release.
+
+### Fixed
+
+- **IMAP per-folder fault isolation.** The `try/except IMAP_CONNECTION_ERRORS` in `ImapScanner._scan_sync` now wraps the entire `for msg in iterator:` block, not just the `mailbox.fetch()` setup call. A transient `MailboxFetchError` (rate limit, protocol error, connection drop mid-iteration) during one folder's fetch no longer kills the whole scan — messages yielded before the error survive, the current folder is finalized with whatever `highest_uid` was reached, and iteration continues to the next folder.
+- **`MailboxFetchError` added to `IMAP_CONNECTION_ERRORS`** tuple so it's caught alongside `OSError`, `ssl.SSLError`, `imaplib.IMAP4.error`, and `MailboxLoginError`.
+- **Orphan `scan_log` row cleanup at scan start.** Every invocation of `scan_all_accounts` now runs `UPDATE scan_logs SET finished_at = NOW(), error_message = 'Scan interrupted — orphan log cleaned up at next scan start' WHERE finished_at IS NULL AND error_message IS NULL` before creating new scan log rows. This guarantees phantom "running" rows are cleaned up even when the outer exception handler silently failed on a prior scan, not only on service restart.
+
+### Tests
+
+- 385 tests, 100% coverage.
+- New regression tests:
+  - `test_imap_scan_mailbox_fetch_error_mid_iteration_is_caught` — simulates `MailboxFetchError` raised mid-generator, verifies messages yielded before the error are preserved and the next folder's scan still runs.
+  - `test_scheduler_stamps_orphan_scan_logs_on_next_scan_start` — seeds an orphan `scan_log` row with `finished_at=NULL`, runs `scan_all_accounts()`, asserts the orphan row is now stamped with `finished_at` and an "orphan" marker in `error_message`.
+
 ## [0.7.6] - 2026-04-18
 
 ### Why this release matters

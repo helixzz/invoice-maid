@@ -2832,3 +2832,59 @@ def test_pop3_scan_options_reset_state_ignores_previous_uid(monkeypatch: pytest.
     prior_uids = _json.dumps(["m@test"])
     emails = scanner._scan_sync(account, prior_uids, ScanOptions(reset_state=True))
     assert len(emails) == 1
+
+
+def test_imap_scan_mailbox_fetch_error_mid_iteration_is_caught(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """Transient MailboxFetchError raised while iterating the fetch generator
+    (e.g. QQ Mail returning 'NO Data: System busy!') must NOT kill the whole scan.
+    The folder is abandoned with its current highest_uid preserved, and scanning
+    continues to the next folder."""
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+    from imap_tools.errors import MailboxFetchError
+
+    inbox_msg_1 = SimpleNamespace(uid="10", subject="ok", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+    inbox_msg_2 = SimpleNamespace(uid="11", subject="ok2", text="", html="", from_="b@test", date="2024-01-02T00:00:00Z", attachments=[], headers={})
+    archive_msg = SimpleNamespace(uid="5", subject="archive-ok", text="", html="", from_="c@test", date="2024-02-01T00:00:00Z", attachments=[], headers={})
+
+    def failing_iter():
+        yield inbox_msg_1
+        yield inbox_msg_2
+        raise MailboxFetchError(command_result=(b"NO", [b"System busy!"]), expected=b"OK")
+
+    class FlakyFetchMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(folders=[
+                _FakeFolderInfo("INBOX"),
+                _FakeFolderInfo("Archive"),
+            ])
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            if self._folder.current == "INBOX":
+                return failing_iter()
+            return [archive_msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", FlakyFetchMailbox)
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+
+    uids = {e.uid for e in emails}
+    assert "10" in uids, "messages yielded before the error must survive"
+    assert "11" in uids, "messages yielded before the error must survive"
+    assert "5" in uids, "next folder must still be scanned after one folder's transient error"
+

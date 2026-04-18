@@ -628,6 +628,17 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
     async with sp._scan_lock:
         try:
             async for db in get_db():
+                await db.execute(
+                    text(
+                        "UPDATE scan_logs SET finished_at = :ts, error_message = :msg"
+                        " WHERE finished_at IS NULL AND error_message IS NULL"
+                    ),
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "msg": "Scan interrupted — orphan log cleaned up at next scan start",
+                    },
+                )
+                await db.commit()
                 result = await db.execute(select(EmailAccount).where(EmailAccount.is_active.is_(True)))
                 accounts = list(result.scalars().all())
                 classifier = await _load_classifier(db)

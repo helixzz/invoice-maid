@@ -2084,3 +2084,48 @@ async def test_scheduler_passes_options_to_scanner(
     assert len(captured) == 1
     assert captured[0] is opts
     assert captured[0].unread_only is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stamps_orphan_scan_logs_on_next_scan_start(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a previous scan crashed without stamping finished_at, the next scan
+    attempt should immediately clean up those orphan scan_log rows so operators
+    aren't left with phantom 'running' scans."""
+    import datetime as _dt
+    from app.models import ScanLog
+
+    await create_email_account(last_scan_uid=None)
+    orphan = ScanLog(
+        email_account_id=1,
+        started_at=_dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=_dt.timezone.utc),
+        finished_at=None,
+        error_message=None,
+        emails_scanned=0,
+        invoices_found=0,
+    )
+    db.add(orphan)
+    await db.commit()
+    await db.refresh(orphan)
+    orphan_id = orphan.id
+
+    class FakeNoopScanner:
+        _last_scan_state = None
+
+        async def scan(self, account, last_uid=None, options=None):
+            del account, last_uid, options
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda t: FakeNoopScanner())
+    monkeypatch.setattr(scheduler, "AIService", lambda s: MagicMock())
+
+    await scheduler.scan_all_accounts()
+
+    db.expire_all()
+    result = await db.execute(select(ScanLog).where(ScanLog.id == orphan_id))
+    cleaned = result.scalar_one()
+    assert cleaned.finished_at is not None, "orphan row must now have finished_at stamped"
+    assert cleaned.error_message is not None
+    assert "orphan" in (cleaned.error_message or "").lower()

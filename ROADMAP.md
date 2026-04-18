@@ -137,6 +137,16 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.7.7 — Released
+
+**Theme:** Scan fault isolation + orphan log cleanup
+
+Live production monitoring on v0.7.6 caught two reliability bugs: a transient `MailboxFetchError` from QQ Mail ("System busy!") raised mid-iteration killed the entire account scan because the `try/except` only wrapped the `fetch()` setup call, not the iteration loop. Separately, when the scheduler's outer exception handler failed to stamp `scan_log.finished_at` after a failed scan, the orphan row stayed `NULL` forever and could only be cleaned by service restart. v0.7.7 widens the IMAP try/except to include the for-loop, adds `MailboxFetchError` to `IMAP_CONNECTION_ERRORS`, and guarantees orphan scan_log cleanup at the start of every `scan_all_accounts` invocation (not just at service startup).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.8.0+ — Future
 
 ### Known Issues
