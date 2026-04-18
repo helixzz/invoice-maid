@@ -6,25 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.7.5] - 2026-04-18
 
+### Why this release matters
+
+Before v0.7.5, every email scan had three hard, silent coverage gaps:
+
+1. **IMAP `AND(seen=False)` on first scans** — any email you had already read in your mail client at the moment the account was first connected was invisible forever. Subsequent incremental scans only fetch UIDs strictly greater than the last-known UID, so already-read invoices that existed at first-scan time never entered the database.
+2. **INBOX-only for IMAP and Outlook Graph** — invoices filed to `Archive`, `Bills/`, `发票/`, or auto-routed to `Junk`/`Spam` were never seen.
+3. **Outlook 30-day first-scan cap** — a hardcoded `receivedDateTime ge {30 days ago}` filter meant any invoice older than 30 days at first-scan time was never fetched either.
+
+v0.7.5 closes all three. On the first post-upgrade rescan in this project's own production environment:
+
+| Account | Emails processed (v0.7.4) | Emails processed (v0.7.5) | Invoices found (v0.7.4) | Invoices found (v0.7.5) |
+|---|---|---|---|---|
+| Outlook (`user@example.com`) | 470 (INBOX, last 30 days) | **35,631** (all folders, full history) | 7 | **208** |
+
+The Outlook account alone went from 470 to 35,631 emails scanned — a **76× increase** in coverage — and from 7 to 208 saved invoices.
+
 ### Changed
-- **IMAP: multi-folder scan** — the scanner now enumerates ALL folders via `MailBox.folder.list()` instead of only scanning the default INBOX. Skips `\Noselect` (structural containers), `\Drafts`, `\Trash`, and `\All` (Gmail All Mail, which would double-process). Scans INBOX, `\Archive`, `\Junk`, and any custom user folders. Invoices filed to Archive or that landed in spam/junk are now discoverable.
-- **IMAP: removed `AND(seen=False)` first-scan restriction** — the scanner now uses `"ALL"` for both first and incremental scans, filtered client-side by UID. Previously, any email you had already read at the time of the first scan was permanently invisible.
-- **IMAP: per-folder UID + UIDVALIDITY state** — `EmailAccount.last_scan_uid` now stores a JSON map `{folder_name: {uid, uidvalidity}}`. Each folder's progress is tracked independently. If a folder's `UIDVALIDITY` changes (e.g. mailbox recreated), that folder is fully rescanned.
-- **IMAP: hydration selects correct folder** — the lazy-fetch `hydrate_email` call now selects the email's source folder before issuing the UID fetch, fixing a bug where hydrating an email from a non-INBOX folder would silently fail.
-- **IMAP: oldest-first global ordering** — emails from all folders are merged and sorted oldest-first (`received_at asc`) before processing, ensuring chronological extraction order.
-- **IMAP: cross-folder Message-ID dedup** — if the same email appears in multiple folders (e.g. INBOX and Archive), it is processed only once per scan run, identified by the RFC 5322 `Message-ID` header.
-- **Outlook Graph: multi-folder scan** — the scanner now recursively enumerates all mail folders via `GET /me/mailFolders` + `childFolders` traversal instead of only reading `/mailFolders/inbox/messages`. Skips `drafts`, `deleteditems`, `outbox`, and `mailSearchFolder` virtual folders. Scans inbox, archive, junkemail, sentitems, and all custom folders.
-- **Outlook: removed 30-day first-scan filter** — the `receivedDateTime ge {30 days ago}` filter on initial scans is gone. Full mailbox history is now fetched on first scan.
-- **Outlook: per-folder receivedDateTime watermark** — `last_scan_uid` stores `{folder_id: last_received_dt}` per folder. Incremental scans use `$filter=receivedDateTime gt X` per folder. Oldest-first via `$orderby=receivedDateTime asc`.
-- **Outlook: cross-folder internetMessageId dedup** — same as IMAP Message-ID dedup, applied per scan run.
-- **Scheduler: `_last_scan_state` persistence** — after each scan, if the scanner sets `_last_scan_state`, it is written to `EmailAccount.last_scan_uid` (replacing the old per-email UID accumulation for IMAP/Outlook). POP3 still uses the old incremental UID path.
-- **`EmailAccount.last_scan_uid` column widened** from `String(255)` to `Text()` to accommodate the per-folder JSON state (migration `0007_last_scan_uid_text`).
+
+- **IMAP multi-folder scan** — the scanner now enumerates every mailbox via `MailBox.folder.list()` instead of scanning only the default INBOX. Scans **INBOX, `\Archive`, `\Junk`, and every custom user folder**. Deliberately skips:
+  - `\Noselect` (structural containers that cannot be `SELECT`ed)
+  - `\Drafts` (unsent mail)
+  - `\Trash` (discarded mail)
+  - `\All` (Gmail's `[Gmail]/All Mail` superset, which would double-process every message)
+- **IMAP first-scan criteria changed from `AND(seen=False)` to `"ALL"`** — reads both seen and unseen messages. UID filtering still happens client-side so incremental scans remain correct. `mark_seen=False` is preserved so invoice-maid never flips your read state.
+- **IMAP per-folder UID + UIDVALIDITY state** — `EmailAccount.last_scan_uid` now stores JSON `{folder_name: {uid, uidvalidity}}`. Each folder's progress is tracked independently; when a folder's `UIDVALIDITY` changes (e.g. mailbox was recreated server-side), that folder — and only that folder — is fully rescanned.
+- **IMAP hydration selects the correct folder** — `hydrate_email()` now calls `mailbox.folder.set(email.folder)` before the UID fetch, so lazy-loading an email from `Archive` or a custom folder actually succeeds. Previously this silently fell back to INBOX and returned empty bodies.
+- **IMAP oldest-first global ordering** — after all folders are collected, emails are sorted `received_at` ascending before processing, giving chronological extraction order regardless of which folder they came from.
+- **IMAP cross-folder `Message-ID` dedup** — if the same email appears in INBOX and Archive (common in Gmail label-style mailboxes), it is processed only once per scan run. Uses the RFC 5322 `Message-ID` header as the dedup key.
+- **Outlook Graph multi-folder scan** — recursively enumerates all mail folders via `GET /me/mailFolders` + `childFolders` traversal. Replaces the hardcoded `/me/mailFolders/inbox/messages` endpoint. Deliberately skips:
+  - `wellKnownName` in `{drafts, deleteditems, outbox}`
+  - `#microsoft.graph.mailSearchFolder` (virtual saved searches)
+  - Folders with `totalItemCount == 0` (fast-path)
+- **Outlook 30-day first-scan filter removed** — full mailbox history is fetched on first scan. Users with years of archived invoices can now backfill everything.
+- **Outlook per-folder `receivedDateTime` watermark** — `last_scan_uid` stores JSON `{folder_id: last_received_dt}` per folder. Incremental scans use `$filter=receivedDateTime gt X` scoped per folder, ordered `$orderby=receivedDateTime asc`.
+- **Outlook cross-folder `internetMessageId` dedup** — same semantics as IMAP Message-ID dedup.
+- **Outlook folder-enumeration `seen_urls` guard** — prevents infinite pagination loops on malformed `@odata.nextLink` responses or adversarial/cyclic folder trees.
+- **Scheduler `_last_scan_state` persistence** — after each scan, if the scanner exposes `_last_scan_state`, it replaces `EmailAccount.last_scan_uid` in one atomic write. IMAP and Outlook now use this path; POP3 continues to use the legacy per-email UID accumulation (no per-folder concept applies).
+- **`EmailAccount.last_scan_uid` widened** from `VARCHAR(255)` to `TEXT` via migration `0007_last_scan_uid_text`. The per-folder JSON state can exceed 255 chars for mailboxes with many folders.
 
 ### Migration
-- `0007_last_scan_uid_text` — widens `email_accounts.last_scan_uid` from `VARCHAR(255)` to `TEXT`. Backwards-compatible: existing bare-string values are still recognized and migrated to the new per-folder format on first scan.
+
+- `0007_last_scan_uid_text` — widens `email_accounts.last_scan_uid` from `VARCHAR(255)` to `TEXT`. Backwards-compatible: an existing bare-string value (legacy format from v0.7.4 and earlier) is still recognized on read via `_parse_imap_state` / `_parse_graph_state` and seamlessly upgraded to the new per-folder JSON format on the next scan.
+
+### Operational notes
+
+- **First post-upgrade scan will be long.** The combined effect of removing `seen=False`, enumerating all folders, and (for Outlook) removing the 30-day cap means the first scan after upgrading from v0.7.4 fetches your entire historical mailbox. For the project's own Outlook account, this meant 35,631 emails for pass-1 metadata fetch. This is a one-time cost; subsequent scans remain incremental via the per-folder state.
+- **POP3 accounts unchanged.** POP3 has no folder concept and no seen/unseen flag. The POP3 scanner's behavior is identical to v0.7.4.
+- **SQLite `database is locked` warnings under high concurrency** (`EMAIL_CONCURRENCY=50`) are pre-existing and not a v0.7.5 regression. Future work may reduce concurrency for IMAP accounts specifically.
 
 ### Tests
-- 368 tests, 100% coverage. New tests: IMAP multi-folder iteration, folder skip logic (Drafts/Trash/Noselect/GmailAll), cross-folder Message-ID dedup (dup with higher AND lower UID), UIDVALIDITY change reset, folder.set() failure skip, fetch failure skip, hydrate selecting correct folder, state helpers backward-compat parsing, Outlook folder enumeration (flat + recursive), folder skip rules (drafts/deleteditems/empty/mailSearchFolder), cross-folder internetMessageId dedup, per-folder watermark, recursive childFolders traversal with seen_url guard, scheduler _last_scan_state persistence.
+
+- 368 tests, 100% coverage.
+- New test coverage includes: IMAP multi-folder iteration across flag-driven skip rules (`\Drafts`, `\Trash`, `\Noselect`, `\All`), cross-folder `Message-ID` dedup where the duplicate has both a higher and a lower UID than the folder's running highest, `UIDVALIDITY` change forcing a folder-level full rescan, `folder.set()` failures gracefully skipping a folder without aborting the scan, `fetch()` failures gracefully skipping a folder, `hydrate_email` selecting the correct folder, state-helper backwards-compatibility parsing (legacy bare string, new JSON, invalid JSON fallback, valid JSON with wrong shape), Outlook recursive `childFolders` traversal, Outlook folder skip rules (`drafts`, `deleteditems`, `outbox`, `mailSearchFolder`, empty folders, folders without IDs), Outlook cross-folder `internetMessageId` dedup, Outlook per-folder `receivedDateTime` watermark advancement, Outlook `seen_urls` guard preventing `@odata.nextLink` cycles, scheduler persistence of `_last_scan_state` (both "new state" and "unchanged state" paths), and scheduler fallback to legacy per-email UID when no `_last_scan_state` is exposed (POP3).
 
 ## [0.7.4] - 2026-04-18
 
