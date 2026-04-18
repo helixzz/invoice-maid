@@ -118,7 +118,7 @@ class AIService:
             f"Body:\n{body[:2000]}\n\n"
             f"<links>\n{links_block}\n</links>"
         )
-        cache_key = self._content_hash("analyze_email_v2", content)
+        cache_key = self._content_hash("analyze_email_v3", content)
 
         cached = await self._get_cache(db, cache_key)
         if cached is not None:
@@ -134,7 +134,7 @@ class AIService:
                 {"role": "user", "content": content},
             ],
         )
-        await self._set_cache(db, cache_key, "analyze_email_v2", result.model_dump_json())
+        await self._set_cache(db, cache_key, "analyze_email_v3", result.model_dump_json())
         return result
 
     async def classify_email(self, db: AsyncSession, subject: str, body: str) -> bool:

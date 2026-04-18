@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,32 @@ INVOICE_EXTENSIONS = frozenset([".pdf", ".xml", ".ofd"])
 
 BULK_HEADERS = frozenset(["list-unsubscribe"])
 
+SCAM_PHRASES = frozenset(
+    [
+        "代开",
+        "代开发票",
+        "代开各行业",
+        "有发票出售",
+        "出售发票",
+        "提供发票",
+        "发票业务",
+        "联系微信",
+        "微信号",
+        "加微信",
+        "加qq",
+        "联系qq",
+    ]
+)
+
+SCAM_CONTACT_PATTERN = re.compile(
+    r"(微信|weixin|wechat|qq)[\s:：]*[a-zA-Z0-9_-]{5,20}",
+    re.IGNORECASE,
+)
+
+SCAM_SPARSE_DIGITS_PATTERN = re.compile(
+    r"(?:[\d][\s/\-_<>+*\.\|丨]{1,4}){4,}[\d]"
+)
+
 
 @dataclass
 class ClassificationResult:
@@ -35,6 +62,20 @@ class ClassificationResult:
     tier: int
     confidence: float
     reason: str
+
+
+def is_scam_text(text: str) -> tuple[bool, str]:
+    if not text:
+        return False, ""
+    lowered = text.lower()
+    for phrase in SCAM_PHRASES:
+        if phrase in lowered:
+            return True, f"scam phrase: {phrase}"
+    if SCAM_CONTACT_PATTERN.search(text):
+        return True, "wechat/qq contact inline"
+    if SCAM_SPARSE_DIGITS_PATTERN.search(text):
+        return True, "obfuscated phone/contact digits"
+    return False, ""
 
 
 def _has_invoice_keyword(text: str) -> bool:
@@ -74,6 +115,11 @@ class EmailClassifier:
 
         if headers_lower & BULK_HEADERS:
             return ClassificationResult(False, 1, 0.98, "bulk header")
+
+        scam_text = email.subject + " " + email.body_text[:2000]
+        is_scam, scam_reason = is_scam_text(scam_text)
+        if is_scam:
+            return ClassificationResult(False, 1, 0.97, scam_reason)
 
         for attachment in email.attachments:
             ext = f'.{attachment.filename.rsplit(".", 1)[-1].lower()}' if "." in attachment.filename else ""

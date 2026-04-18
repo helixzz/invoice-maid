@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.3] - 2026-04-18
+
+### Added
+- **Anti-scam three-layer defense** — detects invoice-fraud / phishing emails that slipped through previous pipelines (e.g. "代开各行业发票联系微信gn81186", "有发票開丨微信在附件上"):
+  - **Tier-1 classifier** now rejects emails whose subject or body contains scam phrases (`代开`, `代开发票`, `有发票出售`, `联系微信`, `加QQ` …), inline WeChat/QQ contact IDs, or obfuscated phone numbers (digits separated by punctuation). No LLM call, no hydration, no attachment fetch.
+  - **Tier-3 `analyze_email` LLM prompt** received a dedicated "诈骗 / 虚假发票邮件（必须拒绝）" section that overrides the attachment-is-invoice heuristic when scam signals are present.
+  - **Extraction-time LLM prompt** gained a STEP 0 scam rejection layer that flags WeChat-for-invoice solicitations, obfuscated phone patterns, and ad-copy polluted buyer/seller fields as `is_valid_tax_invoice=false`.
+- **Scheduler post-extraction sanity check** — even if the LLM extraction claims `is_valid_tax_invoice=true`, the scheduler inspects the resolved buyer/seller/item_summary against the same scam heuristic as tier-1. If the invoice "text" looks like fraud, it is logged as `not_vat_invoice` with reason `scam signal: <...>` and not saved.
+- **Shared `is_scam_text()` helper** in `email_classifier.py` so classifier and scheduler apply identical detection rules.
+
+### Changed
+- **analyze_email cache key bumped** `analyze_email_v2` → `analyze_email_v3`. Stale classifications cached under the previous prompt (which may have accepted scam emails) are automatically bypassed.
+
+### Tests
+- 334 tests, 100% coverage. New tests cover: all three scam detection branches (phrase / contact pattern / obfuscated digits), tier-1 rejecting scam subject even when an invoice-looking PDF is attached, scheduler rejecting a scam invoice post-LLM-merge when the LLM hallucinated a real-looking seller but buyer was ad copy.
+
 ## [0.7.2] - 2026-04-18
 
 ### Changed
