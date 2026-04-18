@@ -68,7 +68,7 @@ invoice-maid/
 ## ANTI-PATTERNS
 
 - Pushing credentials, API keys, `.env`, `IDEA.md`, or `*.db` to git
-- Shipping features without updating README.md + CHANGELOG.md
+- Shipping features without updating README.md + CHANGELOG.md + ROADMAP.md
 - Multiple uvicorn workers (duplicates scheduler jobs)
 - Forgetting `easyofd.del_data()` cleanup after OFD parsing
 - Using sync imap-tools without `run_in_executor`
@@ -79,8 +79,9 @@ invoice-maid/
 Every commit batch that changes observable behavior MUST:
 1. Increment `backend/pyproject.toml` version (patch: x.x.N → x.x.N+1, or minor/major as appropriate)
 2. Add a CHANGELOG.md entry under the new version
-3. Tag HEAD with the new version after pushing: `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`
-4. Trigger the release workflow so GitHub Release stays in sync
+3. Add a ROADMAP.md section under the new version (release summary + link to CHANGELOG)
+4. Tag HEAD with the new version after pushing: `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`
+5. Trigger the release workflow so GitHub Release stays in sync
 
 Cadence guide:
 - **Patch** (x.y.Z): bug fixes, doc updates, test fixes, minor improvements
