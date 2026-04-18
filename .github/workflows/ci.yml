@@ -38,9 +38,15 @@ jobs:
           pip install sqlite-vec pyzbar easyofd || echo "Optional native deps unavailable — tests will skip affected paths"
 
       - name: Run backend tests with coverage
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./test-ci.db
+          ADMIN_PASSWORD_HASH: "hashed:testpass"
+          JWT_SECRET: ci-test-secret
+          LLM_BASE_URL: https://llm.invalid/v1
+          LLM_API_KEY: ci-test-key
         run: |
           . .venv/bin/activate
-          pytest --cov=app --cov-report=term-missing --cov-fail-under=99
+          pytest --cov=app --cov-report=term-missing --cov-fail-under=100
 
   frontend:
     runs-on: ubuntu-latest
