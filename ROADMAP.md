@@ -163,7 +163,17 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
-## v0.7.9+ — Deferred (from v0.7.8 research)
+## v0.7.9 — Released
+
+**Theme:** Frontend surfaces v0.7.8's folder telemetry
+
+v0.7.8 wired up rich folder-level scan telemetry (`total_folders`, `current_folder_idx`, `current_folder_name`, `folder_fetch_msg`) all the way to the `/api/v1/scan/progress` API — but the Vue component rendering the progress bar was still showing only the v0.7.4-era fields, so live scans still looked like a frozen bar to end users. v0.7.9 adds the frontend pieces: new "Folder X/Y" line, "Fetching …" status from the scanner's own prose message, a dedicated Folders progress bar, and extended `ScanProgressData` TypeScript interface. No backend changes.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
+## v0.8.0+ — Deferred (from v0.7.8 research)
 
 Ranked by expected speedup, deferred because each requires larger refactors that didn't fit v0.7.8's ship-window:
 
