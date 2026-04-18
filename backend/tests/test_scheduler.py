@@ -212,7 +212,18 @@ async def test_scan_all_accounts_handles_duplicates_llm_enrichment_and_errors(
     )
     parsed_results = iter(
         [
-            ParsedInvoice(invoice_no="INV-DUPLICATE", raw_text="增值税电子普通发票 价税合计 税额 发票号码", confidence=0.9, invoice_type="增值税电子普通发票"),
+            ParsedInvoice(
+                invoice_no="INV-DUPLICATE",
+                raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+                confidence=0.9,
+                invoice_type="增值税电子普通发票",
+                buyer="Buyer",
+                seller="Seller",
+                amount=Decimal("10.00"),
+                invoice_date=date(2024, 1, 1),
+                item_summary="服务费",
+                extraction_method="qr",
+            ),
             ParsedInvoice(invoice_no=None, raw_text="needs llm", confidence=0.1, is_vat_document=True),
             RuntimeError("broken attachment"),
         ]
@@ -497,6 +508,7 @@ async def test_scan_all_accounts_embedding_failure_logs_warning(
         amount=Decimal("10.00"),
         invoice_date=date(2024, 1, 1),
         invoice_type="增值税电子普通发票",
+        item_summary="服务费",
         raw_text="增值税电子普通发票 价税合计 税额 发票号码",
         source_format="pdf",
         extraction_method="regex",
@@ -834,7 +846,7 @@ async def test_scan_all_accounts_rejects_llm_flagged_non_vat_invoice(
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert invoices == []
     assert extraction_logs[0].outcome == "not_vat_invoice"
-    assert extraction_logs[0].error_detail == "type='酒店入住凭证' llm_rejected=True"
+    assert extraction_logs[0].error_detail == "type='' llm_rejected=True"
 
 
 @pytest.mark.asyncio
@@ -851,7 +863,17 @@ async def test_scan_all_accounts_rejects_heuristic_non_vat_invoice_without_llm(
         received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         attachments=[RawAttachment(filename="receipt.pdf", payload=b"1", content_type="application/pdf")],
     )
-    parsed = ParsedInvoice(invoice_no="RCPT-1", raw_text="普通收据", confidence=0.9, invoice_type="酒店收据")
+    parsed = ParsedInvoice(
+        invoice_no="RCPT-1",
+        raw_text="普通收据",
+        confidence=0.9,
+        invoice_type="酒店收据",
+        buyer="Hotel Buyer",
+        seller="Hotel Seller",
+        amount=Decimal("100.00"),
+        invoice_date=date(2024, 1, 1),
+        item_summary="住宿费",
+    )
 
     class FakeScanner:
         async def scan(self, account, last_uid=None):
@@ -892,6 +914,9 @@ async def test_scan_all_accounts_marks_amount_sentinel_as_low_confidence(
         confidence=0.9,
         amount=Decimal("0.01"),
         invoice_type="增值税电子普通发票",
+    )
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={"amount": Decimal("0.01"), "confidence": 0.2}
     )
 
     class FakeScanner:
@@ -1526,3 +1551,299 @@ async def test_scan_all_accounts_skips_webhook_when_disabled(
     webhook_logs = (await db.execute(select(WebhookLog))).scalars().all()
     assert webhook_logs == []
     post_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enrichment_fires_when_fields_missing_despite_high_confidence(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-enrich-missing",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="12345678901234567890",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码 12345678901234567890",
+        confidence=0.7,
+        amount=Decimal("100.00"),
+        invoice_date=date(2024, 5, 1),
+        extraction_method="qr",
+        is_vat_document=True,
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    mock_ai_service.extract_invoice_fields.assert_awaited_once()
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "12345678901234567890"
+    assert invoices[0].buyer == "测试购买方"
+    assert invoices[0].seller == "测试销售方"
+    assert invoices[0].invoice_type == "增值税电子普通发票"
+    assert invoices[0].amount == Decimal("100.00")
+    assert invoices[0].invoice_date == date(2024, 5, 1)
+    assert invoices[0].extraction_method == "llm"
+
+
+@pytest.mark.asyncio
+async def test_parser_invoice_no_wins_over_llm_for_valid_20digit(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-parser-wins",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="99988877766655544433",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+        confidence=0.7,
+        amount=Decimal("200.00"),
+        invoice_date=date(2024, 6, 1),
+        extraction_method="xml_xpath",
+        is_vat_document=True,
+    )
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={"invoice_no": "DIFFERENT-NO-FROM-LLM"}
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "99988877766655544433"
+
+
+@pytest.mark.asyncio
+async def test_strong_parse_survives_llm_rejection(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-strong-survives",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="11122233344455566677",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+        confidence=0.7,
+        amount=Decimal("300.00"),
+        invoice_date=date(2024, 7, 1),
+        invoice_type="增值税电子普通发票",
+        extraction_method="qr",
+        is_vat_document=True,
+    )
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={"is_valid_tax_invoice": False, "invoice_type": "酒店入住凭证"}
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "11122233344455566677"
+    assert invoices[0].invoice_type == "增值税电子普通发票"
+    assert extraction_logs[0].outcome == "saved"
+
+
+@pytest.mark.asyncio
+async def test_llm_exception_falls_back_to_parser_result(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-llm-fail",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="55566677788899900011",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+        confidence=0.7,
+        amount=Decimal("400.00"),
+        invoice_date=date(2024, 8, 1),
+        invoice_type="增值税电子普通发票",
+        extraction_method="qr",
+        is_vat_document=True,
+    )
+    mock_ai_service.extract_invoice_fields.side_effect = RuntimeError("LLM timeout")
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "55566677788899900011"
+    assert invoices[0].buyer == "未知"
+    assert invoices[0].extraction_method == "qr"
+
+
+@pytest.mark.asyncio
+async def test_weak_parse_llm_backfills_all_fields(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-weak-parse",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no=None,
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+        confidence=0.1,
+        extraction_method="regex",
+        is_vat_document=True,
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "INV-LLM-001"
+    assert invoices[0].buyer == "测试购买方"
+    assert invoices[0].amount == Decimal("88.88")
+    assert invoices[0].extraction_method == "llm"
+
+
+@pytest.mark.asyncio
+async def test_llm_returns_unknown_does_not_overwrite_parser_semantic_fields(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-unknown-preserve",
+        subject="Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="sender@test",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(
+        invoice_no="77788899900011122233",
+        buyer="Parser Buyer",
+        seller="Parser Seller",
+        invoice_type="增值税电子普通发票",
+        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+        confidence=0.7,
+        amount=Decimal("99.00"),
+        invoice_date=date(2024, 9, 1),
+        extraction_method="qr",
+        is_vat_document=True,
+    )
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={
+            "buyer": "未知",
+            "seller": "未知",
+            "invoice_type": "未知",
+            "item_summary": "未知",
+            "invoice_no": "",
+            "invoice_date": None,
+            "amount": Decimal("0.01"),
+            "confidence": 0.3,
+            "is_valid_tax_invoice": True,
+        }
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_no == "77788899900011122233"
+    assert invoices[0].buyer == "Parser Buyer"
+    assert invoices[0].seller == "Parser Seller"
+    assert invoices[0].invoice_type == "增值税电子普通发票"
+    assert invoices[0].item_summary == ""
+    assert invoices[0].amount == Decimal("99.00")
+    assert invoices[0].invoice_date == date(2024, 9, 1)

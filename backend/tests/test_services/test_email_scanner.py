@@ -372,6 +372,29 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
     monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", SkipPop3)
     assert scanner._scan_sync(account, json.dumps(["mid-1"])) == []
 
+    retr_indexes_first: list[int] = []
+
+    class FirstScanPop3(PaginationPop3):
+        def retr(self, index):
+            retr_indexes_first.append(index)
+            return super().retr(index)
+
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", FirstScanPop3)
+    scanner._scan_sync(account, None)
+    assert retr_indexes_first == [5, 4, 3, 2, 1]
+
+    retr_indexes_capped: list[int] = []
+
+    class CappedFirstScanPop3(PaginationPop3):
+        def retr(self, index):
+            retr_indexes_capped.append(index)
+            return super().retr(index)
+
+    monkeypatch.setattr(email_scanner, "FIRST_SCAN_LIMIT", 2)
+    monkeypatch.setattr(email_scanner.poplib, "POP3_SSL", CappedFirstScanPop3)
+    scanner._scan_sync(account, None)
+    assert retr_indexes_capped == [5, 4]
+
     class NotePop3(FakePop3):
         def retr(self, index):
             payload = b"\r\n".join(
@@ -824,12 +847,16 @@ async def test_outlook_scan_last_uid_and_pagination(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_first_pass_stops_at_first_scan_limit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_first_pass_fetches_all_available_pages(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=11, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
-    items = [
+    page_one = [
         {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
-        for idx in range(email_scanner.FIRST_SCAN_LIMIT)
+        for idx in range(3)
+    ]
+    page_two = [
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        for idx in range(3, 6)
     ]
     urls: list[str] = []
 
@@ -854,7 +881,9 @@ async def test_outlook_scan_first_pass_stops_at_first_scan_limit(monkeypatch: py
         async def get(self, url, headers=None, params=None):
             del headers, params
             urls.append(url)
-            return FakeResponse({"value": items, "@odata.nextLink": "https://graph.microsoft.com/next"})
+            if len(urls) == 1:
+                return FakeResponse({"value": page_one, "@odata.nextLink": "https://graph.microsoft.com/next"})
+            return FakeResponse({"value": page_two, "@odata.nextLink": None})
 
     monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
     monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
@@ -862,7 +891,54 @@ async def test_outlook_scan_first_pass_stops_at_first_scan_limit(monkeypatch: py
 
     emails = await scanner.scan(account, last_uid=None)
 
-    assert len(emails) == email_scanner.FIRST_SCAN_LIMIT
+    assert len(emails) == 6
+    assert urls == [
+        f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/inbox/messages",
+        "https://graph.microsoft.com/next",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_first_pass_respects_configured_limit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(email_scanner, "FIRST_SCAN_LIMIT", 2)
+    scanner = OutlookScanner()
+    account = EmailAccount(id=12, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+    page = [
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        for idx in range(5)
+    ]
+    urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            urls.append(url)
+            return FakeResponse({"value": page, "@odata.nextLink": "https://graph.microsoft.com/next"})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(scanner, "_fetch_attachments", AsyncMock(return_value=[]))
+
+    emails = await scanner.scan(account, last_uid=None)
+
+    assert len(emails) == 2
     assert urls == [f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/inbox/messages"]
 
 

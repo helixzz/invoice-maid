@@ -323,25 +323,86 @@ async def _process_single_email(
                         parsed = await asyncio.to_thread(parse_invoice, filename, payload)
                         extracted = None
 
+                        # Strong parse = deterministic structured extraction succeeded.
+                        # We trust these for invoice_no/amount/date and ignore LLM rejection.
+                        parser_invoice_no_looks_valid = bool(
+                            parsed.invoice_no
+                            and parsed.invoice_no.isdigit()
+                            and len(parsed.invoice_no) in (8, 20)
+                        )
+                        strong_parse = (
+                            parsed.extraction_method in ("qr", "xml_xpath", "ofd_struct")
+                            or parser_invoice_no_looks_valid
+                        )
+
                         amount_is_sentinel = parsed.amount is not None and parsed.amount < Decimal("0.10")
-                        if (parsed.confidence < 0.6 or not parsed.invoice_no or amount_is_sentinel) and parsed.raw_text:
-                            extracted = await ai.extract_invoice_fields(db, parsed.raw_text)
-                            parsed.buyer = parsed.buyer or extracted.buyer
-                            parsed.seller = parsed.seller or extracted.seller
-                            parsed.invoice_no = parsed.invoice_no or extracted.invoice_no
-                            parsed.invoice_date = parsed.invoice_date or extracted.invoice_date
-                            parsed.amount = parsed.amount or extracted.amount
-                            parsed.item_summary = parsed.item_summary or extracted.item_summary
-                            parsed.invoice_type = parsed.invoice_type or extracted.invoice_type
-                            parsed.extraction_method = "llm"
-                            parsed.confidence = extracted.confidence
+                        fields_missing = (
+                            not parsed.buyer
+                            or parsed.buyer == "未知"
+                            or not parsed.seller
+                            or parsed.seller == "未知"
+                            or not parsed.invoice_type
+                            or parsed.invoice_type == "未知"
+                            or not parsed.item_summary
+                        )
+                        should_enrich = (
+                            parsed.confidence < 0.6
+                            or not parsed.invoice_no
+                            or amount_is_sentinel
+                            or fields_missing
+                        ) and parsed.raw_text
+
+                        if should_enrich:
+                            try:
+                                extracted = await ai.extract_invoice_fields(db, parsed.raw_text)
+                            except Exception as exc:
+                                extracted = None
+                                logger.warning(
+                                    "LLM enrichment failed for %s (%s); falling back to parser result",
+                                    filename,
+                                    exc,
+                                )
+
+                            if extracted is not None and extracted.is_valid_tax_invoice:
+                                # Selective merge: LLM fills semantic fields (buyer/seller/type/summary)
+                                # unconditionally when non-未知. Parser keeps invoice_no/amount/date when
+                                # it had strong deterministic evidence; LLM backfills missing/invalid ones.
+                                if extracted.buyer and extracted.buyer != "未知":
+                                    parsed.buyer = extracted.buyer
+                                if extracted.seller and extracted.seller != "未知":
+                                    parsed.seller = extracted.seller
+                                if extracted.item_summary and extracted.item_summary != "未知":
+                                    parsed.item_summary = extracted.item_summary
+                                if extracted.invoice_type and extracted.invoice_type != "未知":
+                                    parsed.invoice_type = extracted.invoice_type
+
+                                # invoice_no: parser wins if deterministic 8/20-digit match
+                                if not parser_invoice_no_looks_valid and extracted.invoice_no:
+                                    parsed.invoice_no = extracted.invoice_no
+                                # date: parser wins if present
+                                if parsed.invoice_date is None and extracted.invoice_date:
+                                    parsed.invoice_date = extracted.invoice_date
+                                # amount: parser wins unless it's missing/sentinel
+                                if (parsed.amount is None or amount_is_sentinel) and extracted.amount:
+                                    parsed.amount = extracted.amount
+                                    amount_is_sentinel = parsed.amount < Decimal("0.10")
+
+                                parsed.extraction_method = "llm"
+                                parsed.confidence = max(extracted.confidence, parsed.confidence)
 
                         final_type = parsed.invoice_type or ""
                         type_is_valid = (
                             final_type in VALID_INVOICE_TYPES
                             or any(vt in final_type for vt in VALID_INVOICE_TYPES if len(vt) > 3)
                         )
-                        llm_rejected = extracted is not None and not extracted.is_valid_tax_invoice
+                        # LLM veto: only honour when parser evidence is weak. A strong parse
+                        # (QR/XML/OFD struct, or regex-matched 8/20-digit invoice_no) must not
+                        # be discarded just because the LLM guessed is_valid_tax_invoice=false.
+                        llm_rejected = (
+                            extracted is not None
+                            and not extracted.is_valid_tax_invoice
+                            and not strong_parse
+                        )
                         heuristic_rejected = extracted is None and not parsed.is_vat_document and not type_is_valid
 
                         if llm_rejected or (not type_is_valid and heuristic_rejected):

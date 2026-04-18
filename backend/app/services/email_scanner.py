@@ -34,7 +34,7 @@ from app.models import EmailAccount
 
 logger = logging.getLogger(__name__)
 
-FIRST_SCAN_LIMIT = 500
+FIRST_SCAN_LIMIT: int | None = None
 
 IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError)
 POP3_CONNECTION_ERRORS = (OSError, ssl.SSLError, poplib.error_proto)
@@ -269,7 +269,12 @@ class Pop3Scanner(BaseEmailScanner):
             mailbox.user(account.username)
             mailbox.pass_(password)
             total_messages = len(mailbox.list()[1])
-            start_index = max(1, total_messages - FIRST_SCAN_LIMIT + 1) if last_uid is None else 1
+            if last_uid is not None:
+                start_index = 1
+            elif FIRST_SCAN_LIMIT is None:
+                start_index = 1
+            else:
+                start_index = max(1, total_messages - FIRST_SCAN_LIMIT + 1)
 
             for index in range(total_messages, start_index - 1, -1):
                 _, lines, _ = mailbox.retr(index)
