@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -30,7 +30,7 @@ class EmailAccount(Base):
     password_encrypted: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     oauth_token_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean(), default=True)
-    last_scan_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_scan_uid: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="email_account", cascade="all, delete-orphan")

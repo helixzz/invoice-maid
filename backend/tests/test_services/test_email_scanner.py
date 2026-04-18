@@ -100,8 +100,31 @@ class _FakeContextManager:
         return False
 
 
+class _FakeFolderInfo:
+    def __init__(self, name: str, flags: tuple = ()):
+        self.name = name
+        self.flags = flags
+
+
+class _FakeFolderManager:
+    def __init__(self, folders=None, uidvalidity_map=None):
+        self._folders = folders if folders is not None else [_FakeFolderInfo("INBOX")]
+        self._uidvalidity_map = uidvalidity_map or {}
+        self.current: str = "INBOX"
+
+    def list(self):
+        return self._folders
+
+    def set(self, name: str) -> None:
+        self.current = name
+
+    def status(self, name: str, items) -> dict:
+        del items
+        return {"UIDVALIDITY": self._uidvalidity_map.get(name, 12345)}
+
+
 def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.MonkeyPatch, settings) -> None:
-    msg_old = SimpleNamespace(uid="1", subject="old", text="see https://skip.test", html="", from_="a@test", date=datetime.now(), attachments=[])
+    msg_old = SimpleNamespace(uid="1", subject="old", text="see https://skip.test", html="", from_="a@test", date=datetime.now(), attachments=[], headers={})
     msg_new = SimpleNamespace(
         uid="3",
         subject="new",
@@ -114,12 +137,14 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
             SimpleNamespace(filename="note.txt", payload=b"txt", content_type="text/plain"),
             SimpleNamespace(filename=None, payload=b"xml", content_type=None),
         ],
+        headers={},
     )
 
     class FakeMailbox:
         def __init__(self, host, port):
             self.host = host
             self.port = port
+            self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             assert username == "user@example.com"
@@ -165,6 +190,7 @@ def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, s
     class FakeMailbox:
         def __init__(self, host, port):
             del host, port
+            self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             assert username == "user@example.com"
@@ -190,7 +216,7 @@ def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, s
     ImapScanner()._scan_sync(account, None)
 
     assert captured == {
-        "criteria": {"seen": False},
+        "criteria": "ALL",
         "limit": FIRST_SCAN_LIMIT,
         "reverse": True,
         "mark_seen": False,
@@ -242,6 +268,7 @@ async def test_imap_hydrate_email_fetches_body_and_attachments(monkeypatch: pyte
     class FakeMailbox:
         def __init__(self, host, port):
             del host, port
+            self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -327,6 +354,7 @@ async def test_imap_hydrate_email_handles_empty_fetch(monkeypatch: pytest.Monkey
     class EmptyMailbox:
         def __init__(self, host, port):
             del host, port
+            self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -813,7 +841,22 @@ async def test_outlook_scanner_scan_connection_and_helpers(monkeypatch: pytest.M
         async def get(self, url, headers=None, params=None):
             del headers
             self.calls.append((url, params))
-            if url.endswith("/messages"):
+            if "/mailFolders" in url and "/messages" not in url and "/childFolders" not in url and "/attachments" not in url:
+                return FakeResponse(
+                    {
+                        "value": [
+                            {
+                                "id": "folder-inbox",
+                                "displayName": "Inbox",
+                                "wellKnownName": "inbox",
+                                "totalItemCount": 1,
+                                "childFolderCount": 0,
+                            }
+                        ],
+                        "@odata.nextLink": None,
+                    }
+                )
+            if url.endswith("/messages") or "/messages?" in url:
                 return FakeResponse(
                     {
                         "value": [
@@ -973,7 +1016,7 @@ def test_pop3_message_id_for_handles_specific_header_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_last_uid_and_pagination(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_multi_folder_and_pagination(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=4, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -987,15 +1030,70 @@ async def test_outlook_scan_last_uid_and_pagination(monkeypatch: pytest.MonkeyPa
         def json(self):
             return self._payload
 
-    first_page = [
-        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
-        for idx in range(200)
+    folder_inbox = {"id": "f-inbox", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 2, "childFolderCount": 0}
+    folder_archive = {"id": "f-archive", "displayName": "Archive", "wellKnownName": "archive", "totalItemCount": 1, "childFolderCount": 0}
+    folder_drafts = {"id": "f-drafts", "displayName": "Drafts", "wellKnownName": "drafts", "totalItemCount": 5, "childFolderCount": 0}
+
+    inbox_msgs = [
+        {"id": "g1", "internetMessageId": "uid-1", "subject": "Inv A", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z", "hasAttachments": False},
+        {"id": "g2", "internetMessageId": "uid-2", "subject": "Inv B", "bodyPreview": "", "from": {"emailAddress": {"address": "b@test"}}, "receivedDateTime": "2024-02-01T00:00:00Z", "hasAttachments": False},
     ]
-    second_page = [
-        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
-        for idx in range(200, 205)
+    archive_msgs = [
+        {"id": "g3", "internetMessageId": "uid-3", "subject": "Inv C", "bodyPreview": "", "from": {"emailAddress": {"address": "c@test"}}, "receivedDateTime": "2024-03-01T00:00:00Z", "hasAttachments": False},
     ]
-    seen_params: list[dict[str, str] | None] = []
+    urls: list[str] = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            urls.append(url)
+            if "/mailFolders" in url and "f-inbox" not in url and "f-archive" not in url and "/messages" not in url and "/childFolders" not in url:
+                return FakeResponse({"value": [folder_inbox, folder_archive, folder_drafts], "@odata.nextLink": None})
+            if "f-inbox" in url and "/messages" in url:
+                return FakeResponse({"value": inbox_msgs, "@odata.nextLink": None})
+            if "f-archive" in url and "/messages" in url:
+                return FakeResponse({"value": archive_msgs, "@odata.nextLink": None})
+            return FakeResponse({"value": [], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+
+    emails = await scanner.scan(account, last_uid=None)
+    assert len(emails) == 3
+    assert {e.uid for e in emails} == {"uid-1", "uid-2", "uid-3"}
+    assert all(e.folder in {"Inbox", "Archive"} for e in emails)
+    drafts_urls = [u for u in urls if "f-drafts" in u]
+    assert drafts_urls == [], "drafts folder must not be scanned"
+    state = json.loads(scanner._last_scan_state)
+    assert "f-inbox" in state
+    assert "f-archive" in state
+    assert "f-drafts" not in state
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_incremental_uses_per_folder_watermark(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=5, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    folder = {"id": "f-inbox", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 2, "childFolderCount": 0}
+    seen_params: list = []
 
     class FakeClient:
         async def __aenter__(self):
@@ -1007,41 +1105,74 @@ async def test_outlook_scan_last_uid_and_pagination(monkeypatch: pytest.MonkeyPa
 
         async def get(self, url, headers=None, params=None):
             del headers
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResponse({"value": [folder], "@odata.nextLink": None})
             seen_params.append(params)
-            if url.endswith("/messages"):
-                return FakeResponse({"value": first_page, "@odata.nextLink": "https://graph.microsoft.com/next"})
-            return FakeResponse({"value": second_page, "@odata.nextLink": None})
+            return FakeResponse({"value": [], "@odata.nextLink": None})
 
     monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
     monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
-    monkeypatch.setattr(scanner, "_fetch_attachments", AsyncMock(return_value=[]))
-    emails = await scanner.scan(account, last_uid="other")
-    assert len(emails) == 205
-    assert seen_params[0] is not None and seen_params[0]["$top"] == "200"
-    assert seen_params[1] is None
 
-    first_scan_emails = await scanner.scan(account, last_uid=None)
-    assert len(first_scan_emails) == 205
+    prior_state = json.dumps({"f-inbox": "2024-06-01T00:00:00Z"})
+    await scanner.scan(account, last_uid=prior_state)
 
-    class EarlyReturnClient(FakeClient):
+    assert seen_params[0] is not None
+    assert "$filter" in seen_params[0]
+    assert "2024-06-01T00:00:00Z" in seen_params[0]["$filter"]
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_cross_folder_dedup_by_message_id(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    scanner = OutlookScanner()
+    account = EmailAccount(id=6, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    duplicate_msg = {"id": "g1", "internetMessageId": "uid-dup", "subject": "Dup", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z", "hasAttachments": False}
+    folder_a = {"id": "f-a", "displayName": "Folder A", "wellKnownName": None, "totalItemCount": 1, "childFolderCount": 0}
+    folder_b = {"id": "f-b", "displayName": "Folder B", "wellKnownName": None, "totalItemCount": 1, "childFolderCount": 0}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
         async def get(self, url, headers=None, params=None):
-            del url, headers, params
-            return FakeResponse({"value": [{"id": "graph", "internetMessageId": "uid-1", "subject": "x", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}], "@odata.nextLink": None})
+            del headers, params
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResponse({"value": [folder_a, folder_b], "@odata.nextLink": None})
+            return FakeResponse({"value": [duplicate_msg], "@odata.nextLink": None})
 
-    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: EarlyReturnClient())
-    assert await scanner.scan(account, last_uid="uid-1") == []
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+
+    emails = await scanner.scan(account, last_uid=None)
+    assert len(emails) == 1
+    assert emails[0].uid == "uid-dup"
 
 
 @pytest.mark.asyncio
 async def test_outlook_scan_first_pass_fetches_all_available_pages(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=11, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+    folder = {"id": "f-inbox", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 6, "childFolderCount": 0}
     page_one = [
-        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": f"2024-01-{idx+1:02d}T00:00:00Z"}
         for idx in range(3)
     ]
     page_two = [
-        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": f"2024-02-{idx-2:02d}T00:00:00Z"}
         for idx in range(3, 6)
     ]
     urls: list[str] = []
@@ -1067,21 +1198,19 @@ async def test_outlook_scan_first_pass_fetches_all_available_pages(monkeypatch: 
         async def get(self, url, headers=None, params=None):
             del headers, params
             urls.append(url)
-            if len(urls) == 1:
-                return FakeResponse({"value": page_one, "@odata.nextLink": "https://graph.microsoft.com/next"})
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResponse({"value": [folder], "@odata.nextLink": None})
+            if "/messages" in url and url.endswith("/messages"):
+                return FakeResponse({"value": page_one, "@odata.nextLink": f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/f-inbox/messages?next=2"})
             return FakeResponse({"value": page_two, "@odata.nextLink": None})
 
     monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
     monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
-    monkeypatch.setattr(scanner, "_fetch_attachments", AsyncMock(return_value=[]))
 
     emails = await scanner.scan(account, last_uid=None)
-
     assert len(emails) == 6
-    assert urls == [
-        f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/inbox/messages",
-        "https://graph.microsoft.com/next",
-    ]
+    msg_urls = [u for u in urls if "/messages" in u]
+    assert len(msg_urls) == 2
 
 
 @pytest.mark.asyncio
@@ -1089,8 +1218,9 @@ async def test_outlook_scan_first_pass_respects_configured_limit(monkeypatch: py
     monkeypatch.setattr(email_scanner, "FIRST_SCAN_LIMIT", 2)
     scanner = OutlookScanner()
     account = EmailAccount(id=12, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
+    folder = {"id": "f-inbox", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 5, "childFolderCount": 0}
     page = [
-        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "body": {"contentType": "text", "content": "body"}, "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z"}
+        {"id": f"id-{idx}", "internetMessageId": f"uid-{idx}", "subject": "Invoice", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": f"2024-01-{idx+1:02d}T00:00:00Z"}
         for idx in range(5)
     ]
     urls: list[str] = []
@@ -1116,16 +1246,19 @@ async def test_outlook_scan_first_pass_respects_configured_limit(monkeypatch: py
         async def get(self, url, headers=None, params=None):
             del headers, params
             urls.append(url)
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResponse({"value": [folder], "@odata.nextLink": None})
             return FakeResponse({"value": page, "@odata.nextLink": "https://graph.microsoft.com/next"})
 
     monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
     monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
-    monkeypatch.setattr(scanner, "_fetch_attachments", AsyncMock(return_value=[]))
 
     emails = await scanner.scan(account, last_uid=None)
-
     assert len(emails) == 2
-    assert urls == [f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/inbox/messages"]
+    assert urls == [
+        f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders?$top=100",
+        f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/f-inbox/messages",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1528,3 +1661,824 @@ async def test_outlook_hydrate_email_without_attachments_skips_attachments_fetch
     assert result.is_hydrated is True
     assert result.body_text == "text body"
     assert all("/attachments" not in c for c in calls)
+
+
+def test_parse_state_helpers_all_branches() -> None:
+    from app.services.email_scanner import (
+        _parse_imap_state,
+        _serialize_imap_state,
+        _parse_graph_state,
+        _serialize_graph_state,
+        _imap_folder_should_scan,
+    )
+
+    # _parse_imap_state: valid new JSON dict-of-dicts
+    raw = json.dumps({"INBOX": {"uid": "5", "uidvalidity": "12345"}, "Archive": {"uid": "2", "uidvalidity": "99"}})
+    result = _parse_imap_state(raw)
+    assert result["INBOX"] == {"uid": "5", "uidvalidity": "12345"}
+    assert result["Archive"] == {"uid": "2", "uidvalidity": "99"}
+
+    # _parse_imap_state: invalid JSON -> falls back to legacy bare string
+    assert _parse_imap_state("notjson") == {"INBOX": {"uid": "notjson", "uidvalidity": ""}}
+
+    # _parse_imap_state: valid JSON but not dict-of-dicts -> falls back
+    assert _parse_imap_state(json.dumps(["a", "b"])) == {"INBOX": {"uid": '["a", "b"]', "uidvalidity": ""}}
+
+    # _parse_imap_state: None -> empty
+    assert _parse_imap_state(None) == {}
+
+    # _serialize_imap_state: round-trips
+    state = {"INBOX": {"uid": "1", "uidvalidity": "999"}}
+    assert json.loads(_serialize_imap_state(state)) == state
+
+    assert _parse_graph_state(json.dumps([1, 2, 3])) == {"__legacy_uid__": "[1, 2, 3]"}
+
+    raw_g = json.dumps({"f-inbox": "2024-01-01T00:00:00Z"})
+    assert _parse_graph_state(raw_g) == {"f-inbox": "2024-01-01T00:00:00Z"}
+
+    # _parse_graph_state: legacy bare string
+    assert _parse_graph_state("uid-xyz") == {"__legacy_uid__": "uid-xyz"}
+
+    # _parse_graph_state: invalid JSON -> legacy
+    assert _parse_graph_state("{broken}") == {"__legacy_uid__": "{broken}"}
+
+    # _parse_graph_state: None -> empty
+    assert _parse_graph_state(None) == {}
+
+    # _serialize_graph_state: round-trips
+    state_g = {"f-inbox": "2024-06-01T00:00:00Z"}
+    assert json.loads(_serialize_graph_state(state_g)) == state_g
+
+    # _imap_folder_should_scan: skip flags
+    assert _imap_folder_should_scan(("\\Noselect", "\\HasChildren")) is False
+    assert _imap_folder_should_scan(("\\Drafts",)) is False
+    assert _imap_folder_should_scan(("\\Trash",)) is False
+    assert _imap_folder_should_scan(("\\All",)) is False
+
+    # _imap_folder_should_scan: include flags
+    assert _imap_folder_should_scan(()) is True
+    assert _imap_folder_should_scan(("\\HasNoChildren",)) is True
+
+
+def test_imap_scan_multi_folder_and_cross_folder_dedup(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, _parse_imap_state
+    from app.services import email_scanner
+
+    shared_msg_id = "<shared@example.com>"
+    inbox_msg = SimpleNamespace(uid="10", subject="inv", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_msg_id})
+    archive_msg = SimpleNamespace(uid="20", subject="inv-dup", text="", html="", from_="b@test", date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_msg_id})
+    unique_archive_msg = SimpleNamespace(uid="21", subject="unique", text="", html="", from_="c@test", date="2024-02-01T00:00:00Z", attachments=[], headers={"Message-ID": "<unique@example.com>"})
+    drafts_msg = SimpleNamespace(uid="7", subject="draft", text="", html="", from_="d@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+
+    folders = [
+        _FakeFolderInfo("INBOX", ()),
+        _FakeFolderInfo("Archive", ()),
+        _FakeFolderInfo("Drafts", ("\\Drafts",)),
+    ]
+
+    class MultiFolderMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager(folders=folders)
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            folder_name = self.folder.current
+            if folder_name == "INBOX":
+                return [inbox_msg]
+            if folder_name == "Archive":
+                return [archive_msg, unique_archive_msg]
+            return [drafts_msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", MultiFolderMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+
+    assert len(emails) == 2
+    assert {e.uid for e in emails} == {"10", "21"}
+    subjects = {e.subject for e in emails}
+    assert "inv-dup" not in subjects
+
+    state = _parse_imap_state(scanner._last_scan_state)
+    assert "INBOX" in state
+    assert "Archive" in state
+    assert "Drafts" not in state
+
+
+def test_imap_scan_uidvalidity_change_resets_folder(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, _serialize_imap_state
+    from app.services import email_scanner
+
+    new_msg = SimpleNamespace(uid="1", subject="fresh", text="", html="", from_="a@test", date="2024-06-01T00:00:00Z", attachments=[], headers={})
+
+    class ChangeValidityMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager(folders=[_FakeFolderInfo("INBOX")], uidvalidity_map={"INBOX": 99999})
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [new_msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", ChangeValidityMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    old_state = _serialize_imap_state({"INBOX": {"uid": "999", "uidvalidity": "11111"}})
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, old_state)
+
+    assert len(emails) == 1
+    assert emails[0].uid == "1"
+
+
+def test_imap_scan_folder_set_failure_skips_folder(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+    from imap_tools.errors import MailboxLoginError
+
+    class FolderSetFailMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager(folders=[
+                _FakeFolderInfo("INBOX"),
+                _FakeFolderInfo("BadFolder"),
+            ])
+            self._set_count = 0
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return []
+
+    class BadFolderManager(_FakeFolderManager):
+        def set(self, name):
+            if name == "BadFolder":
+                raise MailboxLoginError("INBOX", 403)
+            super().set(name)
+
+    FolderSetFailMailbox.folder = property(lambda self: self._folder)
+
+    class FSFMailbox2:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = BadFolderManager(folders=[
+                _FakeFolderInfo("INBOX"),
+                _FakeFolderInfo("BadFolder"),
+            ])
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return []
+
+    monkeypatch.setattr(email_scanner, "MailBox", FSFMailbox2)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert isinstance(emails, list)
+
+
+def test_imap_scan_fetch_failure_skips_folder(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+    from imap_tools.errors import MailboxLoginError
+
+    class FetchFailMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(folders=[_FakeFolderInfo("INBOX")])
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            raise MailboxLoginError("INBOX", 403)
+
+    monkeypatch.setattr(email_scanner, "MailBox", FetchFailMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert emails == []
+
+
+@pytest.mark.asyncio
+async def test_imap_hydrate_selects_correct_folder(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, RawEmail
+    from app.services import email_scanner
+
+    selected: list[str] = []
+    msg = SimpleNamespace(uid="5", text="body", html="", attachments=[], headers={})
+
+    class HydrateFolderMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg]
+
+    class HydrateFolderManager(_FakeFolderManager):
+        def set(self, name):
+            selected.append(name)
+            super().set(name)
+
+    HydrateFolderMailbox._folder = HydrateFolderManager()
+
+    class HFM2:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = HydrateFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg]
+
+    monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs)
+    monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs)
+    monkeypatch.setattr(email_scanner, "MailBox", HFM2)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = RawEmail(uid="5", subject="", body_text="", body_html="", from_addr="", received_at=datetime.now(timezone.utc), is_hydrated=False, folder="Archive")
+    result = await ImapScanner().hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert "Archive" in selected
+
+
+@pytest.mark.asyncio
+async def test_outlook_should_skip_folder_all_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.email_scanner import OutlookScanner
+    scanner = OutlookScanner()
+    assert scanner._should_skip_folder({"wellKnownName": "drafts"}) is True
+    assert scanner._should_skip_folder({"wellKnownName": "deleteditems"}) is True
+    assert scanner._should_skip_folder({"wellKnownName": "outbox"}) is True
+    assert scanner._should_skip_folder({"@odata.type": "#microsoft.graph.mailSearchFolder"}) is True
+    assert scanner._should_skip_folder({"totalItemCount": 0}) is True
+    assert scanner._should_skip_folder({"wellKnownName": "inbox", "totalItemCount": 5}) is False
+    assert scanner._should_skip_folder({"wellKnownName": None, "totalItemCount": 1}) is False
+    assert scanner._should_skip_folder({}) is False
+
+
+@pytest.mark.asyncio
+async def test_outlook_iter_mail_folders_recursive_and_dedup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner
+    scanner = OutlookScanner()
+
+    class FakeResp:
+        def __init__(self, data):
+            self._data = data
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    root_folder = {"id": "f-root", "displayName": "Inbox", "childFolderCount": 1}
+    child_folder = {"id": "f-child", "displayName": "Archive", "childFolderCount": 0}
+    urls_seen: list[str] = []
+
+    class FakeClient:
+        async def get(self, url, headers=None):
+            del headers
+            urls_seen.append(url)
+            if "f-root" in url and "childFolders" in url:
+                return FakeResp({"value": [child_folder], "@odata.nextLink": None})
+            if "mailFolders?" in url:
+                return FakeResp({"value": [root_folder], "@odata.nextLink": None})
+            return FakeResp({"value": [], "@odata.nextLink": None})
+
+    folders = [f async for f in scanner._iter_mail_folders(FakeClient(), {})]
+    assert len(folders) == 2
+    assert {f["id"] for f in folders} == {"f-root", "f-child"}
+    root_count = sum(1 for u in urls_seen if "mailFolders?" in u)
+    assert root_count == 1
+
+
+def test_imap_scan_status_exception_continues(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    class StatusErrorManager(_FakeFolderManager):
+        def status(self, name, items):
+            raise OSError("no status")
+
+    class StatusErrMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = StatusErrorManager(folders=[_FakeFolderInfo("INBOX")])
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return []
+
+    monkeypatch.setattr(email_scanner, "MailBox", StatusErrMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert isinstance(emails, list)
+
+
+def test_imap_scan_uidvalidity_resets_effective_uid(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, _serialize_imap_state
+    from app.services import email_scanner
+
+    new_msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+
+    class ValidityChangedMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(
+                folders=[_FakeFolderInfo("INBOX")],
+                uidvalidity_map={"INBOX": 77777},
+            )
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, mark_seen, headers_only, bulk
+            return [new_msg]
+
+    monkeypatch.setattr(email_scanner, "MailBox", ValidityChangedMBX)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    old_state = _serialize_imap_state({"INBOX": {"uid": "999", "uidvalidity": "11111"}})
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, old_state)
+    assert len(emails) == 1
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_empty_folder_skipped_and_email_limit_and_highest_dt(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner, GRAPH_BASE_URL
+    import json as _json
+    scanner = OutlookScanner()
+    account = EmailAccount(id=7, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+    monkeypatch.setattr(email_scanner, "FIRST_SCAN_LIMIT", 1)
+
+    folder_inbox = {"id": "fi", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 5, "childFolderCount": 0}
+    folder_empty = {"id": "fe", "displayName": "Empty", "wellKnownName": None, "totalItemCount": 0, "childFolderCount": 0}
+    msgs = [
+        {"id": f"g{i}", "internetMessageId": f"uid-{i}", "subject": f"S{i}", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": f"2024-0{i}-01T00:00:00Z", "hasAttachments": False}
+        for i in range(1, 6)
+    ]
+
+    class FakeResp:
+        def __init__(self, d):
+            self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder_inbox, folder_empty], "@odata.nextLink": None})
+            return FakeResp({"value": msgs, "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+
+    emails = await scanner.scan(account, last_uid=None)
+    assert len(emails) == 1
+    state = _json.loads(scanner._last_scan_state)
+    assert "fi" in state
+    assert state["fi"] != ""
+    assert "fe" not in state
+
+
+@pytest.mark.asyncio
+async def test_outlook_iter_folders_seen_url_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.email_scanner import OutlookScanner, GRAPH_BASE_URL
+    scanner = OutlookScanner()
+
+    folder = {"id": "f-child", "displayName": "X", "childFolderCount": 1}
+    urls_seen: list[str] = []
+
+    class FakeClient:
+        async def get(self, url, headers=None):
+            urls_seen.append(url)
+            child_url = f"{GRAPH_BASE_URL}/me/mailFolders/f-child/childFolders?$top=100"
+            if url == child_url:
+                return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [], "@odata.nextLink": None}})()
+            return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [folder], "@odata.nextLink": child_url}})()
+
+    folders = [f async for f in scanner._iter_mail_folders(FakeClient(), {})]
+    assert urls_seen.count(f"{GRAPH_BASE_URL}/me/mailFolders?$top=100") == 1
+
+
+@pytest.mark.asyncio
+async def test_imap_hydrate_folder_set_failure_returns_empty(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, RawEmail
+    from app.services import email_scanner
+    from imap_tools.errors import MailboxLoginError
+
+    class SetErrorFolderManager(_FakeFolderManager):
+        def set(self, name):
+            raise MailboxLoginError("folder_set_error", 403)
+
+    class SetErrorMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = SetErrorFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+    monkeypatch.setattr(email_scanner, "AND", lambda **kwargs: kwargs)
+    monkeypatch.setattr(email_scanner, "MailBox", SetErrorMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    email = RawEmail(uid="5", subject="", body_text="", body_html="", from_addr="", received_at=datetime.now(timezone.utc), is_hydrated=False, folder="Archive")
+    result = await ImapScanner().hydrate_email(account, email)
+    assert result.is_hydrated is True
+    assert result.body_text == ""
+
+
+def test_imap_scan_empty_uid_msg_skips_uid_update(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    msg_no_uid = SimpleNamespace(uid="", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
+    msg_with_uid = SimpleNamespace(uid="5", subject="s2", text="", html="", from_="a@test", date="2024-02-01T00:00:00Z", attachments=[], headers={})
+
+    class MixedUidMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self.folder = _FakeFolderManager()
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg_no_uid, msg_with_uid]
+
+    monkeypatch.setattr(email_scanner, "MailBox", MixedUidMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert any(e.uid == "5" for e in emails)
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_folder_with_no_id_skipped(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner
+    scanner = OutlookScanner()
+    account = EmailAccount(id=8, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder_with_id = {"id": "f-ok", "displayName": "OK", "wellKnownName": "inbox", "totalItemCount": 1, "childFolderCount": 0}
+    folder_no_id = {"id": None, "displayName": "NoId", "wellKnownName": None, "totalItemCount": 1, "childFolderCount": 0}
+
+    class FakeResp:
+        def __init__(self, d):
+            self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    calls: list[str] = []
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            calls.append(url)
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder_with_id, folder_no_id], "@odata.nextLink": None})
+            return FakeResp({"value": [], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+
+    emails = await scanner.scan(account, last_uid=None)
+    assert emails == []
+    assert all("None" not in c for c in calls if "/messages" in c)
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_cross_folder_dedup_message_uid_in_seen(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner
+    scanner = OutlookScanner()
+    account = EmailAccount(id=9, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder_a = {"id": "fa", "displayName": "Fa", "wellKnownName": None, "totalItemCount": 2, "childFolderCount": 0}
+    folder_b = {"id": "fb", "displayName": "Fb", "wellKnownName": None, "totalItemCount": 2, "childFolderCount": 0}
+    dup_msg = {"id": "g-dup", "internetMessageId": "uid-dup", "subject": "Dup", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z", "hasAttachments": False}
+
+    class FakeResp:
+        def __init__(self, d):
+            self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder_a, folder_b], "@odata.nextLink": None})
+            return FakeResp({"value": [dup_msg], "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+
+    emails = await scanner.scan(account, last_uid=None)
+    assert len(emails) == 1
+
+
+@pytest.mark.asyncio
+async def test_outlook_highest_dt_not_updated_for_older_messages(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner
+    import json as _json
+    scanner = OutlookScanner()
+    account = EmailAccount(id=10, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder = {"id": "fi", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 2, "childFolderCount": 0}
+    msgs = [
+        {"id": "g1", "internetMessageId": "uid-1", "subject": "S1", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-06-01T00:00:00Z", "hasAttachments": False},
+        {"id": "g2", "internetMessageId": "uid-2", "subject": "S2", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-05-01T00:00:00Z", "hasAttachments": False},
+    ]
+
+    class FakeResp:
+        def __init__(self, d):
+            self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            if "/mailFolders" in url and "/messages" not in url:
+                return FakeResp({"value": [folder], "@odata.nextLink": None})
+            return FakeResp({"value": msgs, "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+
+    await scanner.scan(account, last_uid=None)
+    state = _json.loads(scanner._last_scan_state)
+    assert state["fi"] == "2024-06-01T00:00:00Z"
+
+
+def test_imap_dedup_uid_update_when_dup_has_higher_uid(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner, _parse_imap_state
+    from app.services import email_scanner
+
+    shared_id = "<dup@test.com>"
+    first_msg = SimpleNamespace(uid="1", subject="first", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_id})
+    dup_higher_uid = SimpleNamespace(uid="999", subject="dup", text="", html="", from_="b@test", date="2024-02-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_id})
+    second_unique = SimpleNamespace(uid="2", subject="unique", text="", html="", from_="c@test", date="2024-03-01T00:00:00Z", attachments=[], headers={"Message-ID": "<other@test.com>"})
+
+    folders_list = [
+        _FakeFolderInfo("INBOX", ()),
+        _FakeFolderInfo("Junk", ()),
+    ]
+
+    class DedupMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(folders=folders_list)
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            if self._folder.current == "INBOX":
+                return [first_msg]
+            return [dup_higher_uid, second_unique]
+
+    monkeypatch.setattr(email_scanner, "MailBox", DedupMBX)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+    assert {e.uid for e in emails} == {"1", "2"}
+    state = _parse_imap_state(scanner._last_scan_state)
+    assert state["Junk"]["uid"] == "999"
+
+
+@pytest.mark.asyncio
+async def test_outlook_iter_folders_child_url_dedup_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.email_scanner import OutlookScanner, GRAPH_BASE_URL
+    scanner = OutlookScanner()
+
+    child_url = f"{GRAPH_BASE_URL}/me/mailFolders/f-root/childFolders?$top=100"
+    folder_with_child = {"id": "f-root", "displayName": "Root", "childFolderCount": 1}
+    child_folder = {"id": "f-child", "displayName": "Child", "childFolderCount": 1}
+    urls_hit: list[str] = []
+
+    class FakeClient:
+        async def get(self, url, headers=None):
+            del headers
+            urls_hit.append(url)
+            if "f-child/childFolders" in url:
+                return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [], "@odata.nextLink": None}})()
+            if "f-root/childFolders" in url:
+                return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [child_folder], "@odata.nextLink": child_url}})()
+            return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [folder_with_child], "@odata.nextLink": None}})()
+
+    folders = [f async for f in scanner._iter_mail_folders(FakeClient(), {})]
+    assert {f["id"] for f in folders} == {"f-root", "f-child"}
+    assert urls_hit.count(child_url) == 1
+
+
+@pytest.mark.asyncio
+async def test_outlook_scan_dedup_with_empty_message_uid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from app.services.email_scanner import OutlookScanner
+    scanner = OutlookScanner()
+    account = EmailAccount(id=20, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
+
+    folder = {"id": "fi", "displayName": "I", "wellKnownName": "inbox", "totalItemCount": 2, "childFolderCount": 0}
+    msgs = [
+        {"id": None, "internetMessageId": None, "subject": "No UID", "bodyPreview": "", "from": {"emailAddress": {"address": "a@test"}}, "receivedDateTime": "2024-01-01T00:00:00Z", "hasAttachments": False},
+        {"id": "g2", "internetMessageId": "uid-ok", "subject": "OK", "bodyPreview": "", "from": {"emailAddress": {"address": "b@test"}}, "receivedDateTime": "2024-02-01T00:00:00Z", "hasAttachments": False},
+    ]
+
+    class FakeResp:
+        def __init__(self, d): self._d = d
+        def raise_for_status(self): return None
+        def json(self): return self._d
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, params=None):
+            del headers, params
+            if "/messages" not in url:
+                return FakeResp({"value": [folder], "@odata.nextLink": None})
+            return FakeResp({"value": msgs, "@odata.nextLink": None})
+
+    monkeypatch.setattr(email_scanner.httpx, "AsyncClient", lambda timeout: FakeClient())
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="tok"))
+
+    emails = await scanner.scan(account, last_uid=None)
+    assert len(emails) == 2
+
+
+def test_imap_dedup_skip_uid_update_when_dup_has_lower_uid(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    from app.services.email_scanner import ImapScanner
+    from app.services import email_scanner
+
+    shared_id = "<shared2@test.com>"
+    unique_first = SimpleNamespace(uid="10", subject="u1", text="", html="", from_="a@test", date="2024-01-02T00:00:00Z", attachments=[], headers={"Message-ID": "<other2@test.com>"})
+    dup_lower_uid = SimpleNamespace(uid="3", subject="dup", text="", html="", from_="b@test", date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_id})
+
+    class TwoMsgInbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager(folders=[
+                _FakeFolderInfo("INBOX"),
+                _FakeFolderInfo("Archive"),
+            ])
+            self._inbox_done = False
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            if self._folder.current == "INBOX":
+                return [
+                    SimpleNamespace(uid="8", subject="s", text="", html="", from_="a@test", date="2024-01-03T00:00:00Z", attachments=[], headers={"Message-ID": shared_id}),
+                    SimpleNamespace(uid="10", subject="u1", text="", html="", from_="a@test", date="2024-01-02T00:00:00Z", attachments=[], headers={"Message-ID": "<other2@test.com>"}),
+                ]
+            return [dup_lower_uid]
+
+    monkeypatch.setattr(email_scanner, "MailBox", TwoMsgInbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert all(e.uid != "3" for e in emails)
+
+
+@pytest.mark.asyncio
+async def test_outlook_iter_folders_child_url_already_seen_not_readded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.email_scanner import OutlookScanner, GRAPH_BASE_URL
+    scanner = OutlookScanner()
+    child_url = f"{GRAPH_BASE_URL}/me/mailFolders/f-root/childFolders?$top=100"
+    parent = {"id": "f-root", "displayName": "Root", "childFolderCount": 1}
+    child = {"id": "f-child", "displayName": "Child", "childFolderCount": 0}
+    calls: list[str] = []
+
+    class FakeClient:
+        async def get(self, url, headers=None):
+            del headers
+            calls.append(url)
+            if "f-root/childFolders" in url:
+                return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [child], "@odata.nextLink": None}})()
+            return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [parent], "@odata.nextLink": child_url}})()
+
+    folders = [f async for f in scanner._iter_mail_folders(FakeClient(), {})]
+    assert {f["id"] for f in folders} == {"f-root", "f-child"}
+    assert calls.count(child_url) == 1

@@ -697,7 +697,11 @@ async def scan_all_accounts() -> None:
                                 last_uid = email_result.last_uid
                             await sp.inc_emails_processed()
 
-                        if last_uid and last_uid != account.last_scan_uid:
+                        scan_state = getattr(scanner, "_last_scan_state", None)
+                        if scan_state is not None:
+                            if scan_state != account.last_scan_uid:
+                                account.last_scan_uid = scan_state
+                        elif last_uid and last_uid != account.last_scan_uid:
                             account.last_scan_uid = last_uid
 
                         log.invoices_found = invoices_added
