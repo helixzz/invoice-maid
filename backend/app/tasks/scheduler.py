@@ -38,6 +38,62 @@ _email_semaphore = asyncio.Semaphore(EMAIL_CONCURRENCY)
 HYDRATION_CONCURRENCY = 5
 _hydration_semaphore = asyncio.Semaphore(HYDRATION_CONCURRENCY)
 
+LINK_HOST_BLOCKLIST = frozenset({
+    "linktrace.triggerdelivery.com",
+    "click.linksynergy.com",
+    "beacon.mailchimp.com",
+    "trk.klclick.com",
+    "t.e.apple.com",
+    "click.e.usps.com",
+    "email.analytics",
+    "click.mail",
+    "tracking.pixel",
+})
+
+LINK_PATH_BLOCKLIST_SUBSTRINGS = frozenset({
+    "/unsubscribe",
+    "/track/",
+    "/trk/",
+    "/open/",
+    "/click?",
+    "/beacon",
+    "/pixel",
+})
+
+ACCEPTABLE_INVOICE_CONTENT_TYPES = frozenset({
+    "application/pdf",
+    "application/octet-stream",
+    "application/xml",
+    "text/xml",
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/ofd",
+})
+
+
+def _is_blocked_download_url(url: str) -> bool:
+    """Filter URLs that are almost certainly tracking pixels, unsubscribe links,
+    or analytics beacons rather than invoice documents. Avoids spending a download
+    round-trip + LLM extraction + partial PDF-parse attempt on content we know
+    is not an invoice."""
+    lowered = url.lower()
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+    except ValueError:  # pragma: no cover
+        return True
+    host = (parsed.netloc or "").lower()
+    for blocked_host in LINK_HOST_BLOCKLIST:
+        if blocked_host in host:
+            return True
+    path_and_query = (parsed.path or "") + "?" + (parsed.query or "")
+    for blocked_path in LINK_PATH_BLOCKLIST_SUBSTRINGS:
+        if blocked_path in path_and_query.lower():
+            return True
+    if lowered.endswith((".gif", ".jpg", ".jpeg", ".png", ".webp", ".ico", ".svg")):
+        return True
+    return False
+
 
 @dataclass
 class _EmailResult:
@@ -65,10 +121,22 @@ def _guess_filename_from_link(url: str, content_type: str | None) -> str:
 
 
 async def _download_linked_invoice(url: str) -> tuple[str, bytes] | None:
+    if _is_blocked_download_url(url):
+        logger.info("Blocked non-invoice URL (tracker/beacon/unsubscribe): %s", url)
+        return None
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
             response = await client.get(url)
             response.raise_for_status()
+            content_type_raw = (response.headers.get("content-type") or "").lower()
+            content_type = content_type_raw.split(";", 1)[0].strip()
+            if content_type and content_type not in ACCEPTABLE_INVOICE_CONTENT_TYPES:
+                logger.info(
+                    "Rejected download %s: Content-Type=%r is not an invoice file format",
+                    url,
+                    content_type,
+                )
+                return None
             filename = _guess_filename_from_link(url, response.headers.get("content-type"))
             return filename, response.content
     except Exception as exc:

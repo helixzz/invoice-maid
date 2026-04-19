@@ -163,6 +163,16 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.1 — Released
+
+**Theme:** URL pre-download filter for tracking pixels & unsubscribe links
+
+Live v0.7.10 + v0.8.0 QQ rescan showed ~282 errors per scan coming from downloads of tracking pixels, unsubscribe links, and analytics beacons that `analyze_email` had selected as `best_download_url`. Each one consumed a full HTTP round-trip, LLM extraction attempt, and failed PDF parse. v0.8.1 adds a pre-flight URL filter (`_is_blocked_download_url`) that rejects known tracker hosts, path fragments, and image extensions before any network call, plus Content-Type validation after GET to catch HTML responses from CDN error pages. Closes the first ROADMAP known-issue (`linktrace.triggerdelivery.com downloaded as fake PDF`).
+
+See [CHANGELOG.md](CHANGELOG.md) for the full blocklist.
+
+---
+
 ## v0.8.0 — Released
 
 **Theme:** IMAP 3.35× parallel cold-scan + account page UX
@@ -216,7 +226,7 @@ Reference: see internal research findings in the v0.7.8 PR description and the f
 
 | Issue | Notes |
 |-------|-------|
-| **Email tracking pixel URLs downloaded as fake PDFs** | The body-link scanner follows all URLs in invoice-related emails, including email tracking pixels (e.g. `linktrace.triggerdelivery.com`). These return HTML/images, not PDFs. Parser fails with "No /Root object" and moves on. Fix: URL pre-filter should check Content-Type header before attempting PDF parse. |
+| ~~**Email tracking pixel URLs downloaded as fake PDFs**~~ | **Resolved in v0.8.1** via `_is_blocked_download_url` pre-flight filter + Content-Type validation. |
 | **Nuonuo e-invoice download links return QR-code HTML pages** | Chinese e-invoice platforms (`nnfp.jss.com.cn`, `fp.nuonuo.com`) serve invoice download links that redirect to interactive QR-code web pages, not direct PDF/XML downloads. The CDN/anti-crawl protection on these platforms blocks server-side download. Fix: document that scanning for this platform family requires the PDF to be attached to the email, not just linked. Alternatively, explore a browser-based fetch path or nuonuo open API. |
 | **SQLite `database is locked` under EMAIL_CONCURRENCY=50** | Pre-existing, surfaces more visibly during v0.7.5 full rescans because all folders are processed. Tune IMAP-specific concurrency or switch to WAL busy-timeout. |
 
