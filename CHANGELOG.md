@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.0] - 2026-04-19
+
+### Why this release matters
+
+Two user-reported quality issues, each small in code but meaningful in UX:
+
+1. **Account page showed raw JSON scan state**: the `Last scan UID:` field on the email accounts page was rendering the raw `{"INBOX": {"uid": "40993", ...}, ...}` blob — up to 491+ characters for a 5-folder mailbox — rather than something a human can actually read. Now shows `5 folders · 47,849 messages · UID 40993`.
+
+2. **IMAP cold-scan performance**: live benchmarks against QQ Mail (`imap.qq.com`) proved that 4 parallel IMAP connections deliver a measured **3.35× cold-scan speedup** (32.2 msg/s vs 9.6 msg/s single-connection) at the QQ server's throughput ceiling (~32 msg/s regardless of protocol tricks tried). This was confirmed empirically by testing 1/2/3/4/5 connections, pipelining, header-minimization, and per-message parsing. QQ is server-processing-bound, not bandwidth-bound.
+
+### Added
+
+- **`IMAP_FETCH_WORKERS = 4` constant** — when a folder has ≥ `IMAP_PARALLEL_THRESHOLD = 500` new UIDs to fetch, the scanner opens 4 parallel IMAP connections (via `concurrent.futures.ThreadPoolExecutor`), partitions the UID list across them, and merges results. All 4 workers use the same credentials and reconnect independently. Expected cold-scan improvement: 3.35× on QQ; 2–5× on other providers depending on their per-connection throughput cap.
+- **Safe fallback** — if any parallel worker raises or returns an error string, the scanner logs a warning and retries the folder on the primary single connection. On servers with tight connection limits (e.g. <= 2 concurrent sessions), the fallback fires silently without crashing.
+- **`_fetch_folder_worker` helper** — module-level function that runs in the thread pool, opens its own `MailBox` context, filters to its UID partition, and returns raw message dicts. Shares the same `IMAP_CONNECTION_ERRORS` catch, `mark_seen=False`, and `_set_imap_keepalive` as the main scan path.
+- **Compact scan-state summary** on the email accounts page — `formatScanState()` and `parseScanState()` helpers in `SettingsView.vue` parse the JSON `last_scan_uid` and render `5 folders · 47,849 messages · UID 40993` instead of the raw blob. Raw JSON is still accessible as a tooltip (`title` attribute) for debugging. No backend changes.
+
+### Changed
+
+- **Benchmark findings** (document-only, no code): header minimization (`BODY.PEEK[HEADER.FIELDS (...)]` vs `BODY.PEEK[HEADER]`) provides no throughput benefit on QQ because QQ's IMAP response time scales with server processing cost, not bytes-on-wire. Pipelining on a single connection (depth 4) yields 1.66× vs baseline but is strictly dominated by 2 parallel connections at 2.38×. 4-conn + pipelining REGRESSES to 1.37× because QQ's combined in-flight quota kicks in.
+
+### Tests
+
+- 406 tests, 100% coverage. New tests for the parallel path: over-threshold triggers parallel, worker error string causes fallback, worker `Exception` causes fallback, `since` filter applied inside worker, dedup works across parallel workers, `FIRST_SCAN_LIMIT` respected via uid slicing, interim progress published during large parallel fetch, `IMAP_FETCH_WORKERS=1` uses single-connection path directly, messages with missing `Message-ID` handled, `_fetch_folder_worker` unit tests for error path and uid-list membership.
+
 ## [0.7.10] - 2026-04-19
 
 ### Why this release matters — CRITICAL CORRECTNESS HOTFIX

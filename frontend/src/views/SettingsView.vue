@@ -555,6 +555,43 @@ const formatDate = (dateStr: string | null) => {
   return new Date(dateStr).toLocaleString()
 }
 
+const parseScanState = (raw: string | null) => {
+  if (!raw) {
+    return { folders: 0, totalMessages: 0, maxUid: 0 }
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return { folders: 0, totalMessages: 0, maxUid: 0 }
+    }
+    const entries = Object.values(parsed as Record<string, any>)
+    let totalMessages = 0
+    let maxUid = 0
+    for (const value of entries) {
+      if (value && typeof value === 'object') {
+        totalMessages += Number(value.messages || 0)
+        maxUid = Math.max(maxUid, Number(value.uid || 0))
+      }
+    }
+    return {
+      folders: Object.keys(parsed as Record<string, any>).length,
+      totalMessages,
+      maxUid,
+    }
+  } catch {
+    return { folders: 0, totalMessages: 0, maxUid: 0 }
+  }
+}
+
+const formatScanState = (raw: string | null) => {
+  if (!raw) return 'Never scanned'
+  const summary = parseScanState(raw)
+  if (!summary.folders) return 'Scan state unavailable'
+  const messagePart = summary.totalMessages > 0 ? `${summary.totalMessages.toLocaleString()} messages` : '0 messages'
+  const uidPart = summary.maxUid > 0 ? `UID ${summary.maxUid}` : 'UID unknown'
+  return `${summary.folders} folders · ${messagePart} · ${uidPart}`
+}
+
 onMounted(() => {
   fetchAccounts()
   fetchLogs()
@@ -672,8 +709,8 @@ onMounted(() => {
                   <div class="text-sm text-slate-500">
                     {{ account.username }}
                   </div>
-                  <div class="text-xs text-slate-400 mt-2">
-                    Last scan UID: {{ account.last_scan_uid || 'None' }}
+                  <div class="text-xs text-slate-400 mt-2" :title="account.last_scan_uid || 'Never scanned'">
+                    Scan state: {{ formatScanState(account.last_scan_uid) }}
                   </div>
                 </div>
                 <div class="flex items-center space-x-4">
