@@ -163,6 +163,25 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.4 — Released
+
+**Theme:** QQ Mail actually works now — evidence-based IMAP tuning (initial_folder=None, single-connection, bulk=50, UID-range SEARCH, NOOP keepalive)
+
+Every QQ scan since v0.7.10 showed `emails_scanned=0` even after v0.8.2/v0.8.3's timeout bounding: the scans finished in ~40 min (v0.8.3) or hung 44 min (v0.8.2) without ever successfully fetching a single message. Triangulated diagnosis from a local probe against imap.qq.com + explore agent (code audit) + librarian agent (imap-tools docs, QQ help pages, Chinese dev forums) converged on:
+
+1. **imap-tools' `MailBox.login()` implicitly calls `SELECT INBOX`** which on a 35k-msg mailbox takes 15-17s on QQ. Our 15s connect timeout caught the login itself before it completed — every worker and the main session died before the first FETCH was attempted. Fix: pass `initial_folder=None` to every `.login()` call (4 sites). This single change unblocks all non-QQ providers too.
+2. **QQ enforces a per-account connection limit of ~1-2 concurrent sessions.** Our 4 parallel workers reliably triggered `NO [b'System busy!']` and downstream SSL: BAD_LENGTH corruption. Fix: QQ-specific `QQ_FETCH_WORKERS=1` forces the single-connection path.
+3. **`bulk=500` FETCH on 35k-msg INBOX times out server-side 30-60s before any data returns.** Fix: `QQ_BULK_SIZE=50` + `QQ_INTER_BATCH_SLEEP_SECONDS=1s` + `NOOP` keepalive every 10 batches.
+4. **`SEARCH ALL` on large QQ folders may be truncated or time out.** Fix: when a saved highest-UID baseline exists, `_build_qq_fetch_criteria` emits `AND(uid=U(last+1, '*'))` so QQ's server only searches new messages.
+
+v0.8.4 adds a new `_is_qq_imap(account, host=None)` detection helper (matches both `account.type=='qq'` and host `imap.qq.com` / `imap.exmail.qq.com`) and gates all QQ-specific behavior on it. Generic IMAP providers remain on the fast 4-worker parallel path. Per-account socket read timeout is now overridable: QQ uses 180s (its SELECT/SEARCH are legitimately slow), generic stays 120s.
+
+Expected result: QQ scans go from `emails_scanned=0` to actually retrieving messages at QQ's per-IP throughput ceiling (~32 msg/s per v0.8.1 benchmarks). Cold scan of 35k-msg INBOX: ~18-20 min wall clock. Incremental scans afterward: seconds.
+
+See [CHANGELOG.md](CHANGELOG.md#084---2026-04-20).
+
+---
+
 ## v0.8.3 — Released
 
 **Theme:** Make v0.8.2's timeouts actually observable — fix ThreadPoolExecutor `with`-block cleanup

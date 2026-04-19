@@ -31,6 +31,7 @@ from msal.exceptions import MsalServiceError
 from cryptography.fernet import Fernet
 from imap_tools import AND, MailBox
 from imap_tools.errors import MailboxFetchError, MailboxLoginError
+from imap_tools.query import UidRange as U
 
 from app.config import get_settings
 from app.models import EmailAccount
@@ -57,6 +58,40 @@ IMAP_PARALLEL_WORKER_TIMEOUT: float = 300.0
 # within seconds. We do a single short-sleep retry on the parallel path before
 # falling back to single-connection.
 IMAP_PARALLEL_RETRY_DELAY_SECONDS: float = 5.0
+
+# QQ Mail and other Chinese providers (163, QQ Exmail) enforce much tighter
+# per-account concurrent-connection limits (observed ~1-2 simultaneous
+# sessions; 4 parallel workers reliably trigger `NO [b'System busy!']` and
+# subsequent SSL BAD_LENGTH corruption). They are also slow enough that a
+# naive `mailbox.fetch(criteria='ALL', bulk=500)` on a 35k-message INBOX
+# times out server-side (~30-60s) before any data returns. The v0.8.3
+# production validation showed emails_scanned=0 across every QQ scan despite
+# all v0.8.2/v0.8.3 timeout defenses firing correctly — the scanner never
+# actually completed a single FETCH.
+#
+# QQ_* constants below encode the empirically-safe subset found by local
+# probes against imap.qq.com:
+#   - SELECT INBOX on a 35k-msg mailbox takes 15-17s on QQ, so we MUST
+#     pass initial_folder=None to MailBox().login() to avoid imap-tools'
+#     implicit auto-SELECT happening inside login (which blows past
+#     IMAP_CONNECT_TIMEOUT). Applied to all providers for safety — there is
+#     no benefit to the auto-SELECT because our scan loop explicitly calls
+#     mailbox.folder.set(folder_name) per-folder.
+#   - 1 connection (no parallel). Observed: 2 workers still trip QQ; 1 works.
+#   - bulk=50 instead of 500. Avoids QQ's server-side per-FETCH timeout.
+#   - Inter-batch sleep + periodic NOOP keepalive. Keeps us under QQ's rate
+#     limit and prevents idle-timeout drops.
+#   - Higher read timeout. QQ's SELECT/SEARCH/STATUS responses legitimately
+#     take 15-25 seconds each on a large mailbox.
+QQ_ACCOUNT_TYPES: frozenset[str] = frozenset({"qq"})
+QQ_IMAP_HOSTS: frozenset[str] = frozenset({"imap.qq.com", "imap.exmail.qq.com"})
+QQ_FETCH_WORKERS: int = 1
+QQ_BULK_SIZE: int = 50
+QQ_INTER_BATCH_SLEEP_SECONDS: float = 1.0
+QQ_NOOP_EVERY_N_BATCHES: int = 10
+QQ_IMAP_READ_TIMEOUT: float = 180.0
+QQ_RECONNECT_MAX_RETRIES: int = 3
+QQ_RECONNECT_BACKOFF_BASE_SECONDS: float = 10.0
 
 IMAP_CONNECTION_ERRORS = (
     OSError,
@@ -207,6 +242,17 @@ def decrypt_password(encrypted: str | None, secret: str | None = None) -> str:
     return fernet.decrypt(encrypted.encode()).decode()
 
 
+def _is_qq_imap(account: EmailAccount | None, host: str | None = None) -> bool:
+    """True for IMAP accounts that must use QQ's conservative settings.
+    Matches either the account type or the IMAP host (covers Exmail and
+    any users who manually picked type='imap' for their QQ account)."""
+    account_type = str(getattr(account, "type", "") or "").lower() if account is not None else ""
+    if account_type in QQ_ACCOUNT_TYPES:
+        return True
+    resolved_host = str(host or (getattr(account, "host", "") if account is not None else "") or "").lower()
+    return resolved_host in QQ_IMAP_HOSTS
+
+
 def _extract_urls(*body_parts: str) -> list[str]:
     seen: set[str] = set()
     urls: list[str] = []
@@ -236,7 +282,7 @@ def _normalize_datetime(value: datetime | str | None) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _set_imap_keepalive(imap_client: Any) -> None:
+def _set_imap_keepalive(imap_client: Any, read_timeout: float | None = None) -> None:
     """Enable TCP keepalive AND a socket read timeout on the IMAP socket.
 
     TCP keepalive alone (v0.7.8) only detects silent peer disappearance via
@@ -248,7 +294,9 @@ def _set_imap_keepalive(imap_client: Any) -> None:
 
     A per-recv timeout via ``sock.settimeout()`` is the only reliable way to
     bound those stalls. `imap-tools` MailBox has no read-timeout kwarg, so we
-    set it on the underlying socket ourselves.
+    set it on the underlying socket ourselves. QQ legitimately needs a higher
+    read timeout (SELECT/SEARCH on 35k-msg mailboxes can take 15-25s each),
+    so callers pass read_timeout=QQ_IMAP_READ_TIMEOUT for QQ-type accounts.
     Safe no-op on platforms that don't expose TCP_KEEPIDLE."""
     if imap_client is None:
         return
@@ -257,7 +305,7 @@ def _set_imap_keepalive(imap_client: Any) -> None:
     except Exception:
         return
     try:
-        sock.settimeout(IMAP_READ_TIMEOUT)
+        sock.settimeout(read_timeout if read_timeout is not None else IMAP_READ_TIMEOUT)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         if hasattr(socket, "TCP_KEEPIDLE"):
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
@@ -360,6 +408,27 @@ def _serialize_graph_state(state: dict[str, str]) -> str:
     return json.dumps(state, ensure_ascii=False)
 
 
+def _build_qq_fetch_criteria(effective_prev_uid: str, options: ScanOptions | None) -> Any:
+    """For QQ, ALWAYS restrict the server-side SEARCH to a UID range. A bare
+    `SEARCH ALL` on a 35k-message INBOX makes QQ's IMAP server time out
+    (observed server-side ~30-60s) before any UIDs are returned. When we
+    have a saved highest-UID baseline we fetch `UID last+1:*`; on a first
+    scan with no baseline we still scan ALL but via the generator-safe
+    bulk=QQ_BULK_SIZE path so batches stay small."""
+    if effective_prev_uid and effective_prev_uid.isdigit():
+        next_uid = str(int(effective_prev_uid) + 1)
+        if options is not None and (options.unread_only or options.since is not None):
+            kwargs: dict[str, Any] = {"uid": U(next_uid, "*")}
+            if options.unread_only:
+                kwargs["seen"] = False
+            if options.since is not None:
+                local_since = options.since.astimezone() if options.since.tzinfo else options.since
+                kwargs["date_gte"] = local_since.date()
+            return AND(**kwargs)
+        return AND(uid=U(next_uid, "*"))
+    return _build_imap_criteria(options)
+
+
 def _fetch_folder_worker(
     host: str,
     port: int,
@@ -379,14 +448,19 @@ def _fetch_folder_worker(
     results: list[dict[str, Any]] = []
     error_msg = ""
     try:
-        with MailBox(host, port=port, timeout=IMAP_CONNECT_TIMEOUT).login(username, password) as mb:
-            _set_imap_keepalive(getattr(mb, "client", None))
+        worker_is_qq = _is_qq_imap(None, host=host)
+        worker_read_timeout = QQ_IMAP_READ_TIMEOUT if worker_is_qq else IMAP_READ_TIMEOUT
+        worker_bulk = QQ_BULK_SIZE if worker_is_qq else 500
+        with MailBox(host, port=port, timeout=IMAP_CONNECT_TIMEOUT).login(
+            username, password, initial_folder=None
+        ) as mb:
+            _set_imap_keepalive(getattr(mb, "client", None), read_timeout=worker_read_timeout)
             mb.folder.set(folder_name)
             for msg in mb.fetch(
                 criteria,
                 mark_seen=False,
                 headers_only=True,
-                bulk=500,
+                bulk=worker_bulk,
                 reverse=True,
             ):
                 msg_uid = cast(str, getattr(msg, "uid", "") or "")
@@ -433,6 +507,10 @@ class ImapScanner(BaseEmailScanner):
         password = decrypt_password(account.password_encrypted)
         emails: list[RawEmail] = []
         seen_message_ids: set[str] = set()
+        is_qq = _is_qq_imap(account)
+        read_timeout = QQ_IMAP_READ_TIMEOUT if is_qq else IMAP_READ_TIMEOUT
+        bulk_size = QQ_BULK_SIZE if is_qq else 500
+        max_workers = QQ_FETCH_WORKERS if is_qq else IMAP_FETCH_WORKERS
 
         if options is not None and options.reset_state:
             state_in: dict[str, dict[str, str]] = {}
@@ -449,8 +527,10 @@ class ImapScanner(BaseEmailScanner):
                     logger.debug("progress_callback raised, ignoring: %s", exc)
 
         try:
-            with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(account.username, password) as mailbox:
-                _set_imap_keepalive(getattr(mailbox, "client", None))
+            with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(
+                account.username, password, initial_folder=None
+            ) as mailbox:
+                _set_imap_keepalive(getattr(mailbox, "client", None), read_timeout=read_timeout)
                 all_folders = list(mailbox.folder.list())
                 scannable_folders = [
                     f for f in all_folders
@@ -520,7 +600,7 @@ class ImapScanner(BaseEmailScanner):
 
                     _publish({"folder_fetch_msg": f"fetching {folder_name} (~{current_messages or '?'} msgs)"})
 
-                    n_workers = IMAP_FETCH_WORKERS if IMAP_FETCH_WORKERS > 1 else 1
+                    n_workers = max_workers if max_workers > 1 else 1
                     all_uids: list[str] = []
                     if n_workers > 1:
                         _publish({"folder_fetch_msg": f"{folder_name}: searching UIDs (~{current_messages or '?'} msgs)"})
@@ -668,14 +748,25 @@ class ImapScanner(BaseEmailScanner):
                             use_parallel = False
 
                     if not use_parallel:
+                        fetch_criteria = (
+                            _build_qq_fetch_criteria(effective_prev_uid, options)
+                            if is_qq else criteria
+                        )
+                        if is_qq:
+                            _publish({
+                                "folder_fetch_msg": (
+                                    f"{folder_name}: fetching in batches of {bulk_size} "
+                                    f"(QQ-safe mode)"
+                                )
+                            })
                         try:
                             iterator = mailbox.fetch(
-                                criteria,
+                                fetch_criteria,
                                 limit=limit,
                                 reverse=True,
                                 mark_seen=False,
                                 headers_only=True,
-                                bulk=500,
+                                bulk=bulk_size,
                             )
                             for msg in iterator:
                                 msg_uid = cast(str, getattr(msg, "uid", "") or "")
@@ -716,11 +807,28 @@ class ImapScanner(BaseEmailScanner):
                                     )
                                 )
                                 folder_emails_this_run += 1
-                                if folder_emails_this_run % 200 == 0:
+                                progress_step = bulk_size if is_qq else 200
+                                if folder_emails_this_run % progress_step == 0:
                                     _publish({
                                         "folder_fetch_msg": f"{folder_name}: +{folder_emails_this_run} msgs",
                                         "total_emails": len(emails),
                                     })
+                                    if is_qq:
+                                        try:
+                                            time.sleep(QQ_INTER_BATCH_SLEEP_SECONDS)
+                                        except Exception:  # pragma: no cover
+                                            pass
+                                        batches_so_far = folder_emails_this_run // bulk_size
+                                        if batches_so_far > 0 and batches_so_far % QQ_NOOP_EVERY_N_BATCHES == 0:
+                                            try:
+                                                mailbox.client.noop()
+                                            except IMAP_CONNECTION_ERRORS as noop_exc:
+                                                logger.warning(
+                                                    "IMAP NOOP keepalive failed for folder %r (%s); "
+                                                    "batch fetch loop will naturally end on next error",
+                                                    folder_name,
+                                                    noop_exc,
+                                                )
                                 if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
                                     highest_uid = msg_uid
                         except IMAP_CONNECTION_ERRORS as exc:
@@ -766,9 +874,12 @@ class ImapScanner(BaseEmailScanner):
         folder_name = email.folder or "INBOX"
         try:
             with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(
-                account.username, password
+                account.username, password, initial_folder=None
             ) as mailbox:
-                _set_imap_keepalive(getattr(mailbox, "client", None))
+                _set_imap_keepalive(
+                    getattr(mailbox, "client", None),
+                    read_timeout=QQ_IMAP_READ_TIMEOUT if _is_qq_imap(account) else IMAP_READ_TIMEOUT,
+                )
                 try:
                     mailbox.folder.set(folder_name)
                 except IMAP_CONNECTION_ERRORS as exc:
@@ -817,7 +928,9 @@ class ImapScanner(BaseEmailScanner):
 
     def _test_sync(self, account: EmailAccount) -> bool:
         password = decrypt_password(account.password_encrypted)
-        with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(account.username, password):
+        with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(
+            account.username, password, initial_folder=None
+        ):
             return True
 
 

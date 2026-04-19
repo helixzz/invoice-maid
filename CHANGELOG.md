@@ -4,6 +4,61 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.4] - 2026-04-20
+
+### Why this release matters
+
+Even with v0.8.3's hang bounding, every QQ Mail scan since v0.7.10 landed had `emails_scanned=0`. The timeouts were firing correctly, the fail-resume was preserving state, the UI was showing honest progress — but zero invoices were actually being fetched. The underlying symptom ("QQ mailbox still can't be scanned properly") was symptomatic of a deeper protocol-level mismatch that v0.8.2/v0.8.3's reliability work couldn't paper over.
+
+Triangulated diagnosis from three independent sources:
+
+1. **Local probe against imap.qq.com** (decisive): imap-tools' `MailBox.login(user, pwd)` implicitly calls `self.folder.set('INBOX')` inside login. On QQ's 35k-message INBOX, the server-side `SELECT INBOX` legitimately takes 15-17 seconds to return. Our `IMAP_CONNECT_TIMEOUT=15s` is applied to the ENTIRE login call, not just the TCP+LOGIN — so login itself fails with `socket.timeout` before the per-operation read timeout can be installed. Every worker and the main session died before the first FETCH was even attempted.
+2. **Explore agent**: Confirmed no QQ-specific code path exists — QQ accounts hit the generic 4-worker parallel IMAP path with `bulk=500` and `SEARCH ALL`, both of which are incompatible with QQ's server.
+3. **Librarian agent** (imap-tools docs, Chinese dev forums, QQ's own help pages): QQ enforces a per-account concurrent-connection limit of ~1-2 (4 parallel workers reliably trigger `NO [b'System busy!']`); `bulk=500` on 35k messages causes server-side 30-60s timeout; `SEARCH ALL` may be truncated on large folders; NOOP keepalive is required for long-running fetches.
+
+### Added
+
+- **`_is_qq_imap(account, host=None)` detection helper** — recognizes QQ via either `account.type=='qq'` or host `imap.qq.com` / `imap.exmail.qq.com` (handles users who manually chose `type='imap'` in the account form).
+- **`_build_qq_fetch_criteria(effective_prev_uid, options)` helper** — for QQ with a saved highest-UID baseline, restricts the server-side SEARCH to `UID {last+1}:*` instead of `ALL`. Layers `unread_only` / `since` options on top via `AND(...)`. Falls back to `_build_imap_criteria(options)` when no baseline exists (first scan).
+- **QQ-specific tunable constants** (all evidence-backed, comment block in scanner documents per-constant rationale):
+  - `QQ_ACCOUNT_TYPES = {'qq'}` / `QQ_IMAP_HOSTS = {'imap.qq.com', 'imap.exmail.qq.com'}`
+  - `QQ_FETCH_WORKERS = 1` (never parallel on QQ)
+  - `QQ_BULK_SIZE = 50` (instead of 500)
+  - `QQ_INTER_BATCH_SLEEP_SECONDS = 1.0`
+  - `QQ_NOOP_EVERY_N_BATCHES = 10`
+  - `QQ_IMAP_READ_TIMEOUT = 180.0` (higher — QQ's SELECT/SEARCH legitimately takes 15-25s each)
+- **Per-account socket read timeout** — `_set_imap_keepalive(client, read_timeout=...)` now accepts an optional override; QQ accounts pass `QQ_IMAP_READ_TIMEOUT=180s`, non-QQ stays at `IMAP_READ_TIMEOUT=120s`.
+
+### Fixed
+
+- **`initial_folder=None` on every `MailBox.login()` call** (4 sites: `_fetch_folder_worker`, `_scan_sync`, `_hydrate_sync`, `_test_sync`). imap-tools' default `initial_folder='INBOX'` makes login auto-SELECT INBOX, which on large QQ mailboxes takes 15-17s — longer than our 15s connect timeout. This change alone fixes the root cause of **every** QQ scan returning 0 emails since v0.7.10, and also makes login faster on all providers (no benefit to auto-SELECT because our scan loop explicitly calls `mailbox.folder.set(folder_name)` per-folder).
+- **QQ forced to single-connection path** — for `_is_qq_imap(account)`, `max_workers` resolves to `QQ_FETCH_WORKERS=1`, which makes the `use_parallel` branch unreachable. QQ will never spawn 4 parallel workers that trigger `System busy!` + SSL corruption.
+- **QQ uses `bulk=QQ_BULK_SIZE=50`** in both the single-conn fetch (main scan path) and the worker function (defensive — worker won't be called for QQ, but host-based detection in `_fetch_folder_worker` ensures the right value is used if a misconfigured account slips through).
+- **QQ incremental scan uses UID-range SEARCH** — when `effective_prev_uid` is present for a QQ account, fetch uses `AND(uid=U(last+1, '*'))` so QQ's server only searches new messages. Avoids the server-side 30-60s timeout that `SEARCH ALL` on a 35k folder triggers.
+- **QQ inter-batch sleep + NOOP keepalive** — every `QQ_BULK_SIZE` messages, scanner sleeps `QQ_INTER_BATCH_SLEEP_SECONDS=1s` (rate-limit respect); every `QQ_NOOP_EVERY_N_BATCHES=10` batches, sends IMAP NOOP (prevents QQ's idle-drop on long-running fetches). NOOP failure is logged but non-fatal — natural fetch-loop error handling takes over if the connection is already dead.
+
+### Tests
+
+- 421 tests, 100% coverage (+6 new QQ regression tests):
+  - `test_is_qq_imap_matches_account_type_and_host_variants` — both detection paths
+  - `test_build_qq_fetch_criteria_uses_uid_range_when_baseline_exists` — `UID last+1:*` with and without options overlay
+  - `test_qq_scan_forces_single_connection_regardless_of_uid_count` — never invokes `_fetch_folder_worker` for QQ; asserts `bulk=QQ_BULK_SIZE` passed to `fetch()`
+  - `test_qq_scan_applies_inter_batch_sleep_and_noop_keepalive` — sleeps recorded + NOOP calls recorded at expected cadence
+  - `test_qq_scan_uid_range_search_skips_already_seen_uids` — incremental scan with saved baseline generates `AND(uid=U(...))` criteria
+  - `test_qq_scan_noop_failure_is_logged_and_loop_continues` — connection-reset during NOOP logged as warning; messages already iterated are retained
+- 44 existing fake `MailBox.login()` signatures updated to accept the new `initial_folder=None` kwarg (ast-grep applied `**kwargs` passthrough, no behavioral change).
+- 5 existing parallel-path tests updated: switched `host='imap.qq.com'` to `host='imap.example.com'` so they still exercise the parallel branch (QQ-specific tests cover `host='imap.qq.com'` explicitly).
+
+### Expected impact
+
+The QQ rescan that showed `emails_scanned=0` across 7 consecutive scans since v0.7.10 (logs 43, 45, 47, 49, 51) should now complete successfully. Per the v0.8.1 benchmark (QQ ~32 msg/s ceiling), a single-connection scan of the 35k-msg INBOX will take roughly 18-20 minutes wall-clock — honestly slow, but it will actually return messages. Incremental scans afterward (once `last_scan_uid` has a saved baseline) will complete in seconds because `UID last+1:*` only searches the handful of new messages since last scan.
+
+### Known limitations this does NOT address
+
+- QQ's per-IP temporary bans triggered by the seven previous failed scans will take some time to clear. If the first post-v0.8.4 scan still sees `socket.timeout` on login, wait 1-6 hours and retry.
+- First-time scans on a QQ account with no saved `last_scan_uid` still use `SEARCH ALL` (via the fall-through in `_build_qq_fetch_criteria`). The first scan will be slow; subsequent incremental scans are fast.
+- mbsync-fronted local Dovecot cache (deferred v0.9.0) remains the canonical long-term fix for 150-500× repeat-scan speedup per the v0.8.1 handoff.
+
 ## [0.8.3] - 2026-04-19
 
 ### Why this release matters
