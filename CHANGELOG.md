@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.1] - 2026-04-19
+
+### Why this release matters
+
+The v0.7.10 + v0.8.0 full-mailbox rescan revealed that a substantial portion of scan errors (282 errors observed on an in-progress 35k QQ INBOX rescan) came from trying to download tracking pixels, unsubscribe links, and analytics beacons as if they were invoice PDFs. The scheduler was following every `best_download_url` returned by `analyze_email` through a full `httpx.get` + LLM extraction attempt + PDF parse, which wasted:
+
+- One network round-trip (sometimes 30 s timeout)
+- One LLM call to `extract_invoice_fields`
+- Several MB of RSS during failed `parse_invoice` attempts
+- Log noise (`No /Root object`, `Download returned HTML`, etc.)
+
+This release adds a thin pre-download URL filter that catches the most common tracker patterns before spending any of those resources. Known issue `linktrace.triggerdelivery.com` downloaded as fake PDF (from ROADMAP v0.8.0+ known issues) is resolved.
+
+### Added
+
+- **`_is_blocked_download_url()` pre-flight filter** in `scheduler.py`. Checks each `best_download_url` from `analyze_email` against:
+  - `LINK_HOST_BLOCKLIST` — hosts like `linktrace.triggerdelivery.com`, `click.linksynergy.com`, `beacon.mailchimp.com`, `trk.klclick.com`, generic `click.mail`/`email.analytics`/`tracking.pixel` hostname fragments
+  - `LINK_PATH_BLOCKLIST_SUBSTRINGS` — path fragments `/unsubscribe`, `/track/`, `/trk/`, `/open/`, `/click?`, `/beacon`, `/pixel`
+  - Static image extensions `.gif .jpg .jpeg .png .webp .ico .svg`
+- **Content-Type post-GET validation.** If the downloaded response's `Content-Type` is not one of `application/pdf`, `application/octet-stream`, `application/xml`, `text/xml`, `application/zip`, `application/x-zip-compressed`, or `application/ofd`, the download is rejected with an info log explaining why. Absent/blank Content-Type still falls through to the filename-based guess (backwards-compatible with v0.8.0 behavior).
+
+### Tests
+
+- 411 tests, 100% coverage. New cases: blocklist recognizes tracker hosts / unsubscribe paths / static image extensions / and notably does NOT reject legitimate Chinese invoice platform URLs (`fapiao.jd.com`, `nnfp.jss.com.cn`). `_download_linked_invoice` skips blocked hosts without making HTTP calls. Rejects HTML Content-Type responses. Accepts PDF + ZIP + XML + octet-stream + OFD content types. Handles missing Content-Type headers.
+
+### Expected impact
+
+The 282 errors in the in-progress v0.7.10 recovery rescan are expected to drop by ~80–90% after deploy. Scan CPU time per affected email drops from ~30 s (network timeout + LLM + PDF parse) to <1 ms (URL substring check).
+
 ## [0.8.0] - 2026-04-19
 
 ### Why this release matters

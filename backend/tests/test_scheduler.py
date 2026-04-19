@@ -443,6 +443,125 @@ async def test_download_linked_invoice_failure(monkeypatch: pytest.MonkeyPatch) 
     assert any("Failed to download invoice link https://example.com/invoice" in warning for warning in warnings)
 
 
+def test_is_blocked_download_url_recognizes_trackers_and_assets() -> None:
+    assert scheduler._is_blocked_download_url("https://linktrace.triggerdelivery.com/xyz") is True
+    assert scheduler._is_blocked_download_url("https://mail.example.com/unsubscribe?u=1") is True
+    assert scheduler._is_blocked_download_url("https://example.com/track/open?id=42") is True
+    assert scheduler._is_blocked_download_url("https://example.com/pixel.gif") is True
+    assert scheduler._is_blocked_download_url("https://example.com/badge.png") is True
+    assert scheduler._is_blocked_download_url("https://click.mail.vendor.com/foo") is True
+    assert scheduler._is_blocked_download_url("not a url at all") is False
+    assert scheduler._is_blocked_download_url("https://fapiao.jd.com/download/abc.pdf") is False
+    assert scheduler._is_blocked_download_url("https://nnfp.jss.com.cn/api/invoice?id=42") is False
+
+
+@pytest.mark.asyncio
+async def test_download_linked_invoice_skips_blocked_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    infos: list[str] = []
+    monkeypatch.setattr(scheduler.logger, "info", lambda message, *args: infos.append(message % args))
+    http_called = {"n": 0}
+
+    class FakeClient:
+        async def __aenter__(self):
+            http_called["n"] += 1
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str):
+            raise AssertionError("network should not be hit for blocked URL")
+
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    result = await scheduler._download_linked_invoice("https://linktrace.triggerdelivery.com/abc")
+    assert result is None
+    assert http_called["n"] == 0
+    assert any("Blocked non-invoice URL" in info for info in infos)
+
+
+@pytest.mark.asyncio
+async def test_download_linked_invoice_rejects_non_invoice_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    infos: list[str] = []
+    monkeypatch.setattr(scheduler.logger, "info", lambda message, *args: infos.append(message % args))
+
+    class FakeResponse:
+        headers = {"content-type": "text/html; charset=utf-8"}
+        content = b"<html>not an invoice</html>"
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            del url
+            return FakeResponse()
+
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    assert await scheduler._download_linked_invoice("https://fapiao.example.com/view?id=1") is None
+    assert any("Rejected download" in info and "text/html" in info for info in infos)
+
+
+@pytest.mark.asyncio
+async def test_download_linked_invoice_accepts_pdf_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        headers = {"content-type": "application/pdf"}
+        content = b"%PDF-1.4..."
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            del url
+            return FakeResponse()
+
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    result = await scheduler._download_linked_invoice("https://fapiao.example.com/a.pdf")
+    assert result is not None
+    assert result[1] == b"%PDF-1.4..."
+
+
+@pytest.mark.asyncio
+async def test_download_linked_invoice_accepts_missing_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        headers: dict[str, str] = {}
+        content = b"%PDF-1.4..."
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            del url
+            return FakeResponse()
+
+    monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    result = await scheduler._download_linked_invoice("https://fapiao.example.com/x.pdf")
+    assert result is not None, "absent Content-Type must fall through to filename-based guess"
+
+
 @pytest.mark.asyncio
 async def test_scan_all_accounts_skips_non_invoice_missing_number_and_embedding_failure(
     db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
