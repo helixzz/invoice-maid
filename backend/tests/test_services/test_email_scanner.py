@@ -150,10 +150,11 @@ def test_imap_scan_sync_filters_attachments_and_last_uid(monkeypatch: pytest.Mon
     )
 
     class FakeMailbox:
-        def __init__(self, host, port):
-            self.host = host
-            self.port = port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                self.host = host
+                self.port = port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             assert username == "user@example.com"
@@ -197,9 +198,10 @@ def test_imap_scan_sync_uses_first_scan_limit(monkeypatch: pytest.MonkeyPatch, s
     captured: dict[str, object] = {}
 
     class FakeMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             assert username == "user@example.com"
@@ -275,9 +277,10 @@ async def test_imap_hydrate_email_fetches_body_and_attachments(monkeypatch: pyte
     )
 
     class FakeMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -323,8 +326,9 @@ async def test_imap_hydrate_email_fetches_body_and_attachments(monkeypatch: pyte
 @pytest.mark.asyncio
 async def test_imap_hydrate_email_handles_connection_failure(monkeypatch: pytest.MonkeyPatch, settings) -> None:
     class BrokenMailbox:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def login(self, username, password):
             del username, password
@@ -361,9 +365,10 @@ async def test_imap_hydrate_email_handles_connection_failure(monkeypatch: pytest
 @pytest.mark.asyncio
 async def test_imap_hydrate_email_handles_empty_fetch(monkeypatch: pytest.MonkeyPatch, settings) -> None:
     class EmptyMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -418,8 +423,9 @@ async def test_imap_test_connection_success_and_failure(monkeypatch: pytest.Monk
             return func()
 
     class ConnectionMailbox:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def login(self, username, password):
             del username, password
@@ -509,8 +515,9 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
     )
 
     class FakePop3:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def user(self, username):
             assert username == "user@example.com"
@@ -688,9 +695,10 @@ def test_pop3_helpers_and_scan_sync(monkeypatch: pytest.MonkeyPatch, settings) -
     assert other_text_emails[0].body_html == ""
 
     class CloseFallbackPop3(FakePop3):
-        def __init__(self, host, port):
-            super().__init__(host, port)
-            self.closed = False
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                super().__init__(host, port)
+                self.closed = False
 
         def quit(self):
             raise poplib.error_proto("-ERR quit failed")
@@ -753,8 +761,9 @@ def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatc
     account = EmailAccount(id=2, name="pop3", type="pop3", host="pop.example.com", port=995, username="user@example.com", password_encrypted=encrypt_password("secret", settings.JWT_SECRET))
 
     class FakePop3:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def user(self, username):
             assert username == "user@example.com"
@@ -772,9 +781,10 @@ def test_pop3_test_sync_and_message_id_edge_cases(monkeypatch: pytest.MonkeyPatc
     assert scanner._test_sync(account) is True
 
     class QuitFailsPop3(FakePop3):
-        def __init__(self, host, port):
-            super().__init__(host, port)
-            self.closed = False
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                super().__init__(host, port)
+                self.closed = False
 
         def quit(self):
             raise poplib.error_proto("-ERR quit failed")
@@ -953,9 +963,10 @@ def test_pop3_close_fallback_ignores_expected_transport_errors(monkeypatch: pyte
     )
 
     class CloseFallbackPop3:
-        def __init__(self, host, port):
-            del host, port
-            self.closed = False
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.closed = False
 
         def user(self, username):
             assert username == "user@example.com"
@@ -994,8 +1005,9 @@ def test_pop3_close_fallback_propagates_unexpected_quit_error(monkeypatch: pytes
     )
 
     class UnexpectedQuitPop3:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def user(self, username):
             assert username == "user@example.com"
@@ -1742,9 +1754,10 @@ def test_imap_scan_multi_folder_and_cross_folder_dedup(monkeypatch: pytest.Monke
     ]
 
     class MultiFolderMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager(folders=folders)
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager(folders=folders)
 
         def login(self, username, password):
             del username, password
@@ -1786,9 +1799,10 @@ def test_imap_scan_uidvalidity_change_resets_folder(monkeypatch: pytest.MonkeyPa
     new_msg = SimpleNamespace(uid="1", subject="fresh", text="", html="", from_="a@test", date="2024-06-01T00:00:00Z", attachments=[], headers={})
 
     class ChangeValidityMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager(folders=[_FakeFolderInfo("INBOX")], uidvalidity_map={"INBOX": 99999})
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager(folders=[_FakeFolderInfo("INBOX")], uidvalidity_map={"INBOX": 99999})
 
         def login(self, username, password):
             del username, password
@@ -1818,13 +1832,14 @@ def test_imap_scan_folder_set_failure_skips_folder(monkeypatch: pytest.MonkeyPat
     from imap_tools.errors import MailboxLoginError
 
     class FolderSetFailMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager(folders=[
-                _FakeFolderInfo("INBOX"),
-                _FakeFolderInfo("BadFolder"),
-            ])
-            self._set_count = 0
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager(folders=[
+                    _FakeFolderInfo("INBOX"),
+                    _FakeFolderInfo("BadFolder"),
+                ])
+                self._set_count = 0
 
         def login(self, username, password):
             del username, password
@@ -1843,12 +1858,13 @@ def test_imap_scan_folder_set_failure_skips_folder(monkeypatch: pytest.MonkeyPat
     FolderSetFailMailbox.folder = property(lambda self: self._folder)
 
     class FSFMailbox2:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = BadFolderManager(folders=[
-                _FakeFolderInfo("INBOX"),
-                _FakeFolderInfo("BadFolder"),
-            ])
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = BadFolderManager(folders=[
+                    _FakeFolderInfo("INBOX"),
+                    _FakeFolderInfo("BadFolder"),
+                ])
         @property
         def folder(self):
             return self._folder
@@ -1877,9 +1893,10 @@ def test_imap_scan_fetch_failure_skips_folder(monkeypatch: pytest.MonkeyPatch, s
     from imap_tools.errors import MailboxLoginError
 
     class FetchFailMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(folders=[_FakeFolderInfo("INBOX")])
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(folders=[_FakeFolderInfo("INBOX")])
 
         @property
         def folder(self):
@@ -1912,9 +1929,10 @@ async def test_imap_hydrate_selects_correct_folder(monkeypatch: pytest.MonkeyPat
     msg = SimpleNamespace(uid="5", text="body", html="", attachments=[], headers={})
 
     class HydrateFolderMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -1936,9 +1954,10 @@ async def test_imap_hydrate_selects_correct_folder(monkeypatch: pytest.MonkeyPat
     HydrateFolderMailbox._folder = HydrateFolderManager()
 
     class HFM2:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = HydrateFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = HydrateFolderManager()
 
         @property
         def folder(self):
@@ -2025,9 +2044,10 @@ def test_imap_scan_status_exception_continues(monkeypatch: pytest.MonkeyPatch, s
             raise OSError("no status")
 
     class StatusErrMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = StatusErrorManager(folders=[_FakeFolderInfo("INBOX")])
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = StatusErrorManager(folders=[_FakeFolderInfo("INBOX")])
 
         @property
         def folder(self):
@@ -2058,12 +2078,13 @@ def test_imap_scan_uidvalidity_resets_effective_uid(monkeypatch: pytest.MonkeyPa
     new_msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
 
     class ValidityChangedMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(
-                folders=[_FakeFolderInfo("INBOX")],
-                uidvalidity_map={"INBOX": 77777},
-            )
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(
+                    folders=[_FakeFolderInfo("INBOX")],
+                    uidvalidity_map={"INBOX": 77777},
+                )
 
         @property
         def folder(self):
@@ -2161,9 +2182,10 @@ async def test_imap_hydrate_folder_set_failure_returns_empty(monkeypatch: pytest
             raise MailboxLoginError("folder_set_error", 403)
 
     class SetErrorMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = SetErrorFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = SetErrorFolderManager()
 
         @property
         def folder(self):
@@ -2194,9 +2216,10 @@ def test_imap_scan_empty_uid_msg_skips_uid_update(monkeypatch: pytest.MonkeyPatc
     msg_with_uid = SimpleNamespace(uid="5", subject="s2", text="", html="", from_="a@test", date="2024-02-01T00:00:00Z", attachments=[], headers={})
 
     class MixedUidMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -2334,9 +2357,10 @@ def test_imap_dedup_uid_update_when_dup_has_higher_uid(monkeypatch: pytest.Monke
     ]
 
     class DedupMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(folders=folders_list)
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(folders=folders_list)
 
         @property
         def folder(self):
@@ -2432,13 +2456,14 @@ def test_imap_dedup_skip_uid_update_when_dup_has_lower_uid(monkeypatch: pytest.M
     dup_lower_uid = SimpleNamespace(uid="3", subject="dup", text="", html="", from_="b@test", date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_id})
 
     class TwoMsgInbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(folders=[
-                _FakeFolderInfo("INBOX"),
-                _FakeFolderInfo("Archive"),
-            ])
-            self._inbox_done = False
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(folders=[
+                    _FakeFolderInfo("INBOX"),
+                    _FakeFolderInfo("Archive"),
+                ])
+                self._inbox_done = False
 
         @property
         def folder(self):
@@ -2517,9 +2542,10 @@ def test_imap_scan_options_unread_only(monkeypatch: pytest.MonkeyPatch, settings
     captured: dict[str, object] = {}
 
     class FakeMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -2548,9 +2574,10 @@ def test_imap_scan_options_since_client_side_filter(monkeypatch: pytest.MonkeyPa
     new_msg = SimpleNamespace(uid="2", subject="new", text="", html="", from_="b@test", date="2025-01-01T00:00:00Z", attachments=[], headers={})
 
     class FakeMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -2578,9 +2605,10 @@ def test_imap_scan_options_reset_state_discards_existing_state(monkeypatch: pyte
     msg = SimpleNamespace(uid="5", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
 
     class FakeMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self.folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self.folder = _FakeFolderManager()
 
         def login(self, username, password):
             del username, password
@@ -2753,8 +2781,9 @@ def test_pop3_scan_options_since_filters_old_messages(monkeypatch: pytest.Monkey
     new_raw = b"From: b@test\r\nDate: Mon, 01 Jan 2025 00:00:00 +0000\r\nSubject: new\r\nMessage-ID: <new@test>\r\n\r\nbody"
 
     class FakePop3:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def user(self, u): del u
         def pass_(self, p): del p
@@ -2787,8 +2816,9 @@ def test_pop3_scan_options_unread_only_is_noop(monkeypatch: pytest.MonkeyPatch, 
     raw = b"From: a@test\r\nDate: Mon, 01 Jan 2025 00:00:00 +0000\r\nSubject: msg\r\nMessage-ID: <msg@test>\r\n\r\nbody"
 
     class FakePop3:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def user(self, u): del u
         def pass_(self, p): del p
@@ -2820,8 +2850,9 @@ def test_pop3_scan_options_reset_state_ignores_previous_uid(monkeypatch: pytest.
     raw = b"From: a@test\r\nDate: Mon, 01 Jan 2025 00:00:00 +0000\r\nSubject: msg\r\nMessage-ID: <m@test>\r\n\r\nbody"
 
     class FakePop3:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def user(self, u): del u
         def pass_(self, p): del p
@@ -2858,12 +2889,13 @@ def test_imap_scan_mailbox_fetch_error_mid_iteration_is_caught(monkeypatch: pyte
         raise MailboxFetchError(command_result=(b"NO", [b"System busy!"]), expected=b"OK")
 
     class FlakyFetchMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(folders=[
-                _FakeFolderInfo("INBOX"),
-                _FakeFolderInfo("Archive"),
-            ])
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(folders=[
+                    _FakeFolderInfo("INBOX"),
+                    _FakeFolderInfo("Archive"),
+                ])
 
         @property
         def folder(self):
@@ -2912,6 +2944,10 @@ def test_set_imap_keepalive_covers_all_branches(monkeypatch: pytest.MonkeyPatch)
     class FakeSocket:
         def __init__(self):
             self.options_set: list = []
+            self.read_timeout: float | None = None
+
+        def settimeout(self, timeout):
+            self.read_timeout = timeout
 
         def setsockopt(self, level, name, value):
             self.options_set.append((level, name, value))
@@ -2926,6 +2962,9 @@ def test_set_imap_keepalive_covers_all_branches(monkeypatch: pytest.MonkeyPatch)
     client = GoodClient()
     _set_imap_keepalive(client)
     assert len(client.sock.options_set) >= 1
+    assert client.sock.read_timeout == email_scanner.IMAP_READ_TIMEOUT, (
+        "read timeout must be applied alongside keepalive; this prevents the QQ 'System busy' / SSL half-open hang"
+    )
 
     class BrokenSetOpt:
         def socket(self):
@@ -2946,14 +2985,15 @@ def test_imap_scan_skips_unchanged_folder_via_status_preflight(monkeypatch: pyte
     fetch_calls: list = []
 
     class UnchangedMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(
-                folders=[_FakeFolderInfo("INBOX")],
-                uidvalidity_map={"INBOX": 42},
-                uidnext_map={"INBOX": 101},
-                messages_map={"INBOX": 50},
-            )
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(
+                    folders=[_FakeFolderInfo("INBOX")],
+                    uidvalidity_map={"INBOX": 42},
+                    uidnext_map={"INBOX": 101},
+                    messages_map={"INBOX": 50},
+                )
 
         @property
         def folder(self):
@@ -2992,9 +3032,10 @@ def test_imap_scan_publishes_progress_callbacks(monkeypatch: pytest.MonkeyPatch,
     msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
 
     class SimpleMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3034,9 +3075,10 @@ def test_imap_scan_progress_callback_exceptions_are_swallowed(monkeypatch: pytes
     msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test", date="2024-01-01T00:00:00Z", attachments=[], headers={})
 
     class SimpleMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3072,9 +3114,10 @@ def test_imap_scan_outer_session_drop_preserves_partial_state(monkeypatch: pytes
     from app.services import email_scanner
 
     class DropAfterListMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager(folders=[])
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager(folders=[])
 
         @property
         def folder(self):
@@ -3123,9 +3166,10 @@ def test_imap_scan_many_folder_emails_triggers_interim_progress(monkeypatch: pyt
     ]
 
     class BigMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3169,9 +3213,10 @@ def test_imap_scan_parallel_fetch_when_uids_exceed_threshold(monkeypatch: pytest
     uid_list_returned = [str(i) for i in range(1, 6)]
 
     class ParallelMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3216,9 +3261,10 @@ def test_imap_scan_parallel_worker_error_falls_back_to_single_conn(monkeypatch: 
     ]
 
     class FallbackMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3259,8 +3305,9 @@ def test_fetch_folder_worker_returns_empty_and_error_on_connection_failure(monke
     from app.services import email_scanner as es
 
     class BrokenMailbox:
-        def __init__(self, host, port):
-            del host, port
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
 
         def login(self, username, password):
             del username, password
@@ -3288,9 +3335,10 @@ def test_fetch_folder_worker_returns_messages_in_uid_list(monkeypatch: pytest.Mo
     ]
 
     class WorkerMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3335,9 +3383,10 @@ def test_imap_scan_falls_back_to_single_conn_when_uids_below_threshold(monkeypat
     ]
 
     class SmallMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3377,9 +3426,10 @@ def test_fetch_folder_worker_applies_since_filter(monkeypatch: pytest.MonkeyPatc
                               date="2025-01-01T00:00:00Z", attachments=[], headers={"Message-ID": "<new@t>"})
 
     class WorkerMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3418,9 +3468,10 @@ def test_imap_scan_parallel_future_exception_falls_back(monkeypatch: pytest.Monk
     ]
 
     class ExcMailbox:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3470,9 +3521,10 @@ def test_imap_scan_parallel_interim_progress_published(monkeypatch: pytest.Monke
     uid_list = [str(i) for i in range(1, 222)]
 
     class BigParallelMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3520,9 +3572,10 @@ def test_imap_scan_parallel_with_limit_applies_uid_cap(monkeypatch: pytest.Monke
     uid_list = [str(i) for i in range(1, 9)]
 
     class LimitedMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3562,9 +3615,10 @@ def test_imap_scan_workers_one_uses_single_conn_directly(monkeypatch: pytest.Mon
                           date="2024-01-01T00:00:00Z", attachments=[], headers={})
 
     class SingleWorkerMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3604,9 +3658,10 @@ def test_imap_scan_parallel_handles_no_message_id_in_msg_dict(monkeypatch: pytes
     uid_list = ["1", "2", "3"]
 
     class NoIdMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3655,9 +3710,10 @@ def test_imap_scan_parallel_dedup_across_workers(monkeypatch: pytest.MonkeyPatch
     uid_list = ["10", "20", "30"]
 
     class DedupMBX:
-        def __init__(self, host, port):
-            del host, port
-            self._folder = _FakeFolderManager()
+        def __init__(self, host, port, **kwargs):
+                del kwargs
+                del host, port
+                self._folder = _FakeFolderManager()
 
         @property
         def folder(self):
@@ -3685,3 +3741,258 @@ def test_imap_scan_parallel_dedup_across_workers(monkeypatch: pytest.MonkeyPatch
     assert len(emails) == 2, f"dedup should collapse 2 msgs with same Message-ID to 1; got {len(emails)}"
     uids = {e.uid for e in emails}
     assert "30" in uids
+
+
+def test_imap_scan_parallel_worker_timeout_falls_back_to_single_conn(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """When a parallel worker future exceeds IMAP_PARALLEL_WORKER_TIMEOUT,
+    the scan must catch the TimeoutError, retry once, and fall back to
+    single-connection instead of letting the scan thread hang forever.
+
+    This is the regression test for the v0.8.1 production hang on imap.qq.com
+    where a single stuck worker blocked fut.result() indefinitely."""
+    import concurrent.futures as cf
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(es.time, "sleep", lambda _s: None)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@t>"})
+        for i in range(1, 6)
+    ]
+
+    class TimeoutMailbox:
+        def __init__(self, host, port, **kwargs):
+            del host, port, kwargs
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return ["1", "2", "3", "4", "5"]
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    class FakeTimeoutFuture:
+        def result(self, timeout=None):
+            del timeout
+            raise cf.TimeoutError("simulated worker hang")
+
+    class FakeTimeoutPool:
+        def __init__(self, *a, **kw):
+            del a, kw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            del a
+            return False
+
+        def submit(self, *a, **kw):
+            del a, kw
+            return FakeTimeoutFuture()
+
+    monkeypatch.setattr(es, "MailBox", TimeoutMailbox)
+    monkeypatch.setattr(es.concurrent.futures, "ThreadPoolExecutor", FakeTimeoutPool)
+
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+    assert len(emails) == 5, (
+        "after worker-timeout path exhausts retries, single-connection fallback "
+        "must still yield all 5 messages"
+    )
+
+
+def test_imap_scan_parallel_retry_preserves_longer_partial_on_second_failure(
+    monkeypatch: pytest.MonkeyPatch, settings
+) -> None:
+    """When the parallel path fails TWICE but the second attempt yields MORE
+    partial messages than the first (rare ordering), the scan must keep the
+    larger partial set so we don't lose fail-resume progress."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(es.time, "sleep", lambda _s: None)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@t>"})
+        for i in range(1, 6)
+    ]
+    partial_small = [
+        {"uid": "1", "subject": "s1", "from_": "u1@t",
+         "received_at": datetime(2024, 1, 1, tzinfo=timezone.utc), "headers": {"Message-ID": "<m1@t>"}},
+    ]
+    partial_big = [
+        {"uid": "1", "subject": "s1", "from_": "u1@t",
+         "received_at": datetime(2024, 1, 1, tzinfo=timezone.utc), "headers": {"Message-ID": "<m1@t>"}},
+        {"uid": "2", "subject": "s2", "from_": "u2@t",
+         "received_at": datetime(2024, 1, 1, tzinfo=timezone.utc), "headers": {"Message-ID": "<m2@t>"}},
+        {"uid": "3", "subject": "s3", "from_": "u3@t",
+         "received_at": datetime(2024, 1, 1, tzinfo=timezone.utc), "headers": {"Message-ID": "<m3@t>"}},
+    ]
+    call_count = {"n": 0}
+
+    def worker_returns_varying_partial(*args, **kwargs):
+        del args, kwargs
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            return list(partial_small), "transient: System busy"
+        return list(partial_big), "transient: System busy"
+
+    class MBX:
+        def __init__(self, host, port, **kwargs):
+            del host, port, kwargs
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return ["1", "2", "3", "4", "5"]
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", MBX)
+    monkeypatch.setattr(es, "_fetch_folder_worker", worker_returns_varying_partial)
+
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+    uids = {e.uid for e in emails}
+    assert "2" in uids and "3" in uids, (
+        "partial messages from the larger second-attempt batch must be preserved and merged"
+    )
+
+
+def test_imap_scan_publishes_heartbeat_around_uids_search(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """The server-side UID SEARCH on large Chinese mailboxes can take 30-120s.
+    The scan must publish a heartbeat before and after the call so the UI
+    doesn't show a frozen 'fetching ~N msgs' during the SEARCH round-trip."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 100)
+
+    class MBX:
+        def __init__(self, host, port, **kwargs):
+            del host, port, kwargs
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return ["1", "2", "3"]
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter([])
+
+    monkeypatch.setattr(es, "MailBox", MBX)
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    captured: list[dict] = []
+    ImapScanner()._scan_sync(account, None, progress_callback=captured.append)
+    search_msgs = [u.get("folder_fetch_msg", "") for u in captured]
+    assert any("searching UIDs" in m for m in search_msgs), (
+        "must publish pre-search heartbeat so UI shows progress during slow QQ SEARCH"
+    )
+    assert any("new UIDs to fetch" in m for m in search_msgs), (
+        "must publish post-search heartbeat with UID count"
+    )
+
+
+def test_imap_scan_uids_failure_is_caught_and_falls_back(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """If the server-side UID SEARCH raises (e.g. socket.timeout, QQ drops
+    the connection), the scan must log a warning and fall back to the
+    single-connection serial fetch path instead of crashing the account scan."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+    import socket as _socket
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@t>"})
+        for i in range(1, 4)
+    ]
+
+    class MBX:
+        def __init__(self, host, port, **kwargs):
+            del host, port, kwargs
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            raise _socket.timeout("simulated SEARCH stall")
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", MBX)
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert len(emails) == 3, (
+        "after uids() times out, single-connection fallback must still yield all 3 messages "
+        "(this is the mechanism that prevents v0.8.1's 44-min hang on imap.qq.com)"
+    )

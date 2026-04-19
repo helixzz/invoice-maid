@@ -17,6 +17,7 @@ import logging
 import poplib
 import re
 import ssl
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -41,7 +42,32 @@ FIRST_SCAN_LIMIT: int | None = None
 IMAP_FETCH_WORKERS: int = 4
 IMAP_PARALLEL_THRESHOLD: int = 500
 
-IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError, MailboxFetchError)
+# Timeouts for IMAP I/O. The raw imap-tools library default is None on both
+# (a) TCP handshake and (b) socket recv. Without these, a stalled QQ/163
+# `FETCH` (e.g. server returns `NO [b'System busy!']` and then the SSL layer
+# half-dies) can block the scan thread for 30-60 minutes until TCP finally
+# gives up and the SSL layer raises `[SSL: BAD_LENGTH] bad length` — during
+# which time the UI shows "fetching {folder} (~N msgs)" with zero progress.
+IMAP_CONNECT_TIMEOUT: float = 15.0
+IMAP_READ_TIMEOUT: float = 120.0
+# Wall-clock timeout on parallel-worker `future.result()`. A single zombie
+# worker can otherwise block the entire pool and cascade-fail the whole account.
+IMAP_PARALLEL_WORKER_TIMEOUT: float = 300.0
+# Transient "System busy" / rate-limit responses on QQ/163 are usually resolved
+# within seconds. We do a single short-sleep retry on the parallel path before
+# falling back to single-connection.
+IMAP_PARALLEL_RETRY_DELAY_SECONDS: float = 5.0
+
+IMAP_CONNECTION_ERRORS = (
+    OSError,
+    ssl.SSLError,
+    imaplib.IMAP4.error,
+    imaplib.IMAP4.abort,
+    MailboxLoginError,
+    MailboxFetchError,
+    socket.timeout,
+    TimeoutError,
+)
 POP3_CONNECTION_ERRORS = (OSError, ssl.SSLError, poplib.error_proto)
 OUTLOOK_CONNECTION_ERRORS = (OSError, httpx.HTTPError, MsalServiceError)
 
@@ -211,9 +237,19 @@ def _normalize_datetime(value: datetime | str | None) -> datetime:
 
 
 def _set_imap_keepalive(imap_client: Any) -> None:
-    """Enable TCP keepalive on the IMAP socket so NAT/firewall/server silent
-    connection drops are detected within ~100s instead of hanging a full-mailbox
-    FETCH for minutes. Safe no-op on platforms that don't expose TCP_KEEPIDLE."""
+    """Enable TCP keepalive AND a socket read timeout on the IMAP socket.
+
+    TCP keepalive alone (v0.7.8) only detects silent peer disappearance via
+    the TCP layer (~100s). It does NOT detect application-level stalls where
+    TCP keepalive probes are ACKed but no IMAP data flows (observed on
+    imap.qq.com after a `NO [b'System busy!']` reply, where the SSL layer
+    ends up half-open for 30-60 minutes before finally raising
+    `[SSL: BAD_LENGTH]`).
+
+    A per-recv timeout via ``sock.settimeout()`` is the only reliable way to
+    bound those stalls. `imap-tools` MailBox has no read-timeout kwarg, so we
+    set it on the underlying socket ourselves.
+    Safe no-op on platforms that don't expose TCP_KEEPIDLE."""
     if imap_client is None:
         return
     try:
@@ -221,6 +257,7 @@ def _set_imap_keepalive(imap_client: Any) -> None:
     except Exception:
         return
     try:
+        sock.settimeout(IMAP_READ_TIMEOUT)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         if hasattr(socket, "TCP_KEEPIDLE"):
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
@@ -342,7 +379,7 @@ def _fetch_folder_worker(
     results: list[dict[str, Any]] = []
     error_msg = ""
     try:
-        with MailBox(host, port=port).login(username, password) as mb:
+        with MailBox(host, port=port, timeout=IMAP_CONNECT_TIMEOUT).login(username, password) as mb:
             _set_imap_keepalive(getattr(mb, "client", None))
             mb.folder.set(folder_name)
             for msg in mb.fetch(
@@ -412,7 +449,7 @@ class ImapScanner(BaseEmailScanner):
                     logger.debug("progress_callback raised, ignoring: %s", exc)
 
         try:
-            with MailBox(account.host or "", port=account.port or 993).login(account.username, password) as mailbox:
+            with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(account.username, password) as mailbox:
                 _set_imap_keepalive(getattr(mailbox, "client", None))
                 all_folders = list(mailbox.folder.list())
                 scannable_folders = [
@@ -486,12 +523,19 @@ class ImapScanner(BaseEmailScanner):
                     n_workers = IMAP_FETCH_WORKERS if IMAP_FETCH_WORKERS > 1 else 1
                     all_uids: list[str] = []
                     if n_workers > 1:
+                        _publish({"folder_fetch_msg": f"{folder_name}: searching UIDs (~{current_messages or '?'} msgs)"})
                         try:
                             all_uids_raw = mailbox.uids(criteria)
                             all_uids = [u for u in all_uids_raw if not effective_prev_uid or _is_uid_newer(u, effective_prev_uid)]
                             if limit is not None:
                                 all_uids = all_uids[:limit]
-                        except (IMAP_CONNECTION_ERRORS + (AttributeError,)):
+                            _publish({"folder_fetch_msg": f"{folder_name}: {len(all_uids)} new UIDs to fetch"})
+                        except (IMAP_CONNECTION_ERRORS + (AttributeError,)) as exc:
+                            logger.warning(
+                                "IMAP uids() search failed for folder %r (%s); falling back to single-connection serial fetch",
+                                folder_name,
+                                exc,
+                            )
                             all_uids = []
 
                     use_parallel = (
@@ -537,47 +581,74 @@ class ImapScanner(BaseEmailScanner):
                     if use_parallel:
                         partition_size = (len(all_uids) + n_workers - 1) // n_workers
                         partitions = [all_uids[i * partition_size : (i + 1) * partition_size] for i in range(n_workers)]
-                        worker_futures = []
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
-                            uid_sets = [set(p) for p in partitions]
-                            for p in partitions:
-                                worker_futures.append(pool.submit(
-                                    _fetch_folder_worker,
-                                    account.host or "",
-                                    account.port or 993,
-                                    account.username,
-                                    password,
-                                    folder_name,
-                                    list(set(p)),
-                                    criteria,
-                                    options.since if options else None,
-                                    options,
-                                ))
 
-                        parallel_ok = True
+                        parallel_ok = False
                         worker_msgs: list[dict[str, Any]] = []
-                        for fut in worker_futures:
-                            try:
-                                batch_msgs, err = fut.result()
-                                if err:
-                                    logger.warning(
-                                        "IMAP parallel worker failed for folder %r: %s; will retry single-connection",
+                        for attempt in range(2):
+                            worker_futures = []
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+                                for p in partitions:
+                                    worker_futures.append(pool.submit(
+                                        _fetch_folder_worker,
+                                        account.host or "",
+                                        account.port or 993,
+                                        account.username,
+                                        password,
                                         folder_name,
-                                        err,
-                                    )
-                                    parallel_ok = False
-                                    break
-                                worker_msgs.extend(batch_msgs)
-                            except Exception as exc:
-                                logger.warning(
-                                    "IMAP parallel worker raised for folder %r: %s; will retry single-connection",
-                                    folder_name,
-                                    exc,
-                                )
-                                parallel_ok = False
+                                        list(set(p)),
+                                        criteria,
+                                        options.since if options else None,
+                                        options,
+                                    ))
+
+                                attempt_msgs: list[dict[str, Any]] = []
+                                attempt_ok = True
+                                attempt_err: str | None = None
+                                for fut in worker_futures:
+                                    try:
+                                        batch_msgs, err = fut.result(timeout=IMAP_PARALLEL_WORKER_TIMEOUT)
+                                        if err:
+                                            attempt_err = err
+                                            attempt_ok = False
+                                            attempt_msgs.extend(batch_msgs)
+                                            continue
+                                        attempt_msgs.extend(batch_msgs)
+                                    except concurrent.futures.TimeoutError as exc:
+                                        attempt_err = f"worker timed out after {IMAP_PARALLEL_WORKER_TIMEOUT:.0f}s: {exc}"
+                                        attempt_ok = False
+                                    except Exception as exc:
+                                        attempt_err = f"worker raised: {exc}"
+                                        attempt_ok = False
+
+                            if attempt_ok:
+                                worker_msgs = attempt_msgs
+                                parallel_ok = True
                                 break
 
-                        if parallel_ok:
+                            if attempt == 0:
+                                logger.warning(
+                                    "IMAP parallel fetch failed for folder %r (%s); partial=%d msgs; retrying once in %.0fs",
+                                    folder_name,
+                                    attempt_err,
+                                    len(attempt_msgs),
+                                    IMAP_PARALLEL_RETRY_DELAY_SECONDS,
+                                )
+                                worker_msgs = attempt_msgs
+                                try:
+                                    time.sleep(IMAP_PARALLEL_RETRY_DELAY_SECONDS)
+                                except Exception:  # pragma: no cover
+                                    pass
+                            else:
+                                logger.warning(
+                                    "IMAP parallel fetch still failing for folder %r (%s); will fall back to single-connection with partial=%d msgs preserved",
+                                    folder_name,
+                                    attempt_err,
+                                    len(attempt_msgs),
+                                )
+                                if len(attempt_msgs) > len(worker_msgs):
+                                    worker_msgs = attempt_msgs
+
+                        if worker_msgs:
                             worker_msgs.sort(key=lambda m: m["received_at"])
                             for msg_dict in worker_msgs:
                                 email_obj = _process_msg_dict(msg_dict)
@@ -589,7 +660,8 @@ class ImapScanner(BaseEmailScanner):
                                             "folder_fetch_msg": f"{folder_name}: +{folder_emails_this_run} msgs (parallel)",
                                             "total_emails": len(emails),
                                         })
-                        else:
+
+                        if not parallel_ok:
                             use_parallel = False
 
                     if not use_parallel:
@@ -690,7 +762,7 @@ class ImapScanner(BaseEmailScanner):
         password = decrypt_password(account.password_encrypted)
         folder_name = email.folder or "INBOX"
         try:
-            with MailBox(account.host or "", port=account.port or 993).login(
+            with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(
                 account.username, password
             ) as mailbox:
                 _set_imap_keepalive(getattr(mailbox, "client", None))
@@ -742,7 +814,7 @@ class ImapScanner(BaseEmailScanner):
 
     def _test_sync(self, account: EmailAccount) -> bool:
         password = decrypt_password(account.password_encrypted)
-        with MailBox(account.host or "", port=account.port or 993).login(account.username, password):
+        with MailBox(account.host or "", port=account.port or 993, timeout=IMAP_CONNECT_TIMEOUT).login(account.username, password):
             return True
 
 
