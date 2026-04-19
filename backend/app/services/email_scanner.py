@@ -585,8 +585,9 @@ class ImapScanner(BaseEmailScanner):
                         parallel_ok = False
                         worker_msgs: list[dict[str, Any]] = []
                         for attempt in range(2):
+                            pool = concurrent.futures.ThreadPoolExecutor(max_workers=n_workers)
                             worker_futures = []
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+                            try:
                                 for p in partitions:
                                     worker_futures.append(pool.submit(
                                         _fetch_folder_worker,
@@ -619,6 +620,8 @@ class ImapScanner(BaseEmailScanner):
                                     except Exception as exc:
                                         attempt_err = f"worker raised: {exc}"
                                         attempt_ok = False
+                            finally:
+                                pool.shutdown(wait=False, cancel_futures=True)
 
                             if attempt_ok:
                                 worker_msgs = attempt_msgs

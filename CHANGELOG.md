@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.3] - 2026-04-19
+
+### Why this release matters
+
+v0.8.2 shipped the socket read timeout and `fut.result(timeout=...)` correctly — but the parallel-worker cleanup still blocked the scan thread. Reproduction: trigger a full QQ rescan on v0.8.2, observe INBOX stall at `"INBOX: 35626 new UIDs to fetch"`, watch `tcpdump -i any port 993` show zero packets for 25+ minutes while four worker threads sit in `do_poll` with zero CPU delta. The `fut.result(timeout=300s)` correctly caught per-future stalls, but the surrounding `with concurrent.futures.ThreadPoolExecutor(...) as pool:` context manager implicitly calls `pool.shutdown(wait=True)` on `__exit__`, which **joins every still-running worker thread** — including the ones whose futures we just "timed out" on. Net effect: the scan still hangs indefinitely despite all the v0.8.2 defenses correctly detecting the stall.
+
+Python's `ThreadPoolExecutor.shutdown(wait=True, cancel_futures=True)` (the `with`-block default) only cancels futures that have not started executing; running futures continue to completion. Since the stalled `imaplib.readline()` calls can only be interrupted by socket timeout (which SHOULD work, but on the production host the observed behavior is that QQ's SSL layer somehow absorbs the timeout beyond our direct control), we must not wait for them. Use `shutdown(wait=False, cancel_futures=True)` instead — we've already collected all the results we can via `fut.result(timeout=...)`; the still-running workers can finish in the background and their sockets will be cleaned up by garbage collection.
+
+### Fixed
+
+- **`ThreadPoolExecutor` lifecycle in parallel fetch** — replaced `with ThreadPoolExecutor(...) as pool:` block with manual `pool = ThreadPoolExecutor(...)` + `try/finally: pool.shutdown(wait=False, cancel_futures=True)`. The retry loop now moves on as soon as every future has either returned or hit its `IMAP_PARALLEL_WORKER_TIMEOUT`, instead of blocking on `shutdown(wait=True)` for the still-running stalled workers. This is the missing piece that actually makes v0.8.2's timeouts observable end-to-end.
+
+### Tests
+
+- 415 tests, 100% coverage (same count as v0.8.2). Existing `test_imap_scan_parallel_worker_timeout_falls_back_to_single_conn` updated: the fake `ThreadPoolExecutor` no longer needs `__enter__`/`__exit__` (we're not using `with` anymore) and now exposes a `shutdown(*a, **kw)` no-op to match the real API we call.
+
+### Expected impact
+
+With v0.8.3 deployed, a QQ scan that encounters the hang condition will now advance through the retry and single-connection fallback within `2 × (IMAP_PARALLEL_WORKER_TIMEOUT + IMAP_PARALLEL_RETRY_DELAY_SECONDS) ≈ 10 min 10 s` worst case, rather than hanging indefinitely. Per-folder state is still preserved by v0.7.8's partial-state mechanism, so subsequent scans resume from where the previous one left off.
+
 ## [0.8.2] - 2026-04-19
 
 ### Why this release matters

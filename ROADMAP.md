@@ -163,6 +163,18 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.3 — Released
+
+**Theme:** Make v0.8.2's timeouts actually observable — fix ThreadPoolExecutor `with`-block cleanup
+
+Post-deploy validation of v0.8.2 revealed the socket read timeout and `fut.result(timeout=...)` were both firing correctly, but the enclosing `with ThreadPoolExecutor(...) as pool:` block's implicit `pool.shutdown(wait=True)` was joining every still-running (stalled) worker thread on `__exit__`. Net effect: the scan still hung indefinitely even though every v0.8.2 defense was technically working. Observed on production by triggering a QQ full rescan, watching `tcpdump -i any port 993` show 0 packets for 25+ minutes while `/proc/PID/task/*/wchan` showed four workers frozen in `do_poll` with zero CPU delta.
+
+Fix: replace `with pool:` with manual `pool = ThreadPoolExecutor(...)` + `try/finally: pool.shutdown(wait=False, cancel_futures=True)`. The retry loop now proceeds as soon as every future has returned or hit its `IMAP_PARALLEL_WORKER_TIMEOUT`, rather than blocking on the stalled workers. Worst-case wall-clock for the retry-then-fallback path is now `~10 min 10 s` (`2 × 300s` + one `5s` sleep) instead of unbounded.
+
+See [CHANGELOG.md](CHANGELOG.md#083---2026-04-19).
+
+---
+
 ## v0.8.2 — Released
 
 **Theme:** IMAP scan hang bulletproofing — socket read timeout, parallel worker timeout, fail-resume partial preservation

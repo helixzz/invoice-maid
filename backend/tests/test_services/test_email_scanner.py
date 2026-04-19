@@ -3795,16 +3795,12 @@ def test_imap_scan_parallel_worker_timeout_falls_back_to_single_conn(monkeypatch
         def __init__(self, *a, **kw):
             del a, kw
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            del a
-            return False
-
         def submit(self, *a, **kw):
             del a, kw
             return FakeTimeoutFuture()
+
+        def shutdown(self, *a, **kw):
+            del a, kw
 
     monkeypatch.setattr(es, "MailBox", TimeoutMailbox)
     monkeypatch.setattr(es.concurrent.futures, "ThreadPoolExecutor", FakeTimeoutPool)
