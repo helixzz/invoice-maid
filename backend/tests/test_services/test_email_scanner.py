@@ -3150,3 +3150,538 @@ def test_imap_scan_many_folder_emails_triggers_interim_progress(monkeypatch: pyt
     assert len(emails) == 250
     interim_updates = [u for u in captured if "msgs" in u.get("folder_fetch_msg", "") and "total_emails" in u]
     assert len(interim_updates) >= 1
+
+
+def test_imap_scan_parallel_fetch_when_uids_exceed_threshold(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """When IMAP_FETCH_WORKERS > 1 and folder has >= IMAP_PARALLEL_THRESHOLD UIDs,
+    parallel workers are used and results are merged."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@test",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@test>"})
+        for i in range(1, 6)
+    ]
+    uid_list_returned = [str(i) for i in range(1, 6)]
+
+    class ParallelMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return uid_list_returned
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", ParallelMailbox)
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+
+    assert len(emails) == 5, f"expected 5 emails from parallel fetch; got {len(emails)}"
+
+
+def test_imap_scan_parallel_worker_error_falls_back_to_single_conn(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """If a parallel worker errors out, the scan falls back to single-connection for that folder."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner, _fetch_folder_worker
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@test",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@test>"})
+        for i in range(1, 6)
+    ]
+
+    class FallbackMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return ["1", "2", "3", "4", "5"]
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", FallbackMailbox)
+
+    def broken_worker(*args, **kwargs):
+        del args, kwargs
+        return [], "connection failed"
+
+    monkeypatch.setattr(es, "_fetch_folder_worker", broken_worker)
+
+    account = EmailAccount(
+        id=1, name="qq", type="imap", host="imap.qq.com", port=993,
+        username="user@qq.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    scanner = ImapScanner()
+    emails = scanner._scan_sync(account, None)
+    assert len(emails) == 5, f"after fallback from broken workers, single-conn should still yield all emails; got {len(emails)}"
+
+
+def test_fetch_folder_worker_returns_empty_and_error_on_connection_failure(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """_fetch_folder_worker catches IMAP_CONNECTION_ERRORS and returns empty list + error string."""
+    from app.services import email_scanner as es
+
+    class BrokenMailbox:
+        def __init__(self, host, port):
+            del host, port
+
+        def login(self, username, password):
+            del username, password
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(es, "MailBox", BrokenMailbox)
+    results, error = es._fetch_folder_worker(
+        "imap.qq.com", 993, "user@qq.com", "secret", "INBOX", ["1", "2"], "ALL", None, None
+    )
+    assert results == []
+    assert "connection refused" in error
+
+
+def test_fetch_folder_worker_returns_messages_in_uid_list(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """_fetch_folder_worker only returns messages whose UIDs are in the provided list."""
+    from app.services import email_scanner as es
+
+    all_msgs = [
+        SimpleNamespace(uid="10", subject="s10", text="", html="", from_="a@test",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": "<m10@test>"}),
+        SimpleNamespace(uid="20", subject="s20", text="", html="", from_="b@test",
+                        date="2024-02-01T00:00:00Z", attachments=[], headers={"Message-ID": "<m20@test>"}),
+        SimpleNamespace(uid="30", subject="s30", text="", html="", from_="c@test",
+                        date="2024-03-01T00:00:00Z", attachments=[], headers={}),
+    ]
+
+    class WorkerMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", WorkerMailbox)
+    results, error = es._fetch_folder_worker(
+        "imap.qq.com", 993, "user@qq.com", "secret", "INBOX", ["10", "30"], "ALL", None, None
+    )
+    assert error == ""
+    assert {r["uid"] for r in results} == {"10", "30"}
+
+
+def test_imap_scan_falls_back_to_single_conn_when_uids_below_threshold(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """When UID count is below IMAP_PARALLEL_THRESHOLD, single-connection path is used."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 4)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 1000)
+
+    worker_called = []
+
+    def spy_worker(*args, **kwargs):
+        worker_called.append(True)
+        return [], ""
+
+    monkeypatch.setattr(es, "_fetch_folder_worker", spy_worker)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@test",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@test>"})
+        for i in range(1, 6)
+    ]
+
+    class SmallMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, username, password):
+            del username, password
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return ["1", "2", "3", "4", "5"]
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", SmallMailbox)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="imap.example.com", port=993,
+        username="user@example.com",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert worker_called == [], "worker must NOT be called when UIDs < threshold"
+    assert len(emails) == 5
+
+
+def test_fetch_folder_worker_applies_since_filter(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """since filter is applied client-side inside _fetch_folder_worker."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ScanOptions
+
+    old_msg = SimpleNamespace(uid="1", subject="old", text="", html="", from_="a@test",
+                              date="2023-06-01T00:00:00Z", attachments=[], headers={"Message-ID": "<old@t>"})
+    new_msg = SimpleNamespace(uid="2", subject="new", text="", html="", from_="b@test",
+                              date="2025-01-01T00:00:00Z", attachments=[], headers={"Message-ID": "<new@t>"})
+
+    class WorkerMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [old_msg, new_msg]
+
+    monkeypatch.setattr(es, "MailBox", WorkerMBX)
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    opts = ScanOptions(since=since)
+    results, error = es._fetch_folder_worker(
+        "h", 993, "u", "p", "INBOX", ["1", "2"], "ALL", since, opts
+    )
+    assert error == ""
+    assert [r["uid"] for r in results] == ["2"]
+
+
+def test_imap_scan_parallel_future_exception_falls_back(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """If a worker future raises (not just returns error string), parallel falls back."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@t>"})
+        for i in range(1, 6)
+    ]
+
+    class ExcMailbox:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return ["1", "2", "3", "4", "5"]
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    def raising_worker(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("unexpected worker crash")
+
+    monkeypatch.setattr(es, "MailBox", ExcMailbox)
+    monkeypatch.setattr(es, "_fetch_folder_worker", raising_worker)
+
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="h", port=993,
+        username="u@t",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert len(emails) == 5, f"fallback from raising worker must still yield emails; got {len(emails)}"
+
+
+def test_imap_scan_parallel_interim_progress_published(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """Progress callback receives interim updates during parallel fetch for large batches."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@t>"})
+        for i in range(1, 222)
+    ]
+    uid_list = [str(i) for i in range(1, 222)]
+
+    class BigParallelMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return uid_list
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", BigParallelMBX)
+    captured: list = []
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="h", port=993,
+        username="u@t",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None, None, captured.append)
+    assert len(emails) == 221
+    parallel_updates = [u for u in captured if "parallel" in u.get("folder_fetch_msg", "")]
+    assert len(parallel_updates) >= 1, "should publish interim progress during parallel fetch"
+
+
+def test_imap_scan_parallel_with_limit_applies_uid_cap(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """When FIRST_SCAN_LIMIT is set, the parallel path respects it via uid list slicing."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+    monkeypatch.setattr(es, "FIRST_SCAN_LIMIT", 4)
+
+    all_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": f"<m{i}@t>"})
+        for i in range(1, 9)
+    ]
+    uid_list = [str(i) for i in range(1, 9)]
+
+    class LimitedMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return uid_list
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, reverse, mark_seen, headers_only, bulk
+            msgs = all_msgs[:limit] if limit else all_msgs
+            return iter(msgs)
+
+    monkeypatch.setattr(es, "MailBox", LimitedMBX)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="h", port=993,
+        username="u@t",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert len(emails) <= 4, f"FIRST_SCAN_LIMIT=4 should cap results; got {len(emails)}"
+
+
+def test_imap_scan_workers_one_uses_single_conn_directly(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """IMAP_FETCH_WORKERS=1 disables parallel entirely; the n_workers<=1 branch is taken."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 1)
+
+    msg = SimpleNamespace(uid="1", subject="s", text="", html="", from_="a@test",
+                          date="2024-01-01T00:00:00Z", attachments=[], headers={})
+
+    class SingleWorkerMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return [msg]
+
+    monkeypatch.setattr(es, "MailBox", SingleWorkerMBX)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="h", port=993,
+        username="u@t",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert len(emails) == 1
+
+
+def test_imap_scan_parallel_handles_no_message_id_in_msg_dict(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """Messages with empty Message-ID in parallel path are added without dedup tracking."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 2)
+
+    no_id_msgs = [
+        SimpleNamespace(uid=str(i), subject=f"s{i}", text="", html="", from_=f"u{i}@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={})
+        for i in range(1, 4)
+    ]
+    uid_list = ["1", "2", "3"]
+
+    class NoIdMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return uid_list
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(no_id_msgs)
+
+    monkeypatch.setattr(es, "MailBox", NoIdMBX)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="h", port=993,
+        username="u@t",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert len(emails) == 3
+
+
+def test_imap_scan_parallel_dedup_across_workers(monkeypatch: pytest.MonkeyPatch, settings) -> None:
+    """Cross-folder dedup works correctly in the parallel path: same Message-ID seen
+    by multiple workers is only included once, and highest_uid is updated correctly."""
+    from app.services import email_scanner as es
+    from app.services.email_scanner import ImapScanner
+
+    monkeypatch.setattr(es, "IMAP_FETCH_WORKERS", 2)
+    monkeypatch.setattr(es, "IMAP_PARALLEL_THRESHOLD", 3)
+
+    shared_id = "<shared@test.com>"
+    all_msgs = [
+        SimpleNamespace(uid="10", subject="unique1", text="", html="", from_="a@t",
+                        date="2024-01-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_id}),
+        SimpleNamespace(uid="20", subject="unique2", text="", html="", from_="b@t",
+                        date="2024-02-01T00:00:00Z", attachments=[], headers={"Message-ID": shared_id}),
+        SimpleNamespace(uid="30", subject="unique3", text="", html="", from_="c@t",
+                        date="2024-03-01T00:00:00Z", attachments=[], headers={"Message-ID": "<other@test.com>"}),
+    ]
+    uid_list = ["10", "20", "30"]
+
+    class DedupMBX:
+        def __init__(self, host, port):
+            del host, port
+            self._folder = _FakeFolderManager()
+
+        @property
+        def folder(self):
+            return self._folder
+
+        def login(self, u, p):
+            del u, p
+            return _FakeContextManager(self)
+
+        def uids(self, criteria):
+            del criteria
+            return uid_list
+
+        def fetch(self, criteria, limit=None, reverse=False, mark_seen=True, headers_only=False, bulk=False):
+            del criteria, limit, reverse, mark_seen, headers_only, bulk
+            return iter(all_msgs)
+
+    monkeypatch.setattr(es, "MailBox", DedupMBX)
+    account = EmailAccount(
+        id=1, name="imap", type="imap", host="h", port=993,
+        username="u@t",
+        password_encrypted=encrypt_password("secret", settings.JWT_SECRET),
+    )
+    emails = ImapScanner()._scan_sync(account, None)
+    assert len(emails) == 2, f"dedup should collapse 2 msgs with same Message-ID to 1; got {len(emails)}"
+    uids = {e.uid for e in emails}
+    assert "30" in uids

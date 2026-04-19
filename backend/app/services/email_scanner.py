@@ -7,6 +7,7 @@ import base64
 import email
 from email import policy
 from email.utils import parsedate_to_datetime
+import concurrent.futures
 import functools
 import hashlib
 import imaplib
@@ -36,6 +37,9 @@ from app.models import EmailAccount
 logger = logging.getLogger(__name__)
 
 FIRST_SCAN_LIMIT: int | None = None
+
+IMAP_FETCH_WORKERS: int = 4
+IMAP_PARALLEL_THRESHOLD: int = 500
 
 IMAP_CONNECTION_ERRORS = (OSError, ssl.SSLError, imaplib.IMAP4.error, MailboxLoginError, MailboxFetchError)
 POP3_CONNECTION_ERRORS = (OSError, ssl.SSLError, poplib.error_proto)
@@ -319,6 +323,56 @@ def _serialize_graph_state(state: dict[str, str]) -> str:
     return json.dumps(state, ensure_ascii=False)
 
 
+def _fetch_folder_worker(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    folder_name: str,
+    uid_list: list[str],
+    criteria: Any,
+    since: Any,
+    options: Any,
+) -> tuple[list[dict[str, Any]], str]:
+    """Fetch a sub-list of UIDs from a dedicated IMAP connection.
+
+    Runs in a thread. Returns (raw_message_dicts, error_or_empty_str) where
+    raw_message_dicts contains one dict per message with uid/subject/from_/date/
+    headers fields so the caller can build RawEmail without re-parsing."""
+    results: list[dict[str, Any]] = []
+    error_msg = ""
+    try:
+        with MailBox(host, port=port).login(username, password) as mb:
+            _set_imap_keepalive(getattr(mb, "client", None))
+            mb.folder.set(folder_name)
+            for msg in mb.fetch(
+                criteria,
+                mark_seen=False,
+                headers_only=True,
+                bulk=500,
+                reverse=True,
+            ):
+                msg_uid = cast(str, getattr(msg, "uid", "") or "")
+                if msg_uid not in uid_list:
+                    continue
+                received_at = _normalize_datetime(getattr(msg, "date", None))
+                if options is not None and options.since is not None and received_at < options.since:
+                    continue
+                results.append({
+                    "uid": msg_uid,
+                    "subject": cast(str, getattr(msg, "subject", "") or ""),
+                    "from_": cast(str, getattr(msg, "from_", "") or ""),
+                    "received_at": received_at,
+                    "headers": {
+                        key: str(value)
+                        for key, value in cast(Any, getattr(msg, "headers", {})).items()
+                    },
+                })
+    except IMAP_CONNECTION_ERRORS as exc:
+        error_msg = str(exc)
+    return results, error_msg
+
+
 class ImapScanner(BaseEmailScanner):
     async def scan(
         self,
@@ -429,67 +483,177 @@ class ImapScanner(BaseEmailScanner):
 
                     _publish({"folder_fetch_msg": f"fetching {folder_name} (~{current_messages or '?'} msgs)"})
 
-                    try:
-                        iterator = mailbox.fetch(
-                            criteria,
-                            limit=limit,
-                            reverse=True,
-                            mark_seen=False,
-                            headers_only=True,
-                            bulk=500,
-                        )
-                        for msg in iterator:
-                            msg_uid = cast(str, getattr(msg, "uid", "") or "")
-                            if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
-                                continue
-                            headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
-                            message_id = ""
-                            for header_key in ("Message-ID", "Message-Id", "message-id"):
-                                if header_key in headers_map:
-                                    message_id = headers_map[header_key].strip().strip("<>")
-                                    break
-                            if message_id and message_id in seen_message_ids:
-                                if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
-                                    highest_uid = msg_uid
-                                continue
-                            if message_id:
-                                seen_message_ids.add(message_id)
+                    n_workers = IMAP_FETCH_WORKERS if IMAP_FETCH_WORKERS > 1 else 1
+                    all_uids: list[str] = []
+                    if n_workers > 1:
+                        try:
+                            all_uids_raw = mailbox.uids(criteria)
+                            all_uids = [u for u in all_uids_raw if not effective_prev_uid or _is_uid_newer(u, effective_prev_uid)]
+                            if limit is not None:
+                                all_uids = all_uids[:limit]
+                        except (IMAP_CONNECTION_ERRORS + (AttributeError,)):
+                            all_uids = []
 
-                            received_at = _normalize_datetime(getattr(msg, "date", None))
-                            if options is not None and options.since is not None and received_at < options.since:
-                                if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
-                                    highest_uid = msg_uid
-                                continue
-                            emails.append(
-                                RawEmail(
-                                    uid=msg_uid,
-                                    subject=cast(str, getattr(msg, "subject", "") or ""),
-                                    body_text="",
-                                    body_html="",
-                                    from_addr=cast(str, getattr(msg, "from_", "") or ""),
-                                    received_at=received_at,
-                                    attachments=[],
-                                    body_links=[],
-                                    headers=headers_map,
-                                    is_hydrated=False,
-                                    folder=folder_name,
-                                    message_id=message_id,
-                                )
-                            )
-                            folder_emails_this_run += 1
-                            if folder_emails_this_run % 200 == 0:
-                                _publish({
-                                    "folder_fetch_msg": f"{folder_name}: +{folder_emails_this_run} msgs",
-                                    "total_emails": len(emails),
-                                })
-                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
+                    use_parallel = (
+                        n_workers > 1
+                        and len(all_uids) >= IMAP_PARALLEL_THRESHOLD
+                    )
+
+                    def _process_msg_dict(
+                        msg_dict: dict[str, Any],
+                    ) -> RawEmail | None:
+                        msg_uid = msg_dict["uid"]
+                        headers_map = msg_dict["headers"]
+                        message_id = ""
+                        for header_key in ("Message-ID", "Message-Id", "message-id"):
+                            if header_key in headers_map:
+                                message_id = headers_map[header_key].strip().strip("<>")
+                                break
+                        if message_id and message_id in seen_message_ids:
+                            nonlocal highest_uid
+                            if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
                                 highest_uid = msg_uid
-                    except IMAP_CONNECTION_ERRORS as exc:
-                        logger.warning(
-                            "IMAP fetch failed for folder %r (%s); partial results for this folder will be saved and we will continue to the next folder",
-                            folder_name,
-                            exc,
+                            return None
+                        if message_id:
+                            seen_message_ids.add(message_id)
+                        received_at = msg_dict["received_at"]
+                        if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                            highest_uid = msg_uid
+                        return RawEmail(
+                            uid=msg_uid,
+                            subject=msg_dict["subject"],
+                            body_text="",
+                            body_html="",
+                            from_addr=msg_dict["from_"],
+                            received_at=received_at,
+                            attachments=[],
+                            body_links=[],
+                            headers=headers_map,
+                            is_hydrated=False,
+                            folder=folder_name,
+                            message_id=message_id,
                         )
+
+                    if use_parallel:
+                        partition_size = (len(all_uids) + n_workers - 1) // n_workers
+                        partitions = [all_uids[i * partition_size : (i + 1) * partition_size] for i in range(n_workers)]
+                        worker_futures = []
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+                            uid_sets = [set(p) for p in partitions]
+                            for p in partitions:
+                                worker_futures.append(pool.submit(
+                                    _fetch_folder_worker,
+                                    account.host or "",
+                                    account.port or 993,
+                                    account.username,
+                                    password,
+                                    folder_name,
+                                    list(set(p)),
+                                    criteria,
+                                    options.since if options else None,
+                                    options,
+                                ))
+
+                        parallel_ok = True
+                        worker_msgs: list[dict[str, Any]] = []
+                        for fut in worker_futures:
+                            try:
+                                batch_msgs, err = fut.result()
+                                if err:
+                                    logger.warning(
+                                        "IMAP parallel worker failed for folder %r: %s; will retry single-connection",
+                                        folder_name,
+                                        err,
+                                    )
+                                    parallel_ok = False
+                                    break
+                                worker_msgs.extend(batch_msgs)
+                            except Exception as exc:
+                                logger.warning(
+                                    "IMAP parallel worker raised for folder %r: %s; will retry single-connection",
+                                    folder_name,
+                                    exc,
+                                )
+                                parallel_ok = False
+                                break
+
+                        if parallel_ok:
+                            worker_msgs.sort(key=lambda m: m["received_at"])
+                            for msg_dict in worker_msgs:
+                                email_obj = _process_msg_dict(msg_dict)
+                                if email_obj is not None:
+                                    emails.append(email_obj)
+                                    folder_emails_this_run += 1
+                                    if folder_emails_this_run % 200 == 0:
+                                        _publish({
+                                            "folder_fetch_msg": f"{folder_name}: +{folder_emails_this_run} msgs (parallel)",
+                                            "total_emails": len(emails),
+                                        })
+                        else:
+                            use_parallel = False
+
+                    if not use_parallel:
+                        try:
+                            iterator = mailbox.fetch(
+                                criteria,
+                                limit=limit,
+                                reverse=True,
+                                mark_seen=False,
+                                headers_only=True,
+                                bulk=500,
+                            )
+                            for msg in iterator:
+                                msg_uid = cast(str, getattr(msg, "uid", "") or "")
+                                if effective_prev_uid and not _is_uid_newer(msg_uid, effective_prev_uid):
+                                    continue
+                                headers_map = {key: str(value) for key, value in cast(Any, getattr(msg, "headers", {})).items()}
+                                message_id = ""
+                                for header_key in ("Message-ID", "Message-Id", "message-id"):
+                                    if header_key in headers_map:
+                                        message_id = headers_map[header_key].strip().strip("<>")
+                                        break
+                                if message_id and message_id in seen_message_ids:
+                                    if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                                        highest_uid = msg_uid
+                                    continue
+                                if message_id:
+                                    seen_message_ids.add(message_id)
+
+                                received_at = _normalize_datetime(getattr(msg, "date", None))
+                                if options is not None and options.since is not None and received_at < options.since:
+                                    if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):  # pragma: no branch
+                                        highest_uid = msg_uid
+                                    continue
+                                emails.append(
+                                    RawEmail(
+                                        uid=msg_uid,
+                                        subject=cast(str, getattr(msg, "subject", "") or ""),
+                                        body_text="",
+                                        body_html="",
+                                        from_addr=cast(str, getattr(msg, "from_", "") or ""),
+                                        received_at=received_at,
+                                        attachments=[],
+                                        body_links=[],
+                                        headers=headers_map,
+                                        is_hydrated=False,
+                                        folder=folder_name,
+                                        message_id=message_id,
+                                    )
+                                )
+                                folder_emails_this_run += 1
+                                if folder_emails_this_run % 200 == 0:
+                                    _publish({
+                                        "folder_fetch_msg": f"{folder_name}: +{folder_emails_this_run} msgs",
+                                        "total_emails": len(emails),
+                                    })
+                                if msg_uid and (not highest_uid or _is_uid_newer(msg_uid, highest_uid)):
+                                    highest_uid = msg_uid
+                        except IMAP_CONNECTION_ERRORS as exc:
+                            logger.warning(
+                                "IMAP fetch failed for folder %r (%s); partial results for this folder will be saved and we will continue to the next folder",
+                                folder_name,
+                                exc,
+                            )
 
                     state_out[folder_name] = {
                         "uid": highest_uid or "",

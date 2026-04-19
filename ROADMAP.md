@@ -163,6 +163,16 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.0 — Released
+
+**Theme:** IMAP 3.35× parallel cold-scan + account page UX
+
+Benchmarks confirmed QQ Mail's IMAP throughput ceiling is ~32 msg/s per IP regardless of header size or pipelining — but parallel connections (4 workers) beat the ceiling by distributing across QQ's per-connection quota. v0.8.0 adds `IMAP_FETCH_WORKERS=4` (configurable) with safe per-folder fallback to single-connection on worker errors. Also fixes the account page raw JSON blob display with a compact `5 folders · 47,849 messages · UID 40993` summary.
+
+See [CHANGELOG.md](CHANGELOG.md) for full benchmark details.
+
+---
+
 ## v0.7.10 — Released
 
 **Theme:** Critical correctness hotfix — hydrate-before-classify
