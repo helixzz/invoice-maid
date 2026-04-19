@@ -260,17 +260,15 @@ async def _process_single_email(
         async for db in get_db():
             result = _EmailResult(last_uid=email_data.uid)
             try:
-                t1 = classifier.classify_tier1(email_data)
-                needs_full_body = (
+                if (
                     scanner is not None
                     and account is not None
                     and not getattr(email_data, "is_hydrated", True)
-                    and (t1 is None or t1.is_invoice)
-                )
-                if needs_full_body:
+                ):
                     async with _hydration_semaphore:
                         email_data = await scanner.hydrate_email(account, email_data)
-                    t1 = classifier.classify_tier1(email_data)
+
+                t1 = classifier.classify_tier1(email_data)
 
                 if t1 is not None:
                     is_invoice = t1.is_invoice

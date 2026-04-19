@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.10] - 2026-04-19
+
+### Why this release matters — CRITICAL CORRECTNESS HOTFIX
+
+Production monitoring revealed that the QQ IMAP email account processed **103,732 emails across two scans (75,433 + 28,299) and saved ZERO invoices**, while the Outlook Graph account had correctly saved 201 invoices from 35,631 emails during the same period. This was a latent correctness bug that had been present since v0.7.2's lazy-fetch refactor, but was only noticed after v0.7.9 added user-visible telemetry that exposed the counter disparity.
+
+Root cause: an ordering defect in `_process_single_email` (`scheduler.py` lines 263–273) where the tier-1 classifier was called BEFORE hydration, then hydration was only performed if the tier-1 classifier had ALREADY returned `is_invoice=True` or `None`. For IMAP emails that come in metadata-only (no body, no attachments — the whole point of the v0.7.2 lazy fetch), the tier-1 classifier at `email_classifier.py:132-135` would reject them as "no content or keywords" because `bool(email.attachments) is False` pre-hydration. That rejection then blocked the hydration that would have made the classification correct. A Catch-22.
+
+Outlook happened to work because `OutlookScanner.scan` populates `body_text=bodyPreview` at scan time (email_scanner.py:864), giving tier-1 enough content to approve and trigger hydration. IMAP has no such preview path; emails genuinely arrive with `body_text=""` and `attachments=[]` and would only become classifiable after hydration — which never ran.
+
+Production data as of v0.7.9 rescan (scan_log #26, QQ account):
+- 75,423 extraction logs
+- 75,423 `outcome=not_invoice` (100%)
+- 0 `saved`, 0 `not_vat_invoice`, 0 `low_confidence`, 0 `duplicate`
+
+This release fixes the ordering so unhydrated emails are ALWAYS hydrated before tier-1 classification. Expected impact: full QQ mailbox rescan should yield thousands of invoices.
+
+### Fixed
+
+- **Hydrate-before-classify ordering.** `_process_single_email` now unconditionally hydrates any `is_hydrated=False` email before calling `classifier.classify_tier1`. The previous logic's attempt at "lazy hydration only for emails that tier-1 approved" created an impossible condition where tier-1 couldn't approve pre-hydration data (empty attachments, empty body) but would block the hydration needed to provide that data. Already-hydrated emails (POP3's eager path, Outlook's bodyPreview path) are unaffected — they skip hydration as before.
+
+### Tests
+
+- 394 tests, 100% coverage.
+- Replaced the v0.7.2-era `test_lazy_hydration_fires_only_for_invoice_candidates` test (which asserted the buggy behaviour) with `test_scheduler_hydrates_all_unhydrated_emails_before_classification` (regression test with production-number documentation in the docstring) and `test_scheduler_skips_hydration_for_already_hydrated_emails` (verifies POP3/Outlook pre-hydrated path is not double-hydrated).
+
+### Upgrade + Verify
+
+After deploying this release, operators with IMAP accounts that have not yielded any invoices should trigger a **full rescan** (`POST /scan/trigger` with `{"full": true}`) to reprocess the backlog that was previously silently discarded. The rescan will re-traverse the full mailbox under the fixed classification ordering. Expected yield: dependent on mailbox content, but the v0.7.9 Outlook baseline (201/35,631 = 0.56% of emails are invoices) is a reasonable expectation — for QQ at 103,732 emails scanned, that projects to ~580+ invoices recovered.
+
 ## [0.7.9] - 2026-04-19
 
 ### Why this release matters

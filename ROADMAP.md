@@ -163,6 +163,16 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.7.10 — Released
+
+**Theme:** Critical correctness hotfix — hydrate-before-classify
+
+v0.7.9's folder-level telemetry made a latent correctness bug visible: QQ IMAP account had processed 103,732 emails across two scans and saved 0 invoices (vs. Outlook's 201/35,631). Root cause: `_process_single_email` was calling the tier-1 classifier BEFORE hydrating unhydrated emails, then only hydrating if tier-1 had already returned `is_invoice=True`. For IMAP emails that arrive metadata-only (no body, no attachments), tier-1 correctly rejected them as "no content or keywords" — but that rejection blocked the hydration that would have made classification correct. An impossible-to-pass Catch-22 introduced in v0.7.2's lazy-fetch refactor. The fix unconditionally hydrates any `is_hydrated=False` email before classifying.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details including production telemetry.
+
+---
+
 ## v0.7.9 — Released
 
 **Theme:** Frontend surfaces v0.7.8's folder telemetry

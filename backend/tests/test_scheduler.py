@@ -1850,24 +1850,30 @@ async def test_llm_returns_unknown_does_not_overwrite_parser_semantic_fields(
 
 
 @pytest.mark.asyncio
-async def test_lazy_hydration_fires_only_for_invoice_candidates(
+async def test_scheduler_hydrates_all_unhydrated_emails_before_classification(
     db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
 ) -> None:
+    """Regression test for v0.7.10 hotfix: unhydrated emails (e.g. from IMAP
+    scanners that return headers_only=True) must ALWAYS be hydrated before
+    the tier-1 classifier runs — not lazily after tier-1 "approves" them.
+    The old behaviour caused 100 % of QQ IMAP emails to be rejected pre-
+    hydration, leading to 0 invoices saved from 103,732 emails in production.
+    """
     await create_email_account(last_scan_uid=None)
 
-    spam_email = RawEmail(
-        uid="spam-1",
-        subject="50% off newsletter promo",
+    email_without_subject_keyword = RawEmail(
+        uid="no-kw-1",
+        subject="2024-01-01 monthly billing summary",
         body_text="",
         body_html="",
-        from_addr="newsletter@promo.com",
+        from_addr="billing@example.com",
         received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         attachments=[],
         body_links=[],
         is_hydrated=False,
     )
-    invoice_email = RawEmail(
-        uid="inv-1",
+    email_with_subject_keyword = RawEmail(
+        uid="kw-1",
         subject="发票来了",
         body_text="",
         body_html="",
@@ -1880,47 +1886,122 @@ async def test_lazy_hydration_fires_only_for_invoice_candidates(
 
     hydrate_calls: list[str] = []
 
+    parsed_by_uid = {
+        "no-kw-1": ParsedInvoice(
+            invoice_no="11111111111111111111",
+            buyer="Buyer A",
+            seller="Seller A",
+            amount=Decimal("10.00"),
+            invoice_date=date(2024, 1, 1),
+            invoice_type="增值税电子普通发票",
+            item_summary="服务费A",
+            raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+            source_format="pdf",
+            confidence=0.9,
+            extraction_method="qr",
+        ),
+        "kw-1": ParsedInvoice(
+            invoice_no="22222222222222222222",
+            buyer="Buyer B",
+            seller="Seller B",
+            amount=Decimal("20.00"),
+            invoice_date=date(2024, 1, 2),
+            invoice_type="增值税电子普通发票",
+            item_summary="服务费B",
+            raw_text="增值税电子普通发票 价税合计 税额 发票号码",
+            source_format="pdf",
+            confidence=0.9,
+            extraction_method="qr",
+        ),
+    }
+    current_uid = {"value": ""}
+
     class FakeScanner:
         async def scan(self, account, last_uid=None, options=None):
-            del account, last_uid
-            return [spam_email, invoice_email]
+            del account, last_uid, options
+            return [email_without_subject_keyword, email_with_subject_keyword]
 
         async def hydrate_email(self, account, email):
             del account
             hydrate_calls.append(email.uid)
             email.body_text = "增值税电子普通发票 价税合计 税额 发票号码"
             email.attachments = [
-                RawAttachment(filename="invoice.pdf", content_type="application/pdf", payload=b"pdf")
+                RawAttachment(filename=f"invoice-{email.uid}.pdf", content_type="application/pdf", payload=b"pdf"),
             ]
             email.is_hydrated = True
+            current_uid["value"] = email.uid
             return email
 
-    parsed = ParsedInvoice(
-        invoice_no="88899900011122233344",
-        buyer="Buyer",
-        seller="Seller",
-        amount=Decimal("10.00"),
-        invoice_date=date(2024, 1, 1),
-        invoice_type="增值税电子普通发票",
-        item_summary="服务费",
-        raw_text="增值税电子普通发票 价税合计 税额 发票号码",
-        confidence=0.9,
-        extraction_method="qr",
-    )
+    def _parse(filename, payload):
+        del payload
+        for uid, parsed in parsed_by_uid.items():
+            if uid in filename:
+                return parsed
+        return parsed_by_uid["no-kw-1"]
 
     monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
     monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
     monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
-    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+    monkeypatch.setattr(scheduler, "parse_invoice", _parse)
     monkeypatch.setattr(scheduler.FileManager, "save_invoice", AsyncMock(return_value="saved.pdf"))
+    monkeypatch.setattr(scheduler, "store_embedding", AsyncMock(return_value=None))
 
     await scheduler.scan_all_accounts()
 
-    assert "spam-1" not in hydrate_calls
-    assert "inv-1" in hydrate_calls
+    assert set(hydrate_calls) == {"no-kw-1", "kw-1"}, (
+        "Both emails must be hydrated before tier-1 runs — this is the v0.7.10 fix. "
+        "Previously, 'no-kw-1' would have been rejected by tier-1 at line 132-135 of "
+        "email_classifier.py for 'no content or keywords', which blocked hydration. "
+        f"Got: {hydrate_calls}"
+    )
+
     invoices = (await db.execute(select(Invoice))).scalars().all()
-    assert len(invoices) == 1
-    assert invoices[0].invoice_no == "88899900011122233344"
+    invoice_nos = {i.invoice_no for i in invoices}
+    assert invoice_nos == {"11111111111111111111", "22222222222222222222"}, (
+        f"expected both emails to save distinct invoices (the no-keyword one "
+        f"'no-kw-1' is the regression-test bellwether for v0.7.10); got {invoice_nos}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_skips_hydration_for_already_hydrated_emails(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    """Emails that the scanner already hydrated (POP3 which eagerly fetches full
+    body, or Outlook when bodyPreview is sufficient) must NOT be re-hydrated."""
+    await create_email_account(last_scan_uid=None)
+
+    already_hydrated_email = RawEmail(
+        uid="hyd-1",
+        subject="statement 2024-01",
+        body_text="some plain text body",
+        body_html="",
+        from_addr="billing@example.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[],
+        body_links=[],
+        is_hydrated=True,
+    )
+
+    hydrate_calls: list[str] = []
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None, options=None):
+            del account, last_uid, options
+            return [already_hydrated_email]
+
+        async def hydrate_email(self, account, email):
+            del account
+            hydrate_calls.append(email.uid)
+            return email
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+
+    await scheduler.scan_all_accounts()
+
+    assert hydrate_calls == [], f"already-hydrated email should not be re-hydrated; got {hydrate_calls}"
 
 
 @pytest.mark.asyncio
