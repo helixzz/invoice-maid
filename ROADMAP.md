@@ -163,6 +163,22 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.2 — Released
+
+**Theme:** IMAP scan hang bulletproofing — socket read timeout, parallel worker timeout, fail-resume partial preservation
+
+Diagnosed from a live production incident: QQ IMAP full-mailbox scans were appearing to freeze on "Folder 1/23 · INBOX · fetching ~35626 msgs · processed=0" for 44+ minutes at a time (two prior scans ran 2 hours and 44 minutes respectively, both finishing with `emails_scanned=0`). Root cause: `imap-tools` `MailBox(...)` has no socket read timeout, so when QQ returns `NO [b'System busy!']` to a parallel worker and the code falls back to the single-connection retry path, the scan thread blocks in `imaplib.readline()` on a half-open SSL socket until the SSL layer eventually raises `[SSL: BAD_LENGTH]` 44 minutes later. The v0.7.8 TCP keepalive didn't catch this because QQ's failure mode is application-level stall with ACKed keepalive probes.
+
+v0.8.2 adds a three-layer timeout defense: `IMAP_CONNECT_TIMEOUT=15s` on the TCP handshake, `IMAP_READ_TIMEOUT=120s` via `sock.settimeout()` on the underlying client socket (alongside the existing keepalive), and `IMAP_PARALLEL_WORKER_TIMEOUT=300s` on every `future.result()` call. Also adds a single-retry path for transient "System busy" responses before falling back to single-conn, preserves partial messages from failed parallel attempts (fail-resume through retries), and bracket-wraps `mailbox.uids()` with progress callbacks so the UI doesn't appear frozen during the 30–120s server-side SEARCH on Chinese providers.
+
+`IMAP_CONNECTION_ERRORS` tuple expanded with `imaplib.IMAP4.abort`, `socket.timeout`, and `TimeoutError` so the new timeouts don't trigger uncaught exceptions that cascade-kill the account scan.
+
+**Performance note (documentation-only):** this release does NOT make individual folders scan faster on QQ/163 — the v0.8.1 benchmarks already proved QQ's per-IP processing ceiling is ~32 msg/s. A cold 35k-msg INBOX will still take ~18 minutes of wall clock. v0.8.2 prevents the **hang** that made scans appear stuck, and ensures that when a folder eventually fails, the scanner advances to the next folder rather than being cascade-killed on SSL corruption.
+
+See [CHANGELOG.md](CHANGELOG.md#082---2026-04-19) for the full patch.
+
+---
+
 ## v0.8.1 — Released
 
 **Theme:** URL pre-download filter for tracking pixels & unsubscribe links

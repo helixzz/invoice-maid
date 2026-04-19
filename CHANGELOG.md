@@ -4,7 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.2] - 2026-04-19
+
+### Why this release matters
+
+**Production scan hang diagnosed from a live incident.** User triggered a manual QQ IMAP scan and watched it sit on "Folder 1/23 · INBOX · fetching ~35626 msgs · processed=0" with zero visible progress. Prior scan `#43` ran **2 hours** and `#45` ran **44 minutes**, both finishing with `emails_scanned=0`. Production `journalctl` confirmed the pattern — after the v0.7.8 STATUS-preflight correctly skips unchanged INBOX, the scanner advances to `Sent Messages`, QQ answers the parallel worker's FETCH with `NO [b'System busy!']`, the code falls back to the single-connection retry path, and the scan thread then blocks in `imaplib.readline()` on a half-open SSL socket for **44 minutes** until the SSL layer eventually raises `[SSL: BAD_LENGTH] bad length`. Cascade-fails 20 folders in one second.
+
+Root cause: `imap-tools` `MailBox(...)` never had a socket read timeout set. The v0.7.8 TCP keepalive (60s idle, 10s probe, 5 count) detects dead peers — but QQ's failure mode is an application-level stall where TCP probes are still ACKed by the remote stack, so keepalive never fires. Only `sock.settimeout(N)` on the underlying `client.sock` bounds these stalls.
+
+### Added
+
+- **`IMAP_CONNECT_TIMEOUT = 15s`** on every `MailBox(...)` constructor (4 call sites). Caps TCP handshake latency that previously defaulted to kernel `TCP_SYN_RETRIES` (~2 min on Linux).
+- **`IMAP_READ_TIMEOUT = 120s`** set via `sock.settimeout()` alongside the existing keepalive in `_set_imap_keepalive()`. A stalled `recv()` now raises `socket.timeout` after 2 minutes instead of hanging for 44 minutes.
+- **`IMAP_PARALLEL_WORKER_TIMEOUT = 300s`** on every parallel-fetch `future.result(timeout=...)`. A single zombie worker can no longer block the entire 4-thread pool.
+- **Single-retry on transient parallel failure** — when the first parallel attempt fails (QQ `System busy`, stalled worker, per-connection quota trip), the scanner logs a warning, sleeps `IMAP_PARALLEL_RETRY_DELAY_SECONDS = 5s`, and retries once before falling back to single-connection. QQ's "System busy" is usually resolved within seconds.
+- **Parallel-fail partial preservation** — when one or more workers return a partial batch AND an error, the scanner no longer discards those partial results. They are still merged into `emails` so the next scan's UID-range filter can resume from the correct point. Fail-resume state now survives both catastrophic and partial parallel failures.
+- **`mailbox.uids()` heartbeat** — two new progress callbacks bracket the server-side UID SEARCH: `"{folder}: searching UIDs (~N msgs)"` before and `"{folder}: N new UIDs to fetch"` after. On Chinese IMAP providers the SEARCH can take 30–120 s; the UI previously showed a frozen `fetching (~N msgs)` for this whole window.
+
+### Fixed
+
+- **`IMAP_CONNECTION_ERRORS` tuple expanded** to include `imaplib.IMAP4.abort`, `socket.timeout`, and `TimeoutError`. Without these, the new `sock.settimeout()` would raise uncaught exceptions and crash the whole account scan (previously only caught by the outer `OSError` by luck on Python 3.11+). Mid-command server drops now raise `imaplib.IMAP4.abort` and are properly caught, the folder is skipped with a warning, and the scan continues to the next folder.
+- **`mailbox.uids()` exceptions now logged and absorbed** — the previous silent `except: all_uids = []` hid real failures. Now emits a `"IMAP uids() search failed for folder %r (%s); falling back to single-connection serial fetch"` warning so operators can correlate with provider-side throttling events.
+
+### Tests
+
+- 415 tests, 100% coverage (+4 from v0.8.1). New regression tests:
+  - `test_imap_scan_parallel_worker_timeout_falls_back_to_single_conn` — simulates a stuck `future.result()` via a fake `ThreadPoolExecutor` that raises `concurrent.futures.TimeoutError`. Verifies the scan completes via single-conn fallback instead of hanging. **This is the v0.8.1 production-hang regression test.**
+  - `test_imap_scan_parallel_retry_preserves_longer_partial_on_second_failure` — two consecutive parallel failures where attempt 2 returns more partial messages than attempt 1. Verifies the larger partial set wins the merge.
+  - `test_imap_scan_publishes_heartbeat_around_uids_search` — verifies both pre- and post-SEARCH progress callbacks fire.
+  - `test_imap_scan_uids_failure_is_caught_and_falls_back` — raises `socket.timeout` from `mailbox.uids()` and verifies the single-conn fallback still yields all messages.
+- Existing `test_set_imap_keepalive_covers_all_branches` strengthened to assert `sock.settimeout(IMAP_READ_TIMEOUT)` is actually called (was previously only checking `setsockopt` calls).
+- Existing 49 `FakeMailbox.__init__(self, host, port)` test fixtures updated to accept and ignore the new `timeout=` kwarg — no behavioral change, just signature compatibility.
+
+### Expected impact on the live QQ scan
+
+The scan that previously hung for 44 minutes with zero progress now completes or errors out within ~2 minutes per stalled folder (`IMAP_READ_TIMEOUT`). Individual folder timeouts no longer cascade to the rest of the account — the scan proceeds folder-by-folder with each timeout logged and its partial UID state preserved. The UI heartbeat shows `"INBOX: searching UIDs (~35626 msgs)"` and `"INBOX: N new UIDs to fetch"` during the SEARCH round-trip instead of a frozen bar.
+
+### Performance guidance (documentation-only)
+
+Full IMAP mailbox scans on large Chinese providers (QQ, 163, Aliyun) **are legitimately slow** and will remain so — the v0.8.1 benchmarks proved QQ's per-IP-per-account processing ceiling is ~32 msg/s (see handoff). A cold scan of a 35k-message INBOX will take ~18 minutes of wall clock at best. v0.8.2 does NOT make individual folders scan faster; it prevents the **hang** that made scans appear stuck and ensures that when a folder eventually fails, the scanner advances to the next one rather than being cascade-killed.
+
 ## [0.8.1] - 2026-04-19
+
 
 ### Why this release matters
 
