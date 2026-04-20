@@ -184,3 +184,62 @@ async def test_lifespan_skips_scheduler_for_multiple_workers(monkeypatch: pytest
     assert stop == []
     assert warnings == ["Multiple workers detected (2). Scheduler disabled to prevent duplicate jobs."]
     engine.dispose.assert_awaited_once()
+
+
+async def test_scan_orphan_user_directories_logs_orphan(
+    db, settings, admin_user, tmp_path, caplog
+) -> None:
+    """Orphan detection: a users/{id}/ dir on disk with no matching
+    users.id row must generate a WARNING in the service log.
+    Operators rely on this for disk-usage hygiene."""
+    import logging
+
+    from app import main as main_module
+
+    settings.STORAGE_PATH = str(tmp_path)
+
+    (tmp_path / "users" / "99" / "invoices").mkdir(parents=True)
+    (tmp_path / "users" / str(admin_user.id) / "invoices").mkdir(parents=True)
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await main_module._scan_orphan_user_directories(db, settings)
+
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("orphan user storage directory" in m and "99" in m for m in messages)
+    assert not any(
+        "orphan user storage directory" in m and f"id={admin_user.id}" in m
+        for m in messages
+    )
+
+
+async def test_scan_orphan_user_directories_noop_when_users_dir_absent(
+    db, settings, tmp_path
+) -> None:
+    from app import main as main_module
+
+    settings.STORAGE_PATH = str(tmp_path)
+
+    await main_module._scan_orphan_user_directories(db, settings)
+
+
+async def test_scan_orphan_user_directories_skips_non_numeric_entries(
+    db, settings, tmp_path, caplog
+) -> None:
+    """Entries under users/ that don't parse as integer user ids (stray
+    files, operator debris) must be ignored silently — we only scan
+    the well-formed ``users/{id}/`` shape."""
+    import logging
+
+    from app import main as main_module
+
+    settings.STORAGE_PATH = str(tmp_path)
+
+    users_dir = tmp_path / "users"
+    users_dir.mkdir()
+    (users_dir / "README").write_text("not a user id")
+    (users_dir / "not-a-number").mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await main_module._scan_orphan_user_directories(db, settings)
+
+    assert not any("orphan" in rec.getMessage() for rec in caplog.records)

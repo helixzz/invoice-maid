@@ -163,6 +163,26 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.9 — Released
+
+**Phase 5b of multi-user transition:** admin panel.
+
+Backend: `AdminUser` dep raises 403 (not 404) for non-admin callers — deliberately the opposite of `assert_owned`'s 404 because the admin endpoint's existence is public in the OpenAPI schema; we refuse the action, not hide the URL. Three new endpoints: `GET /api/v1/admin/users` (list all, with invoice_count), `PUT /api/v1/admin/users/{id}` (toggle active/admin, rename email, with anti-lockout guardrails), `DELETE /api/v1/admin/users/{id}` (cascade-wipes invoices/files/scan logs in FK-safe order, invokes `FileManager.delete_user_files` for disk cleanup). Startup orphan-directory scan in lifespan logs WARN for any `users/{id}/` left on disk by interrupted deletions.
+
+Frontend: `AdminView.vue` single-page user-management table with toggle/promote/delete row actions, confirm modal for destructive operations, self-row delete button disabled, `(you)` tag on current admin. Admin nav link (amber-styled) only visible to admins via `authStore.isAdmin`. `/admin` route guarded by `requiresAdmin` meta so non-admins get redirected to `/invoices`.
+
+Anti-lockout guardrails: admin cannot deactivate self, cannot demote last admin, cannot delete self. Delete handler is resilient to DB-level FK config drift — explicit per-table cleanup in FK-safe order.
+
+17 new backend tests in `test_admin.py` + 3 orphan-scan tests in `test_main.py`. Every endpoint × (admin, non-admin, unauthenticated) combination covered, every guardrail tested, cascade + file-delete contracts verified.
+
+Zero-touch upgrade — no schema changes, no migration. Production stays single-user; admin panel becomes available when ALLOW_REGISTRATION lets a second user in.
+
+605 tests, 100% coverage (+21).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.8 — Released
 
 **Phase 5a of multi-user transition:** authentication UX (user identity in UI + self-service registration + change-password flow).

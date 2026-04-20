@@ -22,6 +22,8 @@ import type {
   OAuthInitiateResponse,
   OAuthStatusResponse,
   UserInfo,
+  AdminUserSummary,
+  AdminUserPatch,
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -280,7 +282,22 @@ export const api = {
 
   async updateClassifierSettings(data: ClassifierSettingsUpdate): Promise<void> {
     await apiClient.put('/settings/classifier', data)
-  }
+  },
+
+  // Admin
+  async adminListUsers(): Promise<AdminUserSummary[]> {
+    const res = await apiClient.get('/admin/users')
+    return res.data
+  },
+
+  async adminUpdateUser(id: number, patch: AdminUserPatch): Promise<AdminUserSummary> {
+    const res = await apiClient.put(`/admin/users/${id}`, patch)
+    return res.data
+  },
+
+  async adminDeleteUser(id: number): Promise<void> {
+    await apiClient.delete(`/admin/users/${id}`)
+  },
 }
 
 export default api

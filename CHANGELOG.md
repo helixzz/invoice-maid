@@ -4,6 +4,73 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.9] - 2026-04-21
+
+### Theme
+
+Phase 5b of the multi-user transition: **admin panel**. Admins can now see every user on the instance, toggle activation, toggle admin status, rename emails, and delete users (with full cascade to invoices, files, scan logs, etc.). A startup orphan-directory scan surfaces any `users/{id}/` directories left behind on disk by interrupted deletions. With this release, a self-hosted instance becomes safely operable with multiple users — an admin has real control.
+
+### Added
+
+Backend:
+
+- **`AdminUser` dep** in `app/deps.py` — raises 403 (not 404) when a non-admin caller hits an admin endpoint. 403 is correct here because the endpoint's existence is public in the OpenAPI schema; the server is refusing the action, not hiding the URL. This is deliberately the opposite of `assert_owned`'s 404 (which hides resource existence from the wrong user).
+
+- **`GET /api/v1/admin/users`** — list all users with email, is_active, is_admin, created_at, and a computed `invoice_count` (outer-join aggregate so users with zero invoices still appear).
+
+- **`PUT /api/v1/admin/users/{id}`** — patch user attributes: `is_active`, `is_admin`, or `email`. Guardrails: admin cannot deactivate themselves; admin cannot demote themselves from admin if they are the only admin. Email changes validate format (must contain `@`, not at start/end) and reject duplicates with 409.
+
+- **`DELETE /api/v1/admin/users/{id}`** — delete user and cascade-wipe all their data. Admin cannot delete themselves. The handler explicitly deletes dependent rows in FK-safe order (CorrectionLog, ExtractionLog, WebhookLog, SavedView, Invoice, ScanLog, EmailAccount, UserSession) rather than relying on DB-level CASCADE — defensive against config drift where an alembic run skips the app's `foreign_keys=ON` hook. Then removes the user's per-user file directory via `FileManager.delete_user_files`.
+
+- **`FileManager.delete_user_files(user_id)`** (shipped in alpha.7 as scaffolding) is now live — invoked by the admin delete endpoint and the orphan scan.
+
+- **Startup orphan-directory scan** in `app/main.py` lifespan (`_scan_orphan_user_directories`): walks `STORAGE_PATH/users/*`, logs a WARNING for any numeric subdirectory whose user_id has no matching row in `users`. Does NOT auto-delete — operator-visible, not operator-replaceable. Silently skips non-numeric entries (READMEs, operator debris, etc.).
+
+- **17 new backend tests** in `tests/test_api/test_admin.py` covering every endpoint × (admin, non-admin, unauthenticated) combination, every guardrail (self-deactivate, last-admin-demote, duplicate email, malformed email, missing user), the cascade delete contract, and the admin-delete-files-from-disk contract. Plus 3 orphan-scan tests covering the happy path (warns on orphan), the no-users-dir edge case, and the non-numeric-entry edge case.
+
+Frontend:
+
+- **`AdminView.vue`** — single-page user management with a table (Email, Status badge, Role badge, Joined, Invoices, Actions). Row actions: Deactivate/Activate (confirm only for deactivate), Promote/Demote (confirm always), Delete (modal with explicit "cannot be undone" warning + invoice count). Shows inline success/error banners. Current-user gets a subtle `(you)` tag and the delete button is disabled on their own row.
+
+- **Admin nav link** in `AppLayout.vue` — only visible to admins (`v-if="authStore.isAdmin"`), styled with the amber accent to distinguish from regular nav.
+
+- **`/admin` route** with `requiresAdmin: true` meta, guarded by the router — non-admins are redirected to `/invoices` without a visible error.
+
+- **`AdminUserSummary` and `AdminUserPatch` types**, plus three API client methods (`adminListUsers`, `adminUpdateUser`, `adminDeleteUser`).
+
+### Changed
+
+- **Admin delete path is now resilient to DB-level FK config drift.** Production has `PRAGMA foreign_keys=ON` via the app's connect hook and migration 0012's CASCADE FKs would handle the cleanup, but the handler no longer relies on either. Explicit per-table deletion in FK-safe order is defensive and matches what `FileManager.delete_user_files` already does for the disk side.
+
+- **Lifespan boot now logs orphan user storage directories.** A production with one user will log nothing. An instance where user 2 was deleted in a past release where the API handler crashed between DB commit and file delete would see a WARNING on the next boot.
+
+### Security
+
+- **Admin-only enforcement at dep layer, not per-endpoint.** The `AdminUser` dep is applied via dependency injection, so it's structurally impossible to ship a new admin endpoint that forgets the guard — the endpoint's parameter list enforces it. Same pattern `assert_owned` uses for tenant isolation, same failure mode (403 vs 404 was a deliberate design choice, documented in the dep docstring).
+
+- **Anti-lockout invariants**: admin cannot deactivate self (would lock out the instance), cannot demote last admin (would leave no admins), cannot delete self (would orphan the admin-user slot).
+
+- **No DB-level trust**: the delete handler explicitly wipes dependent rows in FK-safe order. Even if a future deployment accidentally disables `PRAGMA foreign_keys`, the admin delete is still correct.
+
+### Upgrade path
+
+Zero-touch for v0.9.0-alpha.8 deployments. No schema changes, no migration, no config changes.
+
+On first boot after the upgrade, the service logs will show one INFO line per valid user directory (if any) and one WARNING per orphan directory. For a typical single-user install, there's exactly one user directory (`users/1/`) and no orphans, so the log is silent.
+
+### Tests
+
+- 605 passing, 100% coverage (+21 from v0.9.0-alpha.8).
+- Frontend build clean (111 modules, 92 KB gzipped JS, 6 KB gzipped CSS — +9 KB JS for AdminView).
+- CI-simulated run clean.
+
+### Not included (deferred to v1.0)
+
+- **Per-user AI/classifier settings**: instance-wide remains the default. `LLM_BASE_URL`, `LLM_API_KEY`, etc. are shared across all users.
+- **Per-user webhooks**: `WEBHOOK_URL` env var remains the instance-wide default.
+- **Repository-pattern refactor**: inline `select()` queries across 16 files. No user-visible change.
+- **`invoice-maid-upgrade` PEP 440 sort fix**: git's `-v:refname` sort is not PEP 440-aware and may pick `.post1` tags over `.alpha.8`. Workaround: `sudo /usr/local/sbin/invoice-maid-upgrade --tag vX.Y.Z-alphaN` explicitly. A proper fix lives in the deploy tooling, not this repo.
+
 ## [0.9.0-alpha.8] - 2026-04-21
 
 ### Theme

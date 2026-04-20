@@ -1,5 +1,6 @@
 # pyright: reportMissingImports=false, reportUnknownVariableType=false
 
+from app.api.admin import router as admin_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.auth import router as auth_router
 from app.api.classifier_settings import router as classifier_settings_router
@@ -13,6 +14,7 @@ from app.api.views import router as view_router
 
 __all__ = [
     "account_router",
+    "admin_router",
     "ai_settings_router",
     "auth_router",
     "classifier_settings_router",

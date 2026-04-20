@@ -104,6 +104,14 @@ const submitChangePassword = async () => {
               >
                 Settings
               </router-link>
+              <router-link
+                v-if="authStore.isAdmin"
+                to="/admin"
+                class="inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+                :class="[$route.path.startsWith('/admin') ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300']"
+              >
+                Admin
+              </router-link>
             </div>
           </div>
           <div class="hidden sm:ml-6 sm:flex sm:items-center relative">

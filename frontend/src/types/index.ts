@@ -199,3 +199,18 @@ export interface OAuthStatusResponse {
   expires_at?: string
   detail?: string
 }
+
+export interface AdminUserSummary {
+  id: number
+  email: string
+  is_active: boolean
+  is_admin: boolean
+  created_at: string
+  invoice_count: number
+}
+
+export interface AdminUserPatch {
+  is_active?: boolean
+  is_admin?: boolean
+  email?: string
+}

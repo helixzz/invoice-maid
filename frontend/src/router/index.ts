@@ -6,6 +6,7 @@ import InvoiceListView from '@/views/InvoiceListView.vue'
 import InvoiceDetailView from '@/views/InvoiceDetailView.vue'
 import InvoiceUploadView from '@/views/InvoiceUploadView.vue'
 import SettingsView from '@/views/SettingsView.vue'
+import AdminView from '@/views/AdminView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -47,6 +48,12 @@ const router = createRouter({
       name: 'settings',
       component: SettingsView,
       meta: { requiresAuth: true }
+    },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: AdminView,
+      meta: { requiresAuth: true, requiresAdmin: true }
     }
   ]
 })
@@ -56,6 +63,8 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next({ name: 'login' })
   } else if ((to.name === 'login' || to.name === 'register') && authStore.isAuthenticated) {
+    next({ name: 'invoices' })
+  } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
     next({ name: 'invoices' })
   } else {
     next()

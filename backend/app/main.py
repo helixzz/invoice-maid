@@ -26,6 +26,7 @@ from app.middleware import DEFAULT_PROTECTED_PATHS, ContentSizeLimitMiddleware
 
 from app.api import (
     account_router,
+    admin_router,
     ai_settings_router,
     auth_router,
     classifier_settings_router,
@@ -59,6 +60,44 @@ def _configured_worker_count() -> int | None:
     return worker_count if worker_count > 0 else None
 
 
+async def _scan_orphan_user_directories(db, settings) -> None:
+    """Log a WARNING for every ``STORAGE_PATH/users/{id}/`` directory
+    whose owning row in ``users`` is gone.
+
+    An orphan directory appears when the admin delete-user endpoint
+    succeeds at the DB cascade but crashes before
+    ``FileManager.delete_user_files``. Silent orphan accumulation
+    eventually eats disk; surfacing it in the service log on boot
+    gives the operator something actionable without risking
+    accidental deletion of data the operator added out-of-band."""
+    from app.models import User
+
+    storage_root = Path(settings.STORAGE_PATH).expanduser()
+    users_dir = storage_root / "users"
+    if not users_dir.exists():
+        return
+
+    existing_user_ids = {
+        row[0]
+        for row in (await db.execute(text("SELECT id FROM users"))).all()
+    }
+    del User
+
+    for entry in users_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            entry_user_id = int(entry.name)
+        except ValueError:
+            continue
+        if entry_user_id not in existing_user_ids:
+            logger.warning(
+                "orphan user storage directory detected: %s (no users.id=%d row)",
+                entry,
+                entry_user_id,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
@@ -81,6 +120,7 @@ async def lifespan(app: FastAPI):
         )
         await db.commit()
         await bootstrap_admin_user(db, settings)
+        await _scan_orphan_user_directories(db, settings)
 
     from app.tasks.scheduler import start_scheduler, stop_scheduler
 
@@ -127,6 +167,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 app.include_router(invoice_router, prefix="/api/v1")
 app.include_router(download_router, prefix="/api/v1")
 app.include_router(account_router, prefix="/api/v1")
