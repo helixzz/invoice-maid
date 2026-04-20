@@ -74,3 +74,35 @@ def test_stream_zip_includes_existing_files_and_skips_missing(settings) -> None:
     with zipfile.ZipFile(io.BytesIO(archive), "r") as zf:
         assert zf.namelist() == ["invoice.pdf"]
         assert zf.read("invoice.pdf") == b"payload"
+
+
+def test_stream_zip_embeds_extra_in_memory_members(settings) -> None:
+    manager = FileManager(settings.STORAGE_PATH)
+    (manager.storage_path / "invoice.pdf").write_bytes(b"pdf-bytes")
+
+    archive = manager.stream_zip(
+        ["invoice.pdf"],
+        extra_members=[
+            ("invoices_summary.csv", b"\xef\xbb\xbfinvoice_no,buyer\n123,Acme"),
+            ("notes.txt", b"hello"),
+        ],
+    )
+
+    with zipfile.ZipFile(io.BytesIO(archive), "r") as zf:
+        assert set(zf.namelist()) == {"invoice.pdf", "invoices_summary.csv", "notes.txt"}
+        assert zf.read("invoice.pdf") == b"pdf-bytes"
+        assert zf.read("invoices_summary.csv").startswith(b"\xef\xbb\xbf")
+        assert zf.read("notes.txt") == b"hello"
+
+
+def test_stream_zip_without_extra_members_is_backward_compatible(settings) -> None:
+    manager = FileManager(settings.STORAGE_PATH)
+    (manager.storage_path / "invoice.pdf").write_bytes(b"pdf")
+
+    archive_no_kwarg = manager.stream_zip(["invoice.pdf"])
+    archive_none = manager.stream_zip(["invoice.pdf"], extra_members=None)
+    archive_empty = manager.stream_zip(["invoice.pdf"], extra_members=[])
+
+    for archive in (archive_no_kwarg, archive_none, archive_empty):
+        with zipfile.ZipFile(io.BytesIO(archive), "r") as zf:
+            assert zf.namelist() == ["invoice.pdf"]

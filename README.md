@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.8.4-blue" alt="v0.8.4">
+  <img src="https://img.shields.io/badge/version-0.8.5-blue" alt="v0.8.5">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-421%20passing-brightgreen" alt="421 tests">
+  <img src="https://img.shields.io/badge/Tests-433%20passing-brightgreen" alt="433 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -84,7 +84,7 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 - **Full-text search** — SQLite FTS5 with optional sqlite-vec semantic similarity
 - **Saved views** — persist named search + filter combinations for daily workflows
 - **CSV export** — export filtered invoice lists with one click (UTF-8 BOM, opens cleanly in Excel / Numbers / WPS)
-- **Batch actions** — select multiple invoices for ZIP download or bulk deletion
+- **Batch actions** — select multiple invoices for ZIP download (bundles an `invoices_summary.csv` metadata table alongside the PDFs) or bulk deletion
 - **Spend analytics** — monthly spend, top sellers, invoice counts by type and extraction method
 - **Similar invoices** — "more like this" discovery via embeddings (sqlite-vec) with FTS5 fallback
 

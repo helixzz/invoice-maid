@@ -148,8 +148,17 @@ class FileManager:
 
         return full_path
 
-    def stream_zip(self, file_paths: list[str]) -> bytes:
-        """Create a ZIP archive from relative file paths and return its bytes."""
+    def stream_zip(
+        self,
+        file_paths: list[str],
+        extra_members: list[tuple[str, bytes]] | None = None,
+    ) -> bytes:
+        """Create a ZIP archive from relative file paths and return its bytes.
+
+        ``extra_members`` is an optional list of ``(arcname, content_bytes)``
+        pairs that get added to the archive as in-memory files — used to
+        embed `invoices_summary.csv` alongside the downloaded PDFs without
+        needing a temporary file on disk."""
         buffer = io.BytesIO()
 
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
@@ -159,6 +168,8 @@ class FileManager:
                     zip_file.write(full_path, arcname=full_path.name)
                 else:
                     logger.warning("File not found for ZIP: %s", relative_path)
+            for arcname, content in extra_members or []:
+                zip_file.writestr(arcname, content)
 
         _ = buffer.seek(0)
         return buffer.getvalue()

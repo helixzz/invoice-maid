@@ -163,6 +163,22 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.5 — Released
+
+**Theme:** Bulk-export ZIPs now bundle an `invoices_summary.csv` metadata table; README fully refreshed for the v0.7-v0.8 feature accumulation; CHANGELOG PII sanitization and `.gitignore` hygiene.
+
+Previously the "Download selected" batch-export produced a ZIP of PDFs but nothing that mapped each PDF's filename back to the structured fields — reconciling a 50-invoice batch against accounting records meant opening each PDF one by one. v0.8.5 embeds `invoices_summary.csv` at the root of the ZIP with a row per downloaded invoice covering the exact same column layout as the `/invoices/export` endpoint. Chinese seller names render correctly in Excel / WPS / Numbers thanks to a UTF-8 BOM.
+
+Implementation is clean: a new `app.services.invoice_csv` module owns the CSV layout (`CSV_COLUMNS`, `build_csv_content`, `build_csv_bytes`) and is used by both the standalone export endpoint and the batch-download endpoint. `FileManager.stream_zip` grew an optional `extra_members: list[tuple[str, bytes]]` kwarg so callers can embed in-memory files alongside disk-backed PDFs without temp-directory shenanigans.
+
+README was meaningfully updated for the first time since v0.2.0 — every feature shipped between v0.7.1 and v0.8.4 (multi-folder scan, STATUS preflight, parallel IMAP, dedicated QQ code path, scan telemetry, fault isolation, URL tracker pre-filter, timeout defenses, etc.) is now documented in the Features section.
+
+Security audit pass: no API keys, real bcrypt hashes, Fernet blobs, private keys, or `IDEA.md`/`*.db`/`.env` content in any tracked file or historical commit. Three CHANGELOG mentions of personal email addresses (quoted from log lines in the v0.7.5 and v0.7.9 entries) replaced with placeholders; four `.gitignore` gaps closed (`.playwright-mcp/`, `backend/data/`, `backend/scripts/`, root-level ad-hoc screenshots).
+
+See [CHANGELOG.md](CHANGELOG.md#085---2026-04-20) for the full patch.
+
+---
+
 ## v0.8.4 — Released
 
 **Theme:** QQ Mail actually works now — evidence-based IMAP tuning (initial_folder=None, single-connection, bulk=50, UID-range SEARCH, NOOP keepalive)

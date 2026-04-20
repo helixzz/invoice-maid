@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 from datetime import date
 from decimal import Decimal
-from io import StringIO
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -21,22 +19,10 @@ from app.models import CorrectionLog, Invoice
 from app.schemas.invoice import InvoiceListResponse, InvoiceResponse
 from app.services.ai_service import AIService
 from app.services.file_manager import FileManager
+from app.services.invoice_csv import CSV_COLUMNS, CSV_UTF8_BOM, build_csv_content
 from app.services.search_service import SearchService
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
-
-CSV_COLUMNS = [
-    "invoice_no",
-    "buyer",
-    "seller",
-    "amount",
-    "invoice_date",
-    "invoice_type",
-    "item_summary",
-    "extraction_method",
-    "confidence",
-    "created_at",
-]
 
 
 class SemanticSearchRequest(BaseModel):
@@ -85,28 +71,8 @@ def _serialize_invoice(invoice: Invoice) -> InvoiceResponse:
     )
 
 
-def _invoice_csv_row(invoice: Invoice) -> list[str | float]:
-    return [
-        invoice.invoice_no,
-        invoice.buyer,
-        invoice.seller,
-        str(invoice.amount),
-        invoice.invoice_date.isoformat(),
-        invoice.invoice_type,
-        invoice.item_summary or "",
-        invoice.extraction_method,
-        invoice.confidence,
-        invoice.created_at.isoformat(),
-    ]
-
-
 def _build_csv_content(invoices: list[Invoice]) -> str:
-    buffer = StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(CSV_COLUMNS)
-    for invoice in invoices:
-        writer.writerow(_invoice_csv_row(invoice))
-    return buffer.getvalue()
+    return build_csv_content(invoices)
 
 
 @router.get("", response_model=InvoiceListResponse)
@@ -166,7 +132,7 @@ async def export_invoices(
     csv_content = _build_csv_content(invoices)
 
     def stream_csv() -> list[bytes]:
-        return [b"\xef\xbb\xbf" + csv_content.encode("utf-8")]
+        return [CSV_UTF8_BOM + csv_content.encode("utf-8")]
 
     return StreamingResponse(
         content=stream_csv(),

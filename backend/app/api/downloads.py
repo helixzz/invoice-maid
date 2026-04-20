@@ -16,6 +16,7 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import Invoice
 from app.services.file_manager import FileManager
+from app.services.invoice_csv import SUMMARY_FILENAME, build_csv_bytes
 
 router = APIRouter(prefix="/invoices", tags=["downloads"])
 
@@ -60,8 +61,12 @@ async def batch_download_invoices(
     if not invoices:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoices not found")
 
+    summary_bytes = build_csv_bytes(invoices)
+    file_paths = [invoice.file_path for invoice in invoices]
+    extra_members = [(SUMMARY_FILENAME, summary_bytes)]
+
     file_manager = FileManager(get_settings().STORAGE_PATH)
-    archive = await asyncio.to_thread(file_manager.stream_zip, [invoice.file_path for invoice in invoices])
+    archive = await asyncio.to_thread(file_manager.stream_zip, file_paths, extra_members)
 
     return StreamingResponse(
         io.BytesIO(archive),

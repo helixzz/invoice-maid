@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.5] - 2026-04-20
+
+### Why this release matters
+
+Three improvements bundled:
+
+1. **Bulk-export ZIPs now include an `invoices_summary.csv` metadata table.** Previously, clicking "Download selected" produced a ZIP with PDFs named by the canonical pattern — great for archiving individual files, but reconciling a 50-invoice batch against accounting records meant opening each PDF or cross-referencing by filename. The new summary CSV at the root of the ZIP contains one row per downloaded invoice with the full structured metadata (`invoice_no`, `buyer`, `seller`, `amount`, `invoice_date`, `invoice_type`, `item_summary`, `extraction_method`, `confidence`, `created_at`) using the exact same column layout as the `/invoices/export` endpoint. Chinese characters render correctly in Excel / WPS / Numbers thanks to the UTF-8 BOM.
+2. **README fully refreshed** for the v0.7.x and v0.8.x features that had accumulated without README updates (multi-folder scan, parallel IMAP, dedicated QQ code path, scan telemetry, fault isolation, URL tracker pre-filter, live scan progress, etc.). Previously the README still described the v0.2.0 feature set.
+3. **Security hygiene:** removed real user email addresses from the CHANGELOG (they had been quoted verbatim from production log lines in three places in the v0.7.5 and v0.7.9 entries), and closed `.gitignore` gaps for `.playwright-mcp/`, `backend/data/`, `backend/scripts/`, and root-level ad-hoc screenshots. A full audit found no API keys, real bcrypt hashes, Fernet blobs, private keys, or `IDEA.md`/`*.db`/`.env` content in any tracked file or historical commit.
+
+### Added
+
+- **`invoices_summary.csv` inside batch-download ZIPs**
+  - Summary CSV is generated from the full `Invoice` objects of the selected batch and embedded as an in-memory ZIP member alongside the PDFs
+  - UTF-8 with BOM (survives Excel-for-Windows / WPS / Numbers roundtrip with Chinese text)
+  - Column layout matches `/invoices/export` exactly — they now share one row builder so the two paths cannot silently diverge
+  - 1:1 row-per-invoice contract is unit-tested so future optimizations cannot accidentally paginate or filter the summary
+- **`FileManager.stream_zip(file_paths, extra_members=None)`** — new optional `extra_members: list[tuple[str, bytes]]` kwarg lets callers embed in-memory files (like the summary CSV) next to the disk-backed invoice PDFs without needing a temp directory. Backward-compatible with all existing callers.
+- **`app.services.invoice_csv`** — new module owning `CSV_COLUMNS`, `SUMMARY_FILENAME` (`invoices_summary.csv`), `CSV_UTF8_BOM`, `invoice_csv_row()`, `build_csv_content()`, `build_csv_bytes()`. Both `/invoices/export` and `/invoices/batch-download` import from here.
+
+### Changed
+
+- **README** — full feature list refresh, new "Reliability & Performance" coverage, version badge bumped to 0.8.5, new "433 tests passing" badge, clearer Tech Stack row (adds Instructor, imap-tools, msal, Playwright), deploy section documents `install.sh` + `invoice-maid-upgrade`.
+
+### Fixed
+
+- **CHANGELOG.md privacy** — three mentions of personal email addresses in the v0.7.5 and v0.7.9 entries replaced with placeholder text (`user@example.com`, "Outlook (primary account)"). No credentials were ever committed; this was prose about live scan telemetry.
+- **`.gitignore` hygiene** — added patterns for `.playwright-mcp/` (MCP runtime cache), `/[0-9][0-9]-*.png` (ad-hoc root screenshots), `backend/data/` (local dev SQLite dir), `backend/scripts/` (local dev scripts). Deleted three stale root-level test screenshots that had been left over from earlier debugging.
+
+### Tests
+
+- 433 tests, 100% coverage (+12 from v0.8.4):
+  - `test_summary_filename_constant_matches_zip_arcname` — arcname contract
+  - `test_csv_columns_has_expected_order` — freezes the public column order
+  - `test_invoice_csv_row_renders_in_column_order` — field-level rendering
+  - `test_invoice_csv_row_empty_item_summary_renders_as_blank`
+  - `test_build_csv_content_emits_header_then_rows`
+  - `test_build_csv_content_empty_list_still_has_header`
+  - `test_build_csv_bytes_prepends_utf8_bom`
+  - `test_build_csv_bytes_chinese_characters_survive_roundtrip` — Excel / WPS / Numbers scenario
+  - `test_build_csv_bytes_comma_in_buyer_is_properly_quoted` — CSV escaping
+  - `test_stream_zip_embeds_extra_in_memory_members` — in-memory members API
+  - `test_stream_zip_without_extra_members_is_backward_compatible` — all three call shapes
+  - `test_batch_download_summary_includes_all_selected_invoices` — 1:1 contract
+  - Existing `test_download_invoice_and_batch_download` extended to verify summary CSV presence + BOM + header
+
+### Expected impact
+
+Bulk-export users now get a single Excel-ready metadata table alongside their PDFs. Accounting reconciliation workflows that previously required opening each PDF or running a separate `/invoices/export` call are now a single download. No UI change required — the existing "Download selected" button in the frontend already hits `POST /invoices/batch-download`, and the server now returns a ZIP with the summary inside.
+
 ## [0.8.4] - 2026-04-20
 
 ### Why this release matters
