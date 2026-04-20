@@ -52,5 +52,15 @@ token_cache.json
 # Sisyphus plans (internal)
 .sisyphus/
 
+# Playwright ad-hoc sessions (NOT the committed frontend/playwright.config.ts)
+.playwright-mcp/
+
+# Local dev data & scripts (never commit)
+backend/data/
+backend/scripts/
+
+# Ad-hoc screenshots at repo root — committed project screenshots live under assets/
+/[0-9][0-9]-*.png
+
 # Node (root-level only — frontend/node_modules is handled below)
 node_modules/

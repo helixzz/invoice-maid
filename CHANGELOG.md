@@ -339,7 +339,7 @@ v0.7.5 closes all three. On the first post-upgrade rescan in this project's own 
 
 | Account | Emails processed (v0.7.4) | Emails processed (v0.7.5) | Invoices found (v0.7.4) | Invoices found (v0.7.5) |
 |---|---|---|---|---|
-| Outlook (`user@example.com`) | 470 (INBOX, last 30 days) | **35,631** (all folders, full history) | 7 | **208** |
+| Outlook (primary account) | 470 (INBOX, last 30 days) | **35,631** (all folders, full history) | 7 | **208** |
 
 The Outlook account alone went from 470 to 35,631 emails scanned — a **76× increase** in coverage — and from 7 to 208 saved invoices.
 
