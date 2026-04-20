@@ -163,6 +163,30 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0 — Released
+
+**Multi-user is done.** Nine alphas (alpha.1 → alpha.9) incrementally transformed Invoice Maid from single-operator-only to a safely multi-tenant self-hosted product. Every release shipped to production sequentially. v0.9.0 final is a docs-and-version-bump cap — all behavior already landed in earlier alphas.
+
+**Summary of the journey:**
+
+- Phase 1 (alpha.1-3): DB-backed users + session revocation + login-form polish
+- Phase 2 (alpha.4): nullable `user_id` columns on 7 tenant tables, backfilled to admin
+- Phase 3 (alpha.5): `NOT NULL` + `CASCADE` FK + composite `UNIQUE(user_id, invoice_no)`
+- Phase 4a (alpha.6): tenant isolation on every read path (FTS5 + ORM, 22 dedicated isolation tests)
+- Phase 4b.1 (alpha.7 + post1): per-user file storage layout; alembic `env.py` auto-loads `.env` (post1 production recovery)
+- Phase 5a (alpha.8): self-service registration (`ALLOW_REGISTRATION` gate) + change-password with cross-device revocation
+- Phase 5b (alpha.9): admin panel (backend endpoints + frontend AdminView) + startup orphan-directory scan
+
+**What works now:** a second user can safely exist on the instance. They have isolated invoices, email accounts, scan history, storage, and settings. The admin can see them, toggle their status, and delete them. Stolen tokens after password change stop working.
+
+**Deferred to v1.0+:** per-user AI/classifier settings, per-user webhooks, repository-pattern refactor. All currently remain instance-wide by explicit design.
+
+605 tests, 100% coverage.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full cumulative changelog.
+
+---
+
 ## v0.9.0-alpha.9 — Released
 
 **Phase 5b of multi-user transition:** admin panel.

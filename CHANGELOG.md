@@ -4,6 +4,62 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0] - 2026-04-21
+
+### Theme
+
+**v0.9.0 final: multi-user is ready for production.** This release is a docs-and-version-bump cap on a nine-alpha journey (alpha.1 → alpha.9) that took Invoice Maid from single-operator-only to a safely multi-tenant self-hosted product. Every alpha from here has shipped to production sequentially and remains in the release history — this is the canonical "multi-user is done" tag.
+
+### What changed since the last alpha (alpha.9)
+
+- **Version**: `0.9.0a9` → `0.9.0`
+- **README**: new "Multi-User" section documenting architecture, single-user/multi-user mode switching, admin panel capabilities, and change-password behavior
+- **README positioning**: updated from "single-user self-hosted" to "self-hosted with multi-user support"
+- **`.env.example`**: added `ADMIN_EMAIL` (previously implicit) and `ALLOW_REGISTRATION` with explanatory comment
+- **No code changes** — all behavior already landed in alpha.7 / alpha.8 / alpha.9 and is already running in production
+
+### Cumulative changelog (alpha.1 → v0.9.0)
+
+| Phase | Version | Scope |
+|---|---|---|
+| 1 | alpha.1 | DB-backed users + session revocation |
+| — | alpha.2 | Login form email-field fix |
+| — | alpha.3 | Login accepts unqualified-hostname emails |
+| 2 | alpha.4 | Nullable `user_id` columns on tenant tables |
+| 3 | alpha.5 | `NOT NULL` + FK + composite unique on tenant tables |
+| 4a | alpha.6 | Tenant isolation on every read path |
+| 4b.1 | alpha.7 | Per-user file storage |
+| — | alpha.7.post1 | Alembic `env.py` now auto-loads `.env` (production recovery) |
+| 5a | alpha.8 | Self-service registration + change-password |
+| 5b | alpha.9 | Admin panel (list/toggle/delete users + orphan scan) |
+| — | **v0.9.0** | **Documentation cap on the multi-user journey** |
+
+### What works now
+
+- **Two-user deployment**: set `ALLOW_REGISTRATION=true`, a new user registers at `/register`, they get their own isolated data/accounts/files; admin deactivates/promotes/deletes them via `/admin`.
+- **Tenant isolation**: 22 dedicated tests prove every endpoint filters by `user_id` and returns 404 (not 403) for cross-tenant lookups. A user cannot see another user's invoices, email accounts, scan logs, saved views, or files.
+- **File-layer isolation**: two users with identical canonical filenames get separate files in separate subdirectories. No overwrite risk.
+- **Anti-lockout**: admin cannot deactivate self, demote last admin, or delete self. An instance always has at least one admin.
+- **Session revocation**: changing your password revokes every other session on every other device. Stolen tokens on lost phones stop working.
+
+### Tests
+
+- 605 passing, 100% coverage (unchanged from alpha.9).
+
+### Not included (explicitly deferred)
+
+These remain instance-wide in v0.9.0; per-user scoping is a future release:
+
+- **LLM cache** (`llm_cache` table): intentionally shared. Two users uploading structurally identical invoices pay for only one LLM call between them.
+- **AI / classifier settings** (`app_settings` table, `/api/v1/settings/ai`, `/api/v1/settings/classifier`): instance-wide. Per-user overrides with instance fallback are a future release.
+- **Webhooks** (`WEBHOOK_URL` env var): instance-wide. Per-user webhooks with per-user secrets are a future release.
+- **Repository-pattern refactor**: inline `select()` queries across 16 files remain inline. No user-visible change.
+- **`invoice-maid-upgrade` PEP 440 sort**: the deploy script's default tag-resolution is not PEP 440-aware and may pick `.post1` tags over `.alpha.N+1`. Workaround: `--tag vX.Y.Z` explicitly. Lives in deploy tooling, not this repo.
+
+### Upgrade path
+
+Zero-touch from alpha.9. No schema changes, no migration, no config changes. Version tag updates; `/api/v1/health` begins reporting `"version": "0.9.0"`.
+
 ## [0.9.0-alpha.9] - 2026-04-21
 
 ### Theme

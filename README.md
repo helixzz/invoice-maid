@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.0--alpha.9-blue" alt="v0.9.0-alpha.9">
+  <img src="https://img.shields.io/badge/version-0.9.0-blue" alt="v0.9.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
@@ -36,7 +36,7 @@ Invoice Maid automates the boring part of invoice handling:
 - Search, review, correct, and export invoices from a modern web UI
 - Download one invoice, batch-export as ZIP, or export filtered lists as CSV
 
-It is designed for **single-user**, **self-hosted** deployment with minimal operational overhead. The project has shipped 30+ releases of reliability and performance work — see the [CHANGELOG](CHANGELOG.md) for the full arc.
+It is designed for **self-hosted** deployment with minimal operational overhead. As of v0.9.0, the app supports **multiple users** with full tenant isolation (per-user invoices, accounts, scan history, storage), self-service registration behind a feature flag, and an admin panel for user management. For a single-operator deployment, nothing changes from the pre-v0.9.0 experience — the single admin owns everything. The project has shipped 30+ releases of reliability and performance work — see the [CHANGELOG](CHANGELOG.md) for the full arc.
 
 ### How it works
 
@@ -58,6 +58,7 @@ Two invoice sources feed the **same** five-stage pipeline. The email scanner run
 - [Configuration Reference](#configuration-reference)
 - [Email Account Setup](#email-account-setup)
 - [Webhooks](#webhooks)
+- [Multi-User](#multi-user)
 - [Deployment](#deployment)
 - [Development](#development)
 - [Roadmap](#roadmap)
@@ -309,6 +310,41 @@ When `WEBHOOK_URL` is configured, Invoice Maid sends a `POST` request for each n
 ```
 
 The `X-Signature-256` header contains an HMAC-SHA256 signature of the JSON body using `WEBHOOK_SECRET`, following the GitHub webhook signature format. Delivery failures are logged and never block the scan pipeline.
+
+---
+
+## Multi-User
+
+As of v0.9.0, Invoice Maid supports multiple users on a single instance with full tenant isolation. Every invoice, email account, scan log, extraction log, saved view, and file on disk is scoped to its owning user; no endpoint or query can return another user's data.
+
+### Architecture
+
+- **Schema**: every tenant table (`invoices`, `email_accounts`, `scan_logs`, `extraction_logs`, `correction_logs`, `saved_views`, `webhook_logs`) has a `NOT NULL user_id` with `CASCADE` foreign key to `users.id`. `UNIQUE(user_id, invoice_no)` on `invoices` means two users may legitimately own invoices with the same invoice number.
+- **Files**: per-user subdirectories at `STORAGE_PATH/users/{user_id}/invoices/{filename}`. Collision between users with identical canonical filenames is structurally impossible.
+- **Reads**: every API endpoint filters by `user_id`. 404 is returned (not 403) for cross-tenant lookups so existence is not leaked.
+- **Shared resources**: `llm_cache` is intentionally instance-wide — two users uploading structurally identical invoices pay for only one LLM call between them. `app_settings` (AI model config, classifier rules) is also instance-wide; per-user overrides are a future release.
+
+### Single-user deployments (default)
+
+Nothing changes. `ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH` create `users[1]` on first boot. All existing invoices belong to that admin. The app works exactly as before.
+
+### Opening self-service registration
+
+Set `ALLOW_REGISTRATION=true` in `/etc/invoice-maid/invoice-maid.env` and restart the service. New users can then register at `/register` with email + password; they are created as non-admins. Rate-limited to 5 requests/minute per IP.
+
+### Admin panel
+
+Admins (users with `is_admin=True` — by default only `users[1]`) see an **Admin** link in the top navigation leading to `/admin`. The page lists every user with their invoice count and offers:
+
+- **Deactivate** / **Activate**: toggle `is_active`. Deactivated users cannot log in; existing invoices are preserved.
+- **Promote** / **Demote**: toggle `is_admin`. An admin cannot demote themselves unless another admin exists.
+- **Delete**: permanently removes the user and cascade-deletes all their invoices, email accounts, scan logs, correction logs, saved views, webhook logs, and the `users/{id}/` directory on disk. An admin cannot delete themselves.
+
+If the admin-delete handler crashes between DB commit and file cleanup, the next service restart logs a WARNING for any orphan `users/{id}/` directory it finds. The scan never auto-deletes — operator-visible, not operator-replaceable.
+
+### Change password
+
+Every user can change their own password via the profile dropdown. This revokes every OTHER session for the same user so a stolen token on a lost device stops working immediately; the current device stays logged in.
 
 ---
 
