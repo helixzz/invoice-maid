@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.tasks.scheduler as scheduler
-from app.models import EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
+from app.models import EmailAccount, ExtractionLog, Invoice, LLMCache, ScanLog, WebhookLog
 from app.schemas.invoice import EmailAnalysis, InvoiceFormat, InvoicePlatform, UrlKind
 from app.services import scan_progress as sp
 from app.services.email_scanner import RawAttachment, RawEmail
@@ -308,7 +308,7 @@ async def test_scan_all_accounts_marks_progress_error_and_reraises_on_outer_fail
 
 def test_start_and_stop_scheduler(monkeypatch: pytest.MonkeyPatch, settings) -> None:
     scheduler._scheduler = None
-    captured = {}
+    jobs_added: list[dict] = []
 
     class FakeScheduler:
         def __init__(self, timezone):
@@ -316,15 +316,15 @@ def test_start_and_stop_scheduler(monkeypatch: pytest.MonkeyPatch, settings) -> 
             self.running = False
             self.started = False
 
-        def add_job(self, func, trigger, minutes, id, replace_existing, misfire_grace_time):
-            captured.update(
+        def add_job(self, func, trigger, *, id, replace_existing, misfire_grace_time, **interval):
+            jobs_added.append(
                 {
                     "func": func,
                     "trigger": trigger,
-                    "minutes": minutes,
                     "id": id,
                     "replace_existing": replace_existing,
                     "misfire_grace_time": misfire_grace_time,
+                    **interval,
                 }
             )
 
@@ -334,17 +334,25 @@ def test_start_and_stop_scheduler(monkeypatch: pytest.MonkeyPatch, settings) -> 
 
         def shutdown(self, wait=False):
             self.running = False
-            captured["shutdown_wait"] = wait
+            jobs_added.append({"shutdown_wait": wait})
 
     monkeypatch.setattr(scheduler, "AsyncIOScheduler", FakeScheduler)
     scheduler.start_scheduler(settings)
-    assert captured["minutes"] == settings.SCAN_INTERVAL_MINUTES
+
+    job_by_id = {j["id"]: j for j in jobs_added if "id" in j}
+    assert job_by_id["email_scan"]["minutes"] == settings.SCAN_INTERVAL_MINUTES
+    assert job_by_id["llm_cache_cleanup"]["hours"] == 1
+    assert job_by_id["extraction_log_cleanup"]["hours"] == 24
+    assert job_by_id["email_scan"]["func"] is scheduler.scan_all_accounts
+    assert job_by_id["llm_cache_cleanup"]["func"] is scheduler.cleanup_llm_cache
+    assert job_by_id["extraction_log_cleanup"]["func"] is scheduler.cleanup_extraction_logs
+
     existing = scheduler._scheduler
     assert scheduler.get_scheduler() is existing
     scheduler.start_scheduler(settings)
     assert scheduler._scheduler is existing
     scheduler.stop_scheduler()
-    assert captured["shutdown_wait"] is False
+    assert any(j.get("shutdown_wait") is False for j in jobs_added)
     assert scheduler._scheduler is None
     assert scheduler.get_scheduler() is None
     scheduler.stop_scheduler()
@@ -2374,3 +2382,244 @@ async def test_scheduler_falls_back_when_scanner_lacks_progress_callback_kwarg(
     monkeypatch.setattr(scheduler, "AIService", lambda s: MagicMock())
 
     await scheduler.scan_all_accounts()
+
+
+# ══ Phase 0 maintenance jobs: LLM cache TTL eviction + ExtractionLog retention ═══
+
+
+async def test_cleanup_llm_cache_removes_expired_entries(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nightly job must delete rows whose ``expires_at`` is in the past,
+    keep rows whose ``expires_at`` is in the future, and keep rows where
+    ``expires_at`` is NULL (defense against un-backfilled legacy entries)."""
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(days=1)
+    future = now + timedelta(days=30)
+
+    db.add_all([
+        LLMCache(
+            content_hash="expired-hash-1", prompt_type="classify",
+            response_json="{}", expires_at=past,
+        ),
+        LLMCache(
+            content_hash="expired-hash-2", prompt_type="extract",
+            response_json="{}", expires_at=past,
+        ),
+        LLMCache(
+            content_hash="fresh-hash-1", prompt_type="classify",
+            response_json="{}", expires_at=future,
+        ),
+        LLMCache(
+            content_hash="legacy-hash-no-expiry", prompt_type="extract",
+            response_json="{}", expires_at=None,
+        ),
+    ])
+    await db.commit()
+
+    deleted = await scheduler.cleanup_llm_cache()
+    assert deleted == 2
+
+    remaining_hashes = {
+        row.content_hash for row in (await db.execute(select(LLMCache))).scalars().all()
+    }
+    assert remaining_hashes == {"fresh-hash-1", "legacy-hash-no-expiry"}
+
+
+async def test_cleanup_llm_cache_is_no_op_when_nothing_expired(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    db.add(LLMCache(
+        content_hash="still-fresh", prompt_type="extract",
+        response_json="{}", expires_at=future,
+    ))
+    await db.commit()
+
+    deleted = await scheduler.cleanup_llm_cache()
+    assert deleted == 0
+    assert (await db.execute(select(LLMCache))).scalars().all()
+
+
+async def test_cleanup_extraction_logs_removes_old_entries(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ExtractionLog rows older than ``EXTRACTION_LOG_RETENTION_DAYS`` are
+    deleted; recent rows are preserved. Protects SQLite from unbounded log
+    growth (the ratio is ~1100 extraction logs per saved invoice, so even
+    a small deployment accumulates hundreds of thousands of rows quickly)."""
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    now = datetime.now(timezone.utc)
+    retention = scheduler.EXTRACTION_LOG_RETENTION_DAYS
+    very_old = now - timedelta(days=retention + 10)
+    recent = now - timedelta(days=1)
+
+    account = EmailAccount(
+        name="t", type="imap", host="h", port=143,
+        username="u", password_encrypted="pw",
+    )
+    db.add(account)
+    await db.flush()
+
+    scan = ScanLog(email_account_id=account.id, started_at=now, emails_scanned=1)
+    db.add(scan)
+    await db.flush()
+
+    db.add_all([
+        ExtractionLog(scan_log_id=scan.id, email_subject="old-1", outcome="saved", created_at=very_old),
+        ExtractionLog(scan_log_id=scan.id, email_subject="old-2", outcome="skipped", created_at=very_old),
+        ExtractionLog(scan_log_id=scan.id, email_subject="recent-1", outcome="saved", created_at=recent),
+    ])
+    await db.commit()
+
+    deleted = await scheduler.cleanup_extraction_logs()
+    assert deleted == 2
+
+    remaining_subjects = {
+        r.email_subject for r in (await db.execute(select(ExtractionLog))).scalars().all()
+    }
+    assert remaining_subjects == {"recent-1"}
+
+
+async def test_cleanup_extraction_logs_is_no_op_when_nothing_expired(
+    db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No rows older than the retention window: cleanup returns 0 and
+    does not log (the `deleted > 0` guard suppresses the per-tick INFO
+    line on empty runs to keep logs quiet)."""
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+
+    now = datetime.now(timezone.utc)
+    account = EmailAccount(
+        name="t", type="imap", host="h", port=143,
+        username="u", password_encrypted="pw",
+    )
+    db.add(account)
+    await db.flush()
+    scan = ScanLog(email_account_id=account.id, started_at=now, emails_scanned=1)
+    db.add(scan)
+    await db.flush()
+    db.add(ExtractionLog(
+        scan_log_id=scan.id, email_subject="fresh",
+        outcome="saved", created_at=now - timedelta(days=1),
+    ))
+    await db.commit()
+
+    deleted = await scheduler.cleanup_extraction_logs()
+    assert deleted == 0
+    assert (await db.execute(select(ExtractionLog))).scalars().all()
+
+
+async def test_cleanup_extraction_logs_respects_batch_size(
+    db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One cleanup tick must not delete more than ``EXTRACTION_LOG_CLEANUP_BATCH_SIZE``
+    rows per run — protects the scheduler tick from running hot on a large
+    first-time cleanup. Subsequent ticks finish the job."""
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "EXTRACTION_LOG_CLEANUP_BATCH_SIZE", 2)
+
+    now = datetime.now(timezone.utc)
+    very_old = now - timedelta(days=scheduler.EXTRACTION_LOG_RETENTION_DAYS + 5)
+
+    account = EmailAccount(
+        name="t", type="imap", host="h", port=143,
+        username="u", password_encrypted="pw",
+    )
+    db.add(account)
+    await db.flush()
+    scan = ScanLog(email_account_id=account.id, started_at=now, emails_scanned=1)
+    db.add(scan)
+    await db.flush()
+
+    db.add_all([
+        ExtractionLog(
+            scan_log_id=scan.id, email_subject=f"old-{i}",
+            outcome="saved", created_at=very_old,
+        )
+        for i in range(5)
+    ])
+    await db.commit()
+
+    first = await scheduler.cleanup_extraction_logs()
+    assert first == 2
+
+    remaining = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert len(remaining) == 3
+
+
+def test_ai_service_cache_expiry_windows_match_migration_contract(settings) -> None:
+    """The per-prompt-type TTL values in ``AIService._cache_expiry`` must
+    match the backfill windows in alembic migration 0009. Drifting them
+    creates an asymmetry where new entries expire on a different schedule
+    than legacy backfilled entries."""
+    from app.services.ai_service import AIService
+
+    service = AIService(settings)
+    now = datetime.now(timezone.utc)
+
+    classify_exp = service._cache_expiry("classify")
+    analyze_exp = service._cache_expiry("analyze_email_v3")
+    extract_exp = service._cache_expiry("extract")
+
+    classify_days = (classify_exp - now).total_seconds() / 86400
+    analyze_days = (analyze_exp - now).total_seconds() / 86400
+    extract_days = (extract_exp - now).total_seconds() / 86400
+
+    assert 29.99 < classify_days < 30.01
+    assert 29.99 < analyze_days < 30.01
+    assert 364.99 < extract_days < 365.01
+
+
+async def test_get_cache_treats_expired_rows_as_miss(db, settings) -> None:
+    """The cache read path must filter out rows whose ``expires_at`` is in
+    the past. Without this filter, expired entries would serve stale data
+    even after the cleanup job has run (between cleanup ticks, or for rows
+    that expired seconds ago)."""
+    from app.services.ai_service import AIService
+    now = datetime.now(timezone.utc)
+
+    db.add_all([
+        LLMCache(
+            content_hash="abc", prompt_type="extract", response_json='{"v": 1}',
+            expires_at=now - timedelta(seconds=1),
+        ),
+        LLMCache(
+            content_hash="def", prompt_type="extract", response_json='{"v": 2}',
+            expires_at=now + timedelta(days=1),
+        ),
+        LLMCache(
+            content_hash="ghi", prompt_type="extract", response_json='{"v": 3}',
+            expires_at=None,
+        ),
+    ])
+    await db.commit()
+
+    service = AIService(settings)
+    assert await service._get_cache(db, "abc") is None
+    assert await service._get_cache(db, "def") == '{"v": 2}'
+    assert await service._get_cache(db, "ghi") == '{"v": 3}'
+
+
+async def test_set_cache_stamps_appropriate_expires_at(db, settings) -> None:
+    """New entries written via ``_set_cache`` must carry an ``expires_at``
+    derived from the prompt_type. Without this, new rows written under
+    v0.8.10 would remain with NULL ``expires_at`` and never get evicted."""
+    from app.services.ai_service import AIService
+
+    service = AIService(settings)
+    await service._set_cache(db, "new-classify", "classify", '{"x": 1}')
+    await service._set_cache(db, "new-extract", "extract", '{"x": 2}')
+    await db.commit()
+
+    now = datetime.now(timezone.utc)
+    rows = {
+        r.content_hash: r
+        for r in (await db.execute(select(LLMCache))).scalars().all()
+    }
+    assert rows["new-classify"].expires_at is not None
+    assert rows["new-extract"].expires_at is not None
+
+    def _to_aware(dt: datetime) -> datetime:
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    classify_days = (_to_aware(rows["new-classify"].expires_at) - now).total_seconds() / 86400
+    extract_days = (_to_aware(rows["new-extract"].expires_at) - now).total_seconds() / 86400
+    assert 29.9 < classify_days < 30.1
+    assert 364.9 < extract_days < 365.1

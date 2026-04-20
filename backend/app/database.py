@@ -58,6 +58,14 @@ def _install_sqlite_hooks(engine: AsyncEngine) -> None:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA cache_size=-64000")
         cursor.execute("PRAGMA temp_store=MEMORY")
+        # Cap the on-disk WAL file at 64 MiB. SQLite's default
+        # wal_autocheckpoint=1000 (4 MiB) marks pages reusable within the
+        # WAL but does NOT shrink the file; without a journal_size_limit
+        # the WAL can grow into the hundreds of MB if a long-running read
+        # ever stalls a checkpoint. 64 MiB is generous for this workload
+        # (3-row invoice-save transactions) while preventing unbounded
+        # disk growth. Applied at connect time per SQLite docs.
+        cursor.execute("PRAGMA journal_size_limit=67108864")
         cursor.close()
 
         sqlite_connection = _get_sqlite_connection(dbapi_conn)

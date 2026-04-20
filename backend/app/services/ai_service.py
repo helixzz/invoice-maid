@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -76,9 +77,23 @@ class AIService:
     def _content_hash(self, prompt_type: str, content: str) -> str:
         return hashlib.sha256(f"{prompt_type}:{content}".encode("utf-8")).hexdigest()
 
+    def _cache_expiry(self, prompt_type: str) -> datetime:
+        now = datetime.now(timezone.utc)
+        # Matches the TTL windows chosen in alembic migration 0009_llm_cache_expires_at:
+        #   classify / analyze_email_v3 -> 30 days (heuristics drift, subjects age out)
+        #   extract                     -> 365 days (invoice PDF content is effectively
+        #                                           immutable once captured)
+        if prompt_type in ("classify", "analyze_email_v3"):
+            return now + timedelta(days=30)
+        return now + timedelta(days=365)
+
     async def _get_cache(self, db: AsyncSession, content_hash: str) -> str | None:
+        now = datetime.now(timezone.utc)
         result = await db.execute(
-            select(LLMCache.response_json).where(LLMCache.content_hash == content_hash)
+            select(LLMCache.response_json).where(
+                LLMCache.content_hash == content_hash,
+                (LLMCache.expires_at.is_(None)) | (LLMCache.expires_at > now),
+            )
         )
         return result.scalar_one_or_none()
 
@@ -94,6 +109,7 @@ class AIService:
                 content_hash=content_hash,
                 prompt_type=prompt_type,
                 response_json=response,
+                expires_at=self._cache_expiry(prompt_type),
             )
             db.add(cache_entry)
             await db.commit()

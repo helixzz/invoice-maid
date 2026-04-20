@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.10] - 2026-04-21
+
+### Theme
+
+Operational hardening ahead of the v0.9.0 multi-user transition. Three changes that bound resource growth on long-running self-hosted deployments: a WAL file size cap, TTL-based eviction for `llm_cache`, and a 90-day retention window for `extraction_logs`. Shipped independently so the multi-user release can build on a stable operational baseline.
+
+### Added
+
+- **`LLMCache.expires_at` column + nightly eviction job.** New Alembic migration `0009_llm_cache_expires_at` adds an `expires_at DATETIME` column to `llm_cache` and backfills existing rows with conservative expiration windows based on `prompt_type`: 30 days for `classify` / `analyze_email_v3` entries, 365 days for `extract` entries. `AIService._get_cache` now filters out rows where `expires_at` is in the past, so expired hits are treated as cache misses and trigger a fresh LLM call. A new `cleanup_llm_cache` job runs hourly via APScheduler and deletes up to `LLM_CACHE_CLEANUP_BATCH_SIZE` (5000) expired rows per tick.
+
+- **`ExtractionLog` 90-day retention.** A new `cleanup_extraction_logs` job runs daily and deletes rows where `created_at` is older than `EXTRACTION_LOG_RETENTION_DAYS` (90). Batched at `EXTRACTION_LOG_CLEANUP_BATCH_SIZE` (10000) rows per tick to keep single-tick work bounded; subsequent ticks finish the job. The table grows at roughly 1000:1 relative to saved invoices (most scanned emails are classified as non-invoice and logged), so unbounded retention becomes a problem at multi-user scale.
+
+### Fixed
+
+- **SQLite WAL file on-disk growth.** Adds `PRAGMA journal_size_limit=67108864` (64 MiB) at connect time. SQLite's default `wal_autocheckpoint=1000` (4 MiB) marks WAL pages reusable but does NOT shrink the file; without a size limit the WAL can grow into hundreds of MB when a long-running reader stalls a checkpoint. 64 MiB is generous headroom for this workload's short 3-row invoice-save transactions while preventing unbounded disk growth.
+
+### Tests
+
+- 497 passing, 100% coverage (+8 from v0.8.9).
+- New tests:
+  - `test_cleanup_llm_cache_removes_expired_entries` — past-expiry deletion, future-expiry and NULL-expiry preservation
+  - `test_cleanup_llm_cache_is_no_op_when_nothing_expired` — quiet-log guard on empty runs
+  - `test_cleanup_extraction_logs_removes_old_entries` — retention boundary behavior
+  - `test_cleanup_extraction_logs_is_no_op_when_nothing_expired` — symmetric quiet-log guard
+  - `test_cleanup_extraction_logs_respects_batch_size` — per-tick work bounded
+  - `test_ai_service_cache_expiry_windows_match_migration_contract` — cross-file contract: `_cache_expiry` TTL values must match migration 0009 backfill windows
+  - `test_get_cache_treats_expired_rows_as_miss` — read-path filter correctness
+  - `test_set_cache_stamps_appropriate_expires_at` — new rows carry `expires_at` from the start
+
+### Upgrade path
+
+Upgrade from v0.8.9 is zero-touch: `alembic upgrade head` applies migration 0009, which adds the new column and backfills existing rows in a single transaction. Existing cache entries that would not have had `expires_at` set under v0.8.9's cache API are given TTLs based on their `prompt_type`. No data migration errors possible — the migration is purely additive. The two new maintenance jobs register themselves on service restart via `start_scheduler`.
+
+### Not changed
+
+- No changes to invoice extraction logic, scanner code, or user-facing endpoints.
+- No schema changes outside the single `expires_at` column addition.
+- No dependency version changes.
+
 ## [0.8.9] - 2026-04-20
 
 ### Fixed

@@ -163,6 +163,20 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.10 — Released
+
+**Theme:** Operational hardening ahead of the v0.9.0 multi-user transition.
+
+Three bounded-growth fixes for long-running self-hosted deployments: a 64 MiB cap on the on-disk WAL file via `PRAGMA journal_size_limit`, TTL-based eviction for `llm_cache` (30-day expiry for classification / email-analysis cache entries; 365-day for invoice-extraction entries), and a 90-day retention window for `extraction_logs` (which grow at roughly 1000:1 relative to saved invoices). Two new APScheduler jobs run the cleanup work hourly (LLM cache) and daily (extraction logs).
+
+Adds Alembic migration `0009_llm_cache_expires_at` which backfills `expires_at` on existing cache rows so v0.8.9 deployments upgrade without any stale-cache gotchas. The `AIService` read/write paths both use `expires_at` now, with a cross-file-contract test guarding the TTL values against drift.
+
+Shipped independently so v0.9.0 can build on a stable operational baseline.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.8.9 — Released
 
 **Theme:** Prompt-level fix for LLM amount-miss on transport-ticket bare-currency fares.

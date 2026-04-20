@@ -8,7 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -833,6 +833,68 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
             raise
 
 
+LLM_CACHE_CLEANUP_BATCH_SIZE = 5000
+EXTRACTION_LOG_RETENTION_DAYS = 90
+EXTRACTION_LOG_CLEANUP_BATCH_SIZE = 10000
+
+
+async def cleanup_llm_cache() -> int:
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+    async for db in get_db():
+        try:
+            result = await db.execute(
+                text(
+                    "DELETE FROM llm_cache WHERE id IN ("
+                    "  SELECT id FROM llm_cache"
+                    "  WHERE expires_at IS NOT NULL AND expires_at < :now"
+                    "  LIMIT :batch"
+                    ")"
+                ),
+                {"now": now, "batch": LLM_CACHE_CLEANUP_BATCH_SIZE},
+            )
+            await db.commit()
+            deleted = result.rowcount or 0
+            if deleted > 0:
+                logger.info("LLM cache cleanup removed %d expired entries", deleted)
+            return deleted
+        except Exception:  # pragma: no cover
+            await db.rollback()
+            logger.exception("LLM cache cleanup failed")
+            return 0
+    return 0  # pragma: no cover
+
+
+async def cleanup_extraction_logs() -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=EXTRACTION_LOG_RETENTION_DAYS)
+    cutoff_str = cutoff.replace(tzinfo=None).isoformat(sep=" ")
+    async for db in get_db():
+        try:
+            result = await db.execute(
+                text(
+                    "DELETE FROM extraction_logs WHERE id IN ("
+                    "  SELECT id FROM extraction_logs"
+                    "  WHERE created_at < :cutoff"
+                    "  LIMIT :batch"
+                    ")"
+                ),
+                {"cutoff": cutoff_str, "batch": EXTRACTION_LOG_CLEANUP_BATCH_SIZE},
+            )
+            await db.commit()
+            deleted = result.rowcount or 0
+            if deleted > 0:
+                logger.info(
+                    "Extraction log cleanup removed %d entries older than %d days",
+                    deleted,
+                    EXTRACTION_LOG_RETENTION_DAYS,
+                )
+            return deleted
+        except Exception:  # pragma: no cover
+            await db.rollback()
+            logger.exception("Extraction log cleanup failed")
+            return 0
+    return 0  # pragma: no cover
+
+
 def start_scheduler(settings: Settings) -> None:
     global _scheduler
     existing_scheduler = _scheduler
@@ -845,6 +907,22 @@ def start_scheduler(settings: Settings) -> None:
         "interval",
         minutes=settings.SCAN_INTERVAL_MINUTES,
         id="email_scan",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        cleanup_llm_cache,
+        "interval",
+        hours=1,
+        id="llm_cache_cleanup",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        cleanup_extraction_logs,
+        "interval",
+        hours=24,
+        id="extraction_log_cleanup",
         replace_existing=True,
         misfire_grace_time=300,
     )
