@@ -36,7 +36,7 @@
     <rect x="20" y="40" width="170" height="70" rx="10" fill="url(#box-source)" stroke="#60a5fa" stroke-width="1.5"/>
     <text x="105" y="68" text-anchor="middle" class="t-label">Email scanner</text>
     <text x="105" y="86" text-anchor="middle" class="t-sub">IMAP / POP3 / QQ /</text>
-    <text x="105" y="100" text-anchor="middle" class="t-sub">Outlook &middot; every 60 min</text>
+    <text x="105" y="100" text-anchor="middle" class="t-sub">Outlook · every 60 min</text>
 
     <rect x="20" y="150" width="170" height="70" rx="10" fill="url(#box-source)" stroke="#60a5fa" stroke-width="1.5"/>
     <text x="105" y="178" text-anchor="middle" class="t-label">Manual upload</text>
@@ -49,7 +49,7 @@
     <rect x="230" y="95" width="150" height="70" rx="10" fill="url(#box-stage)" stroke="#cbd5e1" stroke-width="1.5"/>
     <text x="305" y="114" text-anchor="middle" class="t-stage-num">STAGE 1</text>
     <text x="305" y="134" text-anchor="middle" class="t-label">Classify</text>
-    <text x="305" y="152" text-anchor="middle" class="t-sub">heuristic &rarr; LLM</text>
+    <text x="305" y="152" text-anchor="middle" class="t-sub">heuristic → LLM</text>
     <text x="305" y="164" text-anchor="middle" class="t-sub">(email only)</text>
 
     <rect x="410" y="95" width="150" height="70" rx="10" fill="url(#box-stage)" stroke="#cbd5e1" stroke-width="1.5"/>
@@ -106,7 +106,7 @@
 
     <rect x="800" y="280" width="220" height="60" rx="10" fill="url(#box-sink)" stroke="#4ade80" stroke-width="1.5"/>
     <text x="910" y="304" text-anchor="middle" class="t-label">Webhook (HMAC-SHA256)</text>
-    <text x="910" y="322" text-anchor="middle" class="t-sub">invoice.created &rarr; your endpoint</text>
+    <text x="910" y="322" text-anchor="middle" class="t-sub">invoice.created → your endpoint</text>
   </g>
 
   <!-- Stage 5 -> sinks -->
