@@ -20,6 +20,9 @@ class CorrectionLog(Base):
     __tablename__: ClassVar[str] = "correction_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id", ondelete="CASCADE"), index=True)
     field_name: Mapped[str] = mapped_column(String(64))
     old_value: Mapped[str | None] = mapped_column(Text(), nullable=True)

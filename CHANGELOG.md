@@ -4,6 +4,64 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.4] - 2026-04-21
+
+### Theme
+
+Phase 2 of the multi-user transition. Adds a nullable `user_id` column to every tenant-scoped table and backfills existing rows to the bootstrap admin. Structurally additive only — no `NOT NULL`, no foreign-key enforcement, no composite-unique reshaping. Those tightenings happen in Phase 3 (migration 0012) once the application code has been updated to populate `user_id` on every write, which is Phase 4 work. This migration is the one that makes every future tenant-scoped query possible to write without breaking the existing single-operator deployment.
+
+### Added
+
+- **Alembic migration `0011_add_user_id_to_tenant_tables`**: adds nullable `user_id INTEGER` to seven tenant tables — `invoices`, `email_accounts`, `scan_logs`, `extraction_logs`, `correction_logs`, `saved_views`, `webhook_logs` — backfills every existing row to `users[1]` when the bootstrap admin exists, and creates per-table indexes sized to the actual query shapes the app issues. `llm_cache`, `app_settings`, `users`, and `user_sessions` are deliberately NOT tenant-scoped: `llm_cache` stays shared so a single-org deployment doesn't duplicate identical parse/classify answers across users; `app_settings` is instance-wide by design; `users`/`user_sessions` are already user-scoped by construction.
+
+- **Indexing strategy tuned per query shape**:
+  - `invoices` → composite `(user_id, invoice_date DESC)` to match the default list + search ordering
+  - `email_accounts`, `correction_logs`, `saved_views` → single-column `(user_id)` (small tables, only ever filtered by user)
+  - `scan_logs` → composite `(user_id, started_at DESC)` for the scan-history UI
+  - `extraction_logs` → composite `(user_id, created_at DESC)` — largest table, highest-value index
+  - `webhook_logs` → composite `(user_id, created_at DESC)` for the per-user delivery audit view in Phase 5
+
+- **ORM column** `user_id: Mapped[int | None]` on all seven tenant models with `ForeignKey("users.id", ondelete="CASCADE")` and `index=True`. Matches the migration shape, so `Base.metadata.create_all` on fresh installs produces an equivalent schema without running alembic.
+
+- **Schema-shape contract tests** (`tests/test_models/test_orm_models.py`): asserts every tenant model has a nullable, indexed `user_id` with a CASCADE foreign key to `users.id`, and asserts `LLMCache` does NOT have `user_id` (guards against accidentally tenant-scoping the shared cache in a future refactor).
+
+- **Migration end-to-end tests** (`tests/test_migrations.py`): four tests covering the four real deployment shapes — existing deployment with rows to backfill, fresh install where `users` table is empty (leave NULL), downgrade with partial schema (tables created by `create_all` absent), upgrade with full production-shaped schema (`saved_views` + `webhook_logs` present). Each test exercises one branch of the migration's table-presence check.
+
+### Changed
+
+- **Migration is defensive about missing tables.** `saved_views` and `webhook_logs` have never been created by any Alembic migration in this project — they come from `Base.metadata.create_all` at first app start. Migration 0011 skips any tenant table that doesn't yet exist at the time it runs (the fresh-install case where alembic runs before the app has ever booted). When the app later starts and `create_all` materialises those tables, the ORM definition already carries the `user_id` column and its index, so the end state is the same regardless of which path the deployment took.
+
+- **Backfill is gated on `users[1]` existing.** A fresh install where alembic runs before the app boots has an empty `users` table. In that shape, the migration leaves `user_id` NULL on every row; the first-boot bootstrap hook seeds `users[1]`, and the tenant tables are also empty, so there's nothing to backfill. The backfill path only matters for existing deployments that ran Phase 1 (migration 0010) and booted the app at least once.
+
+### Upgrade path
+
+Zero-touch for v0.9.0-alpha.3 deployments:
+
+1. `alembic upgrade head` applies migration 0011.
+2. Every existing row in the seven tenant tables has its `user_id` set to `1` (the bootstrap admin from Phase 1).
+3. Seven new indexes are created, sized for the query shapes the app actually uses.
+4. No API contract change. No behavior change. Queries that don't filter by `user_id` continue to work; queries that do now have a matching index.
+
+Rollback: `alembic downgrade 0010_users_and_sessions` drops the `user_id` column and the seven indexes cleanly. Other columns and data are untouched. The downgrade path uses `batch_alter_table` for the column drop, which rebuilds each table — acceptable for operator-initiated rollback, never for a hot path.
+
+### Dry-run validation
+
+Migration was dry-run against a fresh copy of the production database before shipping. Pre-upgrade row counts matched post-upgrade row counts across all seven tenant tables. Every row had `user_id = 1` post-upgrade; zero `user_id IS NULL`. Seven new indexes present by name. Subsequent downgrade restored the schema to `0010_users_and_sessions` with all row counts preserved. Subsequent re-upgrade returned to the same post-upgrade state.
+
+### Tests
+
+- 526 passing, 100% coverage (+6 from v0.9.0-alpha.3): 3 schema-shape assertions on the ORM layer, 4 end-to-end migration tests on the alembic layer, 1 regression for the shared-cache invariant.
+- The `tests/test_migrations.py` fixture snapshots logger state around each `command.upgrade`/`command.downgrade` call and restores it afterward. Without this, alembic's `env.py` call to `logging.config.fileConfig` disables every existing logger for the rest of the session and silently breaks `caplog`-based assertions elsewhere in the suite.
+
+### Alpha designation
+
+Still `0.9.0-alpha` because Phases 3-5 of the multi-user transition are not yet shipped:
+- Phase 3 (migration 0012): `NOT NULL` + FK tightening, composite unique `(user_id, invoice_no)` on invoices, FTS5 trigger rebuild
+- Phase 4: repository pattern, per-user file-storage layout, tenant-isolation tests for every endpoint
+- Phase 5: admin UI, registration flow, per-user settings, per-user webhooks
+
+Single-operator deployments can run this in production: all existing behavior is preserved, no user-visible change, every query continues to return the same rows it returned yesterday.
+
 ## [0.9.0-alpha.3] - 2026-04-21
 
 ### Fixed

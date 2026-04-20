@@ -22,6 +22,9 @@ class Invoice(Base):
     __tablename__: ClassVar[str] = "invoices"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     invoice_no: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     buyer: Mapped[str] = mapped_column(String(255))
     seller: Mapped[str] = mapped_column(String(255))

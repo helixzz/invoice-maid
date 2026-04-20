@@ -163,6 +163,22 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.4 — Released
+
+**Phase 2 of multi-user transition:** `user_id` columns on every tenant table.
+
+Alembic migration 0011 adds a nullable `user_id INTEGER` column to seven tenant tables — `invoices`, `email_accounts`, `scan_logs`, `extraction_logs`, `correction_logs`, `saved_views`, `webhook_logs` — backfills existing rows to the bootstrap admin (`users[1]` from Phase 1), and creates per-table indexes sized to the query shapes the app actually issues. Additive only — no `NOT NULL`, no foreign-key constraint, no composite-unique reshape. Those tightenings are deferred to Phase 3 migration 0012 once the application code has been refactored to populate `user_id` on every write (Phase 4).
+
+Migration is defensive about the project's schema-lifecycle wart: `saved_views` and `webhook_logs` are not created by any alembic migration — they come from `Base.metadata.create_all` at first app start. Migration 0011 inspects the bind and skips any tenant table that isn't yet present, so a fresh install where alembic runs before the first app boot still succeeds; `create_all` later materialises the missing tables with the matching ORM column and index.
+
+Dry-run against a production database copy verified: pre-upgrade and post-upgrade row counts match across all seven tenant tables, every row carries `user_id = 1`, all seven new indexes present, downgrade cleanly removes the column without touching other data.
+
+526 tests, 100% coverage (+6).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.3 — Released
 
 **Hotfix:** Login rejected self-hosted-style email addresses.

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import ClassVar
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -17,6 +17,9 @@ class WebhookLog(Base):
     __tablename__: ClassVar[str] = "webhook_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     event: Mapped[str] = mapped_column(String(128), index=True)
     invoice_no: Mapped[str] = mapped_column(String(128), index=True)
     url: Mapped[str] = mapped_column(String(1000))
