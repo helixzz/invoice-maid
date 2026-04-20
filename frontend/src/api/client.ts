@@ -73,14 +73,8 @@ export const api = {
   },
 
   // Auth
-  async login(password: string): Promise<{access_token: string}> {
-    const formData = new FormData()
-    formData.append('username', 'admin') // Assuming fixed user or OAuth style where username might be required but unused if it's just password auth. Actually standard OAuth2 uses username/password.
-    // However the store sends { password } JSON initially.
-    // According to instructions: login(password: string): Promise<{access_token: string}>
-    // I will use JSON for now but might need to adjust based on typical FastAPI OAuth2PasswordRequestForm
-    // Assuming backend is JSON based since the original store did `apiClient.post('/auth/login', { password })`
-    const res = await apiClient.post('/auth/login', { password })
+  async login(email: string, password: string): Promise<{access_token: string}> {
+    const res = await apiClient.post('/auth/login', { email, password })
     return res.data
   },
 

@@ -4,7 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.9.0-alpha.1] - 2026-04-21
+## [0.9.0-alpha.2] - 2026-04-21
+
+### Fixed
+
+- **Login page missing email field.** v0.9.0-alpha.1 shipped the backend change from `{password}`-only to `{email, password}` login payloads but left the frontend form unchanged, so the login page collected only a password and every attempt returned `422 email is required`. Operators could not log in via the UI after upgrading. The login form now has an email input alongside the password input, the Pinia auth store's `login(email, password)` action threads both through, and `api.login(email, password)` sends `{email, password}` JSON to the backend. The stale-JWT redirect path through the axios `response.use` 401-interceptor is unchanged — operators who still have a `v0.8.10`-era token in localStorage hit any authenticated request, get a 401, get redirected to the updated login page, and proceed normally.
+
+### Upgrade
+
+Zero backend migrations needed. Frontend `dist/` is rebuilt with the fix and committed. The deploy script's unconditional `git reset --hard` + service restart picks up the new bundle.
+
+
 
 ### Theme
 

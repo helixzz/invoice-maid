@@ -14,10 +14,9 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (state) => !!state.token,
   },
   actions: {
-    async login(password: string) {
+    async login(email: string, password: string) {
       try {
-        const response = await api.login(password)
-        // Adjust depending on API response shape
+        const response = await api.login(email, password)
         const token = response.access_token || (response as any).token
         this.token = token
         if (this.token) {

@@ -2,19 +2,20 @@
 import { ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
+const email = ref('')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
 const authStore = useAuthStore()
 
 const handleSubmit = async () => {
-  if (!password.value) return
-  
+  if (!email.value || !password.value) return
+
   loading.value = true
   error.value = ''
-  
+
   try {
-    await authStore.login(password.value)
+    await authStore.login(email.value, password.value)
   } catch (err: any) {
     error.value = err.response?.data?.detail || 'Login failed. Please try again.'
   } finally {
@@ -38,6 +39,25 @@ const handleSubmit = async () => {
     <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
       <div class="bg-white py-8 px-4 shadow-sm border border-slate-200 sm:rounded-xl sm:px-10">
         <form class="space-y-6" @submit.prevent="handleSubmit">
+          <div>
+            <label for="email" class="block text-sm font-medium text-slate-700">
+              Email
+            </label>
+            <div class="mt-1">
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autocomplete="username"
+                required
+                v-model="email"
+                :disabled="loading"
+                class="appearance-none block w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm placeholder-slate-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
+                placeholder="admin@local"
+              />
+            </div>
+          </div>
+
           <div>
             <label for="password" class="block text-sm font-medium text-slate-700">
               Password
@@ -64,7 +84,7 @@ const handleSubmit = async () => {
           <div>
             <button
               type="submit"
-              :disabled="loading || !password"
+              :disabled="loading || !email || !password"
               class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <svg v-if="loading" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">

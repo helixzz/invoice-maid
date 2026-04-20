@@ -163,6 +163,18 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.2 — Released
+
+**Hotfix:** Login page email field.
+
+v0.9.0-alpha.1 shipped the backend email-based login flow but left the frontend form password-only, so every login attempt hit `422 email is required`. This alpha ships the matching frontend change: email input + adjusted Pinia action + axios client payload. Operators who logged out after upgrading to v0.9.0-alpha.1 get back in with `admin@local` (the default `ADMIN_EMAIL`) + their existing password.
+
+No backend migrations. Frontend `dist/` rebuilt. Zero-touch deploy.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.1 — Released
 
 **Theme:** Phase 1 of the multi-user transition — DB-backed users, session revocation, email-based login.
