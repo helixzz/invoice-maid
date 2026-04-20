@@ -3,12 +3,29 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Protocol, TypeVar, cast
 
-from fastapi import Request, Response
+from fastapi import Depends, Request, Response
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.database import get_db
+from app.deps import CurrentUserAndSession
+from app.models import User
 from app.rate_limiter import limiter
-from app.schemas.auth import LoginRequest, TokenResponse
-from app.services.auth_service import create_access_token, verify_password
+from app.schemas.auth import (
+    LoginRequest,
+    LogoutResponse,
+    SessionSummary,
+    TokenResponse,
+    UserInfo,
+)
+from app.services.auth_service import (
+    create_access_token,
+    create_user_session,
+    revoke_all_sessions,
+    revoke_session,
+    verify_password,
+)
 
 _F = TypeVar("_F")
 
@@ -20,6 +37,8 @@ class _RouteDecorator(Protocol):
 class _RouterProtocol(Protocol):
     def post(self, path: str, *, response_model: type[object]) -> _RouteDecorator: ...
 
+    def get(self, path: str, *, response_model: type[object]) -> _RouteDecorator: ...
+
 
 class _RouterFactory(Protocol):
     def __call__(self, *, prefix: str = "", tags: list[str] | None = None) -> _RouterProtocol: ...
@@ -27,6 +46,7 @@ class _RouterFactory(Protocol):
 
 class _StatusProtocol(Protocol):
     HTTP_401_UNAUTHORIZED: int
+    HTTP_422_UNPROCESSABLE_ENTITY: int
 
 
 class _HTTPExceptionFactory(Protocol):
@@ -42,16 +62,108 @@ status = cast(_StatusProtocol, getattr(_fastapi, "status"))
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _client_ip(request: Request) -> str | None:
+    client = getattr(request, "client", None)
+    if client is not None and getattr(client, "host", None):
+        return cast(str, client.host)
+    return None
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
-async def login(request: Request, response: Response, payload: LoginRequest) -> TokenResponse:
-    del request, response
+async def login(
+    request: Request,
+    response: Response,
+    payload: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
+    del response
     settings = get_settings()
 
-    if not verify_password(payload.password, settings.ADMIN_PASSWORD_HASH):
+    if payload.email is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect password",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="email is required",
         )
 
-    return TokenResponse(access_token=create_access_token({"sub": "admin"}))
+    email = str(payload.email).strip().lower()
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is None or not user.is_active or not verify_password(
+        payload.password, user.hashed_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
+
+    token = create_access_token({"sub": str(user.id)})
+    user_agent = request.headers.get("user-agent")
+    await create_user_session(
+        db,
+        user,
+        token,
+        user_agent=user_agent[:500] if user_agent else None,
+        ip_address=_client_ip(request),
+        settings=settings,
+    )
+    return TokenResponse(access_token=token)
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(
+    resolved: CurrentUserAndSession,
+    db: AsyncSession = Depends(get_db),
+) -> LogoutResponse:
+    _, session = resolved
+    await revoke_session(db, session)
+    return LogoutResponse(success=True)
+
+
+@router.post("/logout-all", response_model=LogoutResponse)
+async def logout_all(
+    resolved: CurrentUserAndSession,
+    db: AsyncSession = Depends(get_db),
+) -> LogoutResponse:
+    user, _ = resolved
+    await revoke_all_sessions(db, user.id)
+    return LogoutResponse(success=True)
+
+
+@router.get("/me", response_model=UserInfo)
+async def me(resolved: CurrentUserAndSession) -> UserInfo:
+    user, _ = resolved
+    return UserInfo(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        is_admin=user.is_admin,
+        created_at=user.created_at,
+    )
+
+
+@router.get("/sessions", response_model=list[SessionSummary])
+async def list_sessions(
+    resolved: CurrentUserAndSession,
+    db: AsyncSession = Depends(get_db),
+) -> list[SessionSummary]:
+    from app.models import UserSession
+
+    user, _ = resolved
+    result = await db.execute(
+        select(UserSession)
+        .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
+        .order_by(UserSession.last_seen_at.desc())
+    )
+    return [
+        SessionSummary(
+            id=s.id,
+            created_at=s.created_at,
+            expires_at=s.expires_at,
+            last_seen_at=s.last_seen_at,
+            user_agent=s.user_agent,
+            ip_address=s.ip_address,
+        )
+        for s in result.scalars().all()
+    ]

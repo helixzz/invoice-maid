@@ -185,10 +185,39 @@ def reset_scan_progress_state() -> None:
     scan_progress_module._progress_lock = asyncio.Lock()
 
 
-@pytest.fixture
-def auth_token(settings: Settings) -> str:
-    del settings
-    return create_access_token({"sub": "admin"})
+@pytest_asyncio.fixture
+async def admin_user(db: AsyncSession) -> "User":
+    """Seeds a test admin user so new code that requires a DB-backed ``User``
+    row (CurrentUser deps, session validation, etc.) has something to
+    resolve against. Every test that uses ``auth_headers`` implicitly
+    depends on this fixture via the auth_token dependency chain.
+
+    Password is ``testpass`` under the test-env fake bcrypt that treats
+    ``hashed:X`` as the hash of ``X``, matching the settings fixture."""
+    from app.models import User as _User
+
+    user = _User(
+        email="admin@example.com",
+        hashed_password="hashed:testpass",
+        is_active=True,
+        is_admin=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
+async def auth_token(admin_user: "User", db: AsyncSession, settings: Settings) -> str:
+    """JWT for the test admin, with a real ``user_sessions`` row so the
+    session-aware deps accept the token. The session lives for the
+    default JWT_EXPIRE_MINUTES window."""
+    from app.services.auth_service import create_access_token, create_user_session
+
+    token = create_access_token({"sub": str(admin_user.id)})
+    await create_user_session(db, admin_user, token, settings=settings)
+    return token
 
 
 @pytest.fixture

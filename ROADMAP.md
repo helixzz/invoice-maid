@@ -163,6 +163,22 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.1 — Released
+
+**Theme:** Phase 1 of the multi-user transition — DB-backed users, session revocation, email-based login.
+
+Ships the foundational auth layer without yet tenant-scoping existing data. A single-operator v0.8.10 deployment upgrades cleanly: the bootstrap admin auto-creates from `ADMIN_EMAIL` (default `admin@local`) + existing `ADMIN_PASSWORD_HASH` on first boot, every API endpoint continues to work with the same scope and semantics, and only the login flow changes (email + password instead of password-only).
+
+New: `users` and `user_sessions` tables via Alembic `0010`. New endpoints `/auth/logout`, `/auth/logout-all`, `/auth/me`, `/auth/sessions`. `CurrentUser` dep now returns a `User` ORM object instead of the string `"admin"`. JWTs require a matching unrevoked `user_sessions` row to grant access — this is the contract that makes logout meaningful.
+
+Alpha designation signals: Phases 2-5 (user_id columns, repository pattern, admin UI, per-user settings) are still pending. The release is production-safe for single-operator deployments — it's just Phase 1 of a longer journey.
+
+519 tests, 100% coverage.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.8.10 — Released
 
 **Theme:** Operational hardening ahead of the v0.9.0 multi-user transition.

@@ -152,6 +152,7 @@ async def test_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPat
     stop = []
     monkeypatch.setattr("app.tasks.scheduler.start_scheduler", lambda settings: start.append(settings))
     monkeypatch.setattr("app.tasks.scheduler.stop_scheduler", lambda: stop.append(True))
+    monkeypatch.setattr("app.services.bootstrap.bootstrap_admin_user", AsyncMock(return_value=None))
 
     async with main_module.lifespan(main_module.app):
         assert start == [settings]
@@ -174,6 +175,7 @@ async def test_lifespan_skips_scheduler_for_multiple_workers(monkeypatch: pytest
     monkeypatch.setattr("app.tasks.scheduler.start_scheduler", lambda settings: start.append(settings))
     monkeypatch.setattr("app.tasks.scheduler.stop_scheduler", lambda: stop.append(True))
     monkeypatch.setattr(main_module.logger, "warning", lambda message, *args: warnings.append(message % args))
+    monkeypatch.setattr("app.services.bootstrap.bootstrap_admin_user", AsyncMock(return_value=None))
     monkeypatch.setenv("WEB_CONCURRENCY", "2")
 
     async with main_module.lifespan(main_module.app):

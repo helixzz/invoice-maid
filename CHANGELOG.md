@@ -4,7 +4,77 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.8.10] - 2026-04-21
+## [0.9.0-alpha.1] - 2026-04-21
+
+### Theme
+
+Phase 1 of the multi-user transition. This alpha ships the foundational auth layer — DB-backed users, session revocation, email-based login — without yet tenant-scoping existing data. Single-operator deployments upgrading from v0.8.10 get identical functionality: the bootstrap admin is auto-created from existing `.env` credentials on first boot, every API endpoint still works with the same scope and semantics, and there is still only one user on the system. Phases 2 through 5 (user_id columns, repository pattern, admin UI, per-user settings) land in subsequent releases.
+
+### Added
+
+- **`users` table** (Alembic migration `0010_users_and_sessions`): id, email (unique), hashed_password, is_active, is_admin, created_at, updated_at. Stores credentials that previously lived in a single `.env` hash.
+
+- **`user_sessions` table**: id, user_id (FK with CASCADE), token_hash (SHA-256 of the JWT), created_at, expires_at, revoked_at, last_seen_at, user_agent, ip_address. Enables server-side session revocation: a valid JWT is no longer sufficient for access — there must also be an unrevoked `user_sessions` row matching the token's SHA-256 hash.
+
+- **`User` and `UserSession` ORM models** under `app/models/`. Both exported from `app.models.__init__`.
+
+- **`app/services/bootstrap.py`**: `bootstrap_admin_user(db, settings)` creates `users[1]` on first boot when the `users` table is empty and both `ADMIN_EMAIL` and `ADMIN_PASSWORD_HASH` are configured. Idempotent — runs on every `lifespan` startup but is a no-op after the initial seed.
+
+- **`ADMIN_EMAIL` setting** in `app/config.py`. Defaults to `"admin@local"` when not set, so v0.8.10 deployments upgrade with zero `.env` changes required. Operators who want a real email can set it before or after upgrade.
+
+- **`app/services/auth_service.py`** session helpers: `hash_token`, `create_user_session`, `resolve_active_session`, `revoke_session`, `revoke_all_sessions`. The `token_hash` column stores SHA-256 of the raw JWT so the server never holds raw tokens — session lookups happen via hash comparison.
+
+- **New endpoints under `/api/v1/auth`**:
+  - `POST /auth/logout` — revokes the current session (the one tied to the incoming bearer token)
+  - `POST /auth/logout-all` — revokes every unrevoked session for the current user (the "sign out from all devices" action)
+  - `GET /auth/me` — returns `{id, email, is_active, is_admin, created_at}` for the current user
+  - `GET /auth/sessions` — lists unrevoked sessions for the current user with `user_agent` + `ip_address` fingerprints, for a future session-management UI
+
+### Changed
+
+- **`POST /auth/login` now requires `{email, password}`.** The old `{password}`-only request returns `422` so misconfigured clients fail loudly rather than authenticating as a generic admin. JWT `sub` claim is now the integer user_id, not the string `"admin"`. Each login creates a new `user_sessions` row and records `user_agent` and `ip_address` from the request.
+
+- **`CurrentUser` dependency** changed from `Annotated[str, ...]` (returned `"admin"`) to `Annotated[User, ...]` (returns the `User` ORM object). Every endpoint that used `_current_user: CurrentUser` and ignored the value keeps working unchanged. Endpoints that need `user.id` or `user.email` can now access them directly.
+
+- **New `CurrentUserAndSession`** type: `Annotated[tuple[User, UserSession], ...]`. Used by `/auth/logout` to revoke the specific session the request came in on.
+
+- **`get_current_user` now validates the session**, not just the JWT. A JWT with a valid signature but no matching unrevoked `user_sessions` row is rejected with 401. Covers revoked sessions, expired session rows, and sessions belonging to deactivated users.
+
+- **JWTs now include a `jti` claim** (8-byte random nonce). Previously, two tokens with the same `{sub, exp}` produced identical bytes, which conflicted with `user_sessions.token_hash`'s uniqueness constraint when a user logged in twice in the same second.
+
+- **`LoginRequest` schema** updated with `EmailStr` validation (adds `email-validator>=2.0` via `pydantic[email]` extra). `email-validator` rejects reserved TLDs like `.local`, so test fixtures use `@example.com`.
+
+### Fixed
+
+- **Session-validation security**: a valid JWT alone no longer grants access. This is the contract that makes `/auth/logout` and "revoke all devices" meaningful — without this, revoking a session would have no effect because the JWT would still verify.
+
+### Upgrade path
+
+Zero-touch for v0.8.10 deployments:
+
+1. `alembic upgrade head` applies migration `0010_users_and_sessions`, creating two new empty tables. Existing tables are untouched.
+2. On first restart, the `lifespan` hook calls `bootstrap_admin_user` which sees the empty `users` table and creates row 1 from `ADMIN_EMAIL` (default `admin@local`) + `ADMIN_PASSWORD_HASH` (existing env var).
+3. Login screen prompts for email + password. Existing operators enter their existing password with `admin@local` (or whatever `ADMIN_EMAIL` they set). The JWT they receive ties back to user 1.
+4. All existing data (invoices, email_accounts, scan_logs, etc.) is untouched. Still accessible exactly as before — the data model hasn't changed.
+
+Operators who want a different bootstrap email add `ADMIN_EMAIL=them@example.com` to `.env` before the upgrade.
+
+### Tests
+
+- 519 passing, 100% coverage (+11 from v0.8.10).
+- Rewritten `test_deps.py` around the session-aware dep: session-revocation contract, revoked session rejection, deactivated user rejection, naive-tzinfo coercion, unknown-token handling.
+- Rewritten `test_api/test_auth.py`: email-based login, logout, logout-all, /me, /sessions, session fingerprint recording.
+- New `test_services/test_bootstrap.py`: empty-table seeding, idempotency, blank-email/hash skip, email normalisation.
+- CI-simulated run clean.
+
+### Alpha designation
+
+This release is tagged as `0.9.0-alpha.1` (Python packaging canonical form `0.9.0a1`) to signal:
+- The v0.9.0 roadmap is incomplete (Phases 2-5 still pending).
+- Single-operator deployments can run this in production: all existing behavior is preserved and the only user-visible change is the login flow (email + password instead of password-only).
+- Multi-user registration, admin UI, and per-user data isolation are NOT in this release. A deployment with only one admin user is the supported shape.
+
+
 
 ### Theme
 

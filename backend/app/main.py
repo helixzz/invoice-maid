@@ -66,6 +66,8 @@ async def lifespan(app: FastAPI):
     engine, _ = create_engine_and_session(settings.DATABASE_URL)
     await init_db(settings.DATABASE_URL)
 
+    from app.services.bootstrap import bootstrap_admin_user
+
     async for db in get_db():
         await db.execute(
             text(
@@ -78,6 +80,7 @@ async def lifespan(app: FastAPI):
             },
         )
         await db.commit()
+        await bootstrap_admin_user(db, settings)
 
     from app.tasks.scheduler import start_scheduler, stop_scheduler
 

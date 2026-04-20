@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     ADMIN_PASSWORD_HASH: str
+    ADMIN_EMAIL: str = "admin@local"
     JWT_SECRET: str
     LLM_BASE_URL: str
     LLM_API_KEY: str

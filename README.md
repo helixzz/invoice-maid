@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-497%20passing-brightgreen" alt="497 tests">
+  <img src="https://img.shields.io/badge/Tests-519%20passing-brightgreen" alt="519 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
