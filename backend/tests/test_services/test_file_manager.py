@@ -47,14 +47,84 @@ def test_canonical_filename_builds_expected_name() -> None:
 async def test_save_invoice_handles_duplicates_and_delete(settings) -> None:
     manager = FileManager(settings.STORAGE_PATH)
 
-    first = await manager.save_invoice(b"one", "A", "B", "001", date(2024, 1, 1), Decimal("10.00"))
-    second = await manager.save_invoice(b"two", "A", "B", "001", date(2024, 1, 1), Decimal("10.00"))
+    first = await manager.save_invoice(
+        b"one", "A", "B", "001", date(2024, 1, 1), Decimal("10.00"), user_id=1
+    )
+    second = await manager.save_invoice(
+        b"two", "A", "B", "001", date(2024, 1, 1), Decimal("10.00"), user_id=1
+    )
 
-    assert first == "A_B_001_20240101_10.00.pdf"
-    assert second == "A_B_001_20240101_10.00_1.pdf"
+    assert first == "users/1/invoices/A_B_001_20240101_10.00.pdf"
+    assert second == "users/1/invoices/A_B_001_20240101_10.00_1.pdf"
     assert manager.get_full_path(first).read_bytes() == b"one"
     assert await manager.delete_invoice_file(first) is True
     assert await manager.delete_invoice_file(first) is False
+
+
+@pytest.mark.asyncio
+async def test_save_invoice_isolates_identical_canonical_names_across_users(
+    settings,
+) -> None:
+    """Phase 4b tenant-isolation contract. Two users uploading invoices
+    with identical canonical metadata (same buyer, seller, invoice_no,
+    date, amount) must land in different subdirectories — never
+    overwrite each other's files."""
+    manager = FileManager(settings.STORAGE_PATH)
+
+    user_a_path = await manager.save_invoice(
+        b"user-a-content", "AcmeBuyer", "AcmeSeller", "SHARED-001",
+        date(2024, 6, 15), Decimal("99.99"), user_id=1,
+    )
+    user_b_path = await manager.save_invoice(
+        b"user-b-content", "AcmeBuyer", "AcmeSeller", "SHARED-001",
+        date(2024, 6, 15), Decimal("99.99"), user_id=2,
+    )
+
+    assert user_a_path == "users/1/invoices/AcmeBuyer_AcmeSeller_SHARED-001_20240615_99.99.pdf"
+    assert user_b_path == "users/2/invoices/AcmeBuyer_AcmeSeller_SHARED-001_20240615_99.99.pdf"
+    assert user_a_path != user_b_path
+    assert manager.get_full_path(user_a_path).read_bytes() == b"user-a-content"
+    assert manager.get_full_path(user_b_path).read_bytes() == b"user-b-content"
+
+
+@pytest.mark.asyncio
+async def test_delete_user_files_removes_subdirectory(settings) -> None:
+    manager = FileManager(settings.STORAGE_PATH)
+    _ = await manager.save_invoice(
+        b"one", "A", "B", "X", date(2024, 1, 1), Decimal("1.00"), user_id=7
+    )
+    _ = await manager.save_invoice(
+        b"two", "A", "B", "Y", date(2024, 1, 2), Decimal("2.00"), user_id=7
+    )
+
+    deleted = await manager.delete_user_files(7)
+
+    assert deleted == 2
+    assert not (manager.storage_path / "users" / "7").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_files_is_noop_for_unknown_user(settings) -> None:
+    manager = FileManager(settings.STORAGE_PATH)
+    assert await manager.delete_user_files(999) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_user_files_handles_rmtree_failure(settings, monkeypatch) -> None:
+    manager = FileManager(settings.STORAGE_PATH)
+    _ = await manager.save_invoice(
+        b"one", "A", "B", "X", date(2024, 1, 1), Decimal("1.00"), user_id=8
+    )
+
+    import shutil as _shutil
+
+    def fail_rmtree(path):
+        raise OSError("simulated failure")
+
+    monkeypatch.setattr(_shutil, "rmtree", fail_rmtree)
+
+    assert await manager.delete_user_files(8) == 0
+    assert (manager.storage_path / "users" / "8").exists()
 
 
 def test_get_full_path_rejects_path_traversal(settings) -> None:

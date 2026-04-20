@@ -102,6 +102,16 @@ class FileManager:
     def storage_path(self) -> Path:
         return self._storage_path
 
+    def _user_invoices_dir(self, user_id: int) -> Path:
+        """Resolve the per-user invoice directory, creating it if needed.
+
+        Layout: ``STORAGE_PATH/users/{user_id}/invoices/``. Two users
+        generating identical canonical filenames land in different
+        subdirectories, so there is no cross-tenant file collision."""
+        user_dir = self._storage_path / "users" / str(user_id) / "invoices"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        return user_dir
+
     async def save_invoice(
         self,
         content: bytes,
@@ -111,8 +121,16 @@ class FileManager:
         invoice_date: date | None,
         amount: Decimal | float | None,
         extension: str = ".pdf",
+        *,
+        user_id: int,
     ) -> str:
-        """Save invoice file and return its relative storage path."""
+        """Save invoice file under the per-user subdirectory and return
+        its relative storage path.
+
+        Returns a relative path of the form
+        ``users/{user_id}/invoices/{canonical_filename}`` suitable for
+        round-tripping through ``get_full_path``, ``stream_zip``, and
+        ``delete_invoice_file``."""
         filename = canonical_filename(
             buyer=buyer,
             seller=seller,
@@ -122,13 +140,14 @@ class FileManager:
             extension=extension,
         )
 
-        file_path = self._storage_path / filename
+        user_dir = self._user_invoices_dir(user_id)
+        file_path = user_dir / filename
         if file_path.exists():
             base = file_path.stem
             suffix = file_path.suffix
             counter = 1
             while file_path.exists():
-                file_path = self._storage_path / f"{base}_{counter}{suffix}"
+                file_path = user_dir / f"{base}_{counter}{suffix}"
                 counter += 1
 
         async with aiofiles.open(file_path, "wb") as file_obj:
@@ -187,3 +206,25 @@ class FileManager:
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Failed to delete file %s: %s", relative_path, exc)
             return False
+
+    async def delete_user_files(self, user_id: int) -> int:
+        """Recursively delete the per-user invoice directory.
+
+        Returns the number of files removed. Used by the admin
+        ``DELETE /admin/users/{id}`` endpoint after the cascade DB
+        delete succeeds, and by the startup orphan-directory scan to
+        clean up directories whose owning ``users`` row is gone. Silent
+        no-op if the directory does not exist."""
+        user_root = self._storage_path / "users" / str(user_id)
+        if not user_root.exists():
+            return 0
+
+        import shutil
+
+        file_count = sum(1 for _ in user_root.rglob("*") if _.is_file())
+        try:
+            shutil.rmtree(user_root)
+        except OSError as exc:
+            logger.error("Failed to delete user directory %s: %s", user_root, exc)
+            return 0
+        return file_count

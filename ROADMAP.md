@@ -163,6 +163,26 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.7 — Released
+
+**Phase 4b.1 of multi-user transition:** per-user file storage.
+
+Invoice files now live under `STORAGE_PATH/users/{user_id}/invoices/` instead of a flat directory. The canonical filename is deterministic from invoice metadata (`buyer_seller_invoiceno_date_amount.pdf`); under the flat layout, two users who legitimately own invoices with identical metadata would generate the same filename and silently overwrite each other's files. Per-user subdirectories make the collision structurally impossible.
+
+`FileManager.save_invoice()` gains a keyword-only `user_id: int` parameter. Every call site (scheduler, manual upload, smoke-data seeder) passes it through. `get_full_path`, `stream_zip`, and `delete_invoice_file` take the already-prefixed relative path — no `user_id` parameter because the security boundary is the tenant-scoped `db.get(Invoice, id)` upstream, not the filesystem layer.
+
+Alembic migration 0013 is a data migration that moves every invoice file from flat `STORAGE_PATH/{filename}` to `STORAGE_PATH/users/{user_id}/invoices/{filename}`, updates `invoices.file_path` accordingly, and logs every action (INFO for moves, WARNING for missing-on-disk rows). Fully idempotent: already-migrated rows are skipped; missing-on-disk rows update DB only; partial-run recoveries leave the new-path file intact. Honors `DRY_RUN=1` for pre-flight validation against production DB copies.
+
+New `FileManager.delete_user_files(user_id)` removes the per-user directory recursively — used by the upcoming admin user-delete endpoint and the planned startup orphan-directory scan.
+
+Dry-run against a production database copy: 239 files moved in under 0.5 seconds, 0 collisions, 0 missing-on-disk rows, 18 orphan root files correctly left alone. Downgrade roundtrip clean.
+
+571 tests, 100% coverage (+15).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.6 — Released
 
 **Phase 4a of multi-user transition:** tenant isolation on every read path.

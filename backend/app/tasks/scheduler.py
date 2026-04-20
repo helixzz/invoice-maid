@@ -603,6 +603,7 @@ async def _process_single_email(
                             parsed.invoice_date,
                             parsed.amount,
                             ext,
+                            user_id=user_id,
                         )
                         invoice = Invoice(
                             user_id=user_id,

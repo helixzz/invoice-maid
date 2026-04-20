@@ -95,6 +95,7 @@ async def seed_smoke_data(db: AsyncSession, settings: Settings) -> SmokeSeedResp
         invoice_date=SMOKE_INVOICE_DATE,
         amount=SMOKE_INVOICE_AMOUNT,
         extension=".pdf",
+        user_id=admin.id,
     )
     invoice = Invoice(
         user_id=admin.id,

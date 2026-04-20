@@ -627,3 +627,330 @@ def test_0012_downgrade_restores_nullable_and_global_unique(
         ).scalar_one()
         assert surviving == "INV-ROUNDTRIP"
     engine.dispose()
+
+
+def _insert_invoice_with_file_path(
+    db_path: Path, *, invoice_id: int, invoice_no: str, user_id: int, file_path: str
+) -> None:
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO invoices (id, invoice_no, buyer, seller, amount, "
+                "invoice_date, invoice_type, file_path, raw_text, email_uid, "
+                "email_account_id, source_format, extraction_method, confidence, "
+                "is_manually_corrected, created_at, user_id) VALUES "
+                "(:id, :invoice_no, 'B', 'S', 10.00, '2026-01-01', 'vat', :file_path, '', "
+                "'u1', 2, 'pdf', 'regex', 0.9, 0, '2026-04-21', :user_id)"
+            ),
+            {
+                "id": invoice_id,
+                "invoice_no": invoice_no,
+                "user_id": user_id,
+                "file_path": file_path,
+            },
+        )
+    engine.dispose()
+
+
+def _read_file_path(db_path: Path, invoice_id: int) -> str:
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        path = conn.execute(
+            sa.text("SELECT file_path FROM invoices WHERE id = :id"),
+            {"id": invoice_id},
+        ).scalar_one()
+    engine.dispose()
+    return path
+
+
+@pytest.fixture
+def storage_path_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point migration 0013 at a fresh STORAGE_PATH so its file moves
+    happen inside the test tmp_path rather than the developer's actual
+    data directory. Migration 0013 resolves STORAGE_PATH from the env
+    var first (see ``_derive_storage_path``), so this fixture gates
+    every file operation cleanly."""
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    monkeypatch.setenv("STORAGE_PATH", str(storage))
+    return storage
+
+
+def _seed_invoice_infra(db_path: Path) -> None:
+    """Every 0013 test seeds the same baseline: upgrade to 0011, seed
+    user 1 (so 0012's NOT NULL tightening succeeds), seed one email
+    account (id=2 because migration 0008 already seeded id=1 as the
+    Manual Uploads sentinel), then upgrade to 0012. Invoice rows get
+    added separately so each test controls its own file_path shape."""
+    _upgrade_to(db_path, "0011_add_user_id_to_tenant_tables")
+    _seed_admin_user(db_path)
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO email_accounts (id, user_id, name, type, username, "
+                "is_active, created_at) VALUES "
+                "(2, 1, 'A', 'imap', 'a@e.com', 1, '2026-04-21')"
+            )
+        )
+    engine.dispose()
+    _upgrade_to(db_path, "0012_tighten_user_id_constraints")
+
+
+def test_0013_moves_flat_file_into_user_subdir(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    _seed_invoice_infra(migration_db)
+
+    flat_file = storage_path_env / "invoice-001.pdf"
+    flat_file.write_bytes(b"pdf-content-001")
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-1", user_id=1,
+        file_path="invoice-001.pdf",
+    )
+
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    new_path = storage_path_env / "users" / "1" / "invoices" / "invoice-001.pdf"
+    assert new_path.exists()
+    assert new_path.read_bytes() == b"pdf-content-001"
+    assert not flat_file.exists()
+    assert _read_file_path(migration_db, 1) == "users/1/invoices/invoice-001.pdf"
+
+
+def test_0013_skips_rows_already_migrated(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    """Idempotency: running 0013 against a DB whose file_path is
+    already in the new users/ form must leave the filesystem and the
+    DB unchanged."""
+    _seed_invoice_infra(migration_db)
+
+    new_dir = storage_path_env / "users" / "1" / "invoices"
+    new_dir.mkdir(parents=True)
+    target = new_dir / "inv.pdf"
+    target.write_bytes(b"already-migrated")
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-1", user_id=1,
+        file_path="users/1/invoices/inv.pdf",
+    )
+
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    assert target.read_bytes() == b"already-migrated"
+    assert _read_file_path(migration_db, 1) == "users/1/invoices/inv.pdf"
+
+
+def test_0013_missing_file_on_disk_updates_db_only(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    """Degraded-state safety: row whose file is already gone from disk
+    (manual deletion, storage wipe) must not fail the migration. The
+    DB is still rewritten so future downloads behave identically (404
+    because the file is gone, same as before)."""
+    _seed_invoice_infra(migration_db)
+
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-MISSING", user_id=1,
+        file_path="deleted.pdf",
+    )
+
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    assert _read_file_path(migration_db, 1) == "users/1/invoices/deleted.pdf"
+    assert not (storage_path_env / "users" / "1" / "invoices" / "deleted.pdf").exists()
+
+
+def test_0013_new_path_already_exists_updates_db_without_moving(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    """Partial-run recovery: if the new path is already populated (from
+    a crashed prior migration run) and the old path is missing, just
+    update the DB — never overwrite existing data."""
+    _seed_invoice_infra(migration_db)
+
+    new_dir = storage_path_env / "users" / "1" / "invoices"
+    new_dir.mkdir(parents=True)
+    existing_new = new_dir / "partial.pdf"
+    existing_new.write_bytes(b"survived-partial-run")
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-PARTIAL", user_id=1,
+        file_path="partial.pdf",
+    )
+
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    assert existing_new.read_bytes() == b"survived-partial-run"
+    assert _read_file_path(migration_db, 1) == "users/1/invoices/partial.pdf"
+
+
+def test_0013_dry_run_makes_no_disk_or_db_changes(
+    migration_db: Path, storage_path_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DRY_RUN=1 must be a perfectly read-only pass. Operators rely on
+    this for pre-flight validation against production DB copies."""
+    _seed_invoice_infra(migration_db)
+
+    flat_file = storage_path_env / "dryrun.pdf"
+    flat_file.write_bytes(b"pre-dry-run")
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-DRY", user_id=1,
+        file_path="dryrun.pdf",
+    )
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    assert flat_file.exists()
+    assert flat_file.read_bytes() == b"pre-dry-run"
+    assert not (storage_path_env / "users").exists()
+    assert _read_file_path(migration_db, 1) == "dryrun.pdf"
+
+
+def test_0013_downgrade_reverses_move(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    _seed_invoice_infra(migration_db)
+
+    flat_file = storage_path_env / "roundtrip.pdf"
+    flat_file.write_bytes(b"roundtrip-content")
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-RT", user_id=1,
+        file_path="roundtrip.pdf",
+    )
+
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    assert not flat_file.exists()
+    _downgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    assert flat_file.exists()
+    assert flat_file.read_bytes() == b"roundtrip-content"
+    assert _read_file_path(migration_db, 1) == "roundtrip.pdf"
+
+
+def test_0013_downgrade_skips_rows_already_flat(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    """Idempotency on the reverse direction: if the row is already in
+    flat form (someone manually reverted it, or the upgrade partially
+    ran), downgrade must not error."""
+    _seed_invoice_infra(migration_db)
+
+    flat_file = storage_path_env / "already-flat.pdf"
+    flat_file.write_bytes(b"already-flat")
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-FLAT", user_id=1,
+        file_path="already-flat.pdf",
+    )
+
+    _downgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    assert flat_file.read_bytes() == b"already-flat"
+    assert _read_file_path(migration_db, 1) == "already-flat.pdf"
+
+
+def test_0013_downgrade_missing_file_updates_db_only(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    _seed_invoice_infra(migration_db)
+
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-DN", user_id=1,
+        file_path="users/1/invoices/gone.pdf",
+    )
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    _downgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    assert _read_file_path(migration_db, 1) == "gone.pdf"
+    assert not (storage_path_env / "gone.pdf").exists()
+
+
+def test_0013_downgrade_collision_updates_db_without_moving(
+    migration_db: Path, storage_path_env: Path
+) -> None:
+    _seed_invoice_infra(migration_db)
+
+    flat = storage_path_env / "collision.pdf"
+    flat.write_bytes(b"flat-already-here")
+
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-CL", user_id=1,
+        file_path="users/1/invoices/collision.pdf",
+    )
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    _downgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    assert flat.read_bytes() == b"flat-already-here"
+    assert _read_file_path(migration_db, 1) == "collision.pdf"
+
+
+def test_0013_storage_path_falls_back_to_db_relative_when_env_unset(
+    migration_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The migration's ``_derive_storage_path`` uses a three-step
+    precedence: STORAGE_PATH env -> URL-derived default
+    (``{db_parent.parent}/invoices``) -> ``./data/invoices``. This
+    exercises the URL-derived branch so a deploy that sets
+    ``DATABASE_URL`` but forgets ``STORAGE_PATH`` still targets the
+    right directory."""
+    monkeypatch.delenv("STORAGE_PATH", raising=False)
+
+    storage_root = migration_db.parent.parent / "invoices"
+    storage_root.mkdir(parents=True, exist_ok=True)
+
+    flat_file = storage_root / "derived.pdf"
+    flat_file.write_bytes(b"derived-branch")
+
+    _seed_invoice_infra(migration_db)
+    _insert_invoice_with_file_path(
+        migration_db, invoice_id=1, invoice_no="INV-D", user_id=1,
+        file_path="derived.pdf",
+    )
+
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    new_abs = storage_root / "users" / "1" / "invoices" / "derived.pdf"
+    assert new_abs.exists()
+    assert new_abs.read_bytes() == b"derived-branch"
+    assert _read_file_path(migration_db, 1) == "users/1/invoices/derived.pdf"
+
+
+def test_0013_storage_path_fallback_to_data_invoices_for_non_sqlite_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final fallback branch: non-SQLite URL with no STORAGE_PATH env
+    var resolves to ``./data/invoices`` relative to CWD. This test
+    exercises the helper directly rather than running alembic, since
+    alembic already requires a connectable URL."""
+    import importlib.util
+    from unittest.mock import patch
+
+    monkeypatch.delenv("STORAGE_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    module_path = (
+        BACKEND_ROOT / "alembic" / "versions" / "0013_migrate_files_to_user_subdirs.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "migration_0013_under_test", module_path
+    )
+    assert spec is not None and spec.loader is not None
+    migration_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration_module)
+
+    class _FakeEngine:
+        url = "postgresql://user@host/db"
+
+    class _FakeConn:
+        engine = _FakeEngine()
+
+    with patch.object(migration_module.op, "get_bind", return_value=_FakeConn()):
+        resolved = migration_module._derive_storage_path()
+
+    assert resolved == (tmp_path / "data" / "invoices").resolve()

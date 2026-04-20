@@ -4,6 +4,94 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.7] - 2026-04-21
+
+### Theme
+
+Phase 4b.1 of the multi-user transition: **per-user file storage**. Invoice files now live under `STORAGE_PATH/users/{user_id}/invoices/` instead of a flat directory. The canonical filename is deterministic from invoice metadata (`buyer_seller_invoiceno_date_amount.pdf`); under the flat layout, two users who legitimately owned invoices with identical metadata would generate the same filename and silently overwrite each other's files. Per-user subdirectories make that collision structurally impossible.
+
+### Added
+
+- **`FileManager.save_invoice(..., user_id: int)`** — keyword-only `user_id` parameter. Creates `users/{user_id}/invoices/` under `STORAGE_PATH` on demand, writes the file there, returns a relative path prefixed with `users/{user_id}/invoices/` that round-trips cleanly through `get_full_path`, `stream_zip`, and `delete_invoice_file`.
+
+- **`FileManager.delete_user_files(user_id: int)`** — recursively removes the per-user invoice directory (`users/{user_id}/`), returns the count of files removed. Used by the upcoming admin `DELETE /admin/users/{id}` endpoint and by the planned startup orphan-directory scan.
+
+- **Alembic migration `0013_migrate_files_to_user_subdirs`** — data migration that:
+  1. Iterates every `invoice` row
+  2. For each row: if `file_path` already starts with `users/`, skip (idempotent); if the flat file exists, move it to `users/{user_id}/invoices/{filename}` and update `file_path` in DB; if the flat file is missing on disk (deleted manually, storage wipe, stale row), update `file_path` in DB only and log WARNING (preserves the row for audit; API correctly returns 404 for download attempts, same as before); if the new path already exists (partial-run recovery), skip the move but still update DB.
+  3. Logs every action (INFO/WARNING) so operators can audit the migration after the fact via `journalctl`.
+  4. Honors `DRY_RUN=1` env var: logs every intended action without touching disk or DB. Useful on production DB copies for pre-flight validation. Note: `alembic_version` is still bumped by alembic itself during a dry-run pass; operators re-running DRY_RUN must re-copy the DB between runs (standard alembic operational practice).
+  5. Downgrade reverses the moves cleanly: files move back to the flat layout, `file_path` becomes bare filename. Same idempotency rules apply in reverse.
+
+- **10 new migration tests** covering every branch:
+  - Normal upgrade with existing file → move
+  - Skip already-migrated rows (upgrade is idempotent)
+  - Missing-on-disk row → DB update only
+  - New path already populated (partial-run recovery)
+  - DRY_RUN mode is read-only
+  - Downgrade reverses the move cleanly
+  - Downgrade skips already-flat rows
+  - Downgrade missing-on-disk path
+  - Downgrade collision (flat file already exists) → DB update only
+  - Storage path fallback: env var → URL-derived → `./data/invoices`
+
+- **4 new FileManager tests**:
+  - Duplicate-filename collision within a user (existing behavior, now with `user_id`)
+  - Tenant-isolation: two users with identical canonical filenames get separate files in separate subdirs
+  - `delete_user_files` happy path (removes subdirectory, returns count)
+  - `delete_user_files` no-op for unknown user
+  - `delete_user_files` handles `shutil.rmtree` failure gracefully (returns 0, leaves directory intact)
+
+### Changed
+
+- **Every invoice-writing call site passes `user_id`**:
+  - `tasks/scheduler.py` — already had `user_id` in scope from Phase 3, now passed to `file_mgr.save_invoice(..., user_id=user_id)`
+  - `services/manual_upload.py` — same, now threaded through
+  - `api/test_helpers.py` — seeder uses `admin.id` from the just-in-time admin lookup added in Phase 3
+
+- **Invoice-file read sites are unchanged**. `FileManager.get_full_path()`, `stream_zip()`, `delete_invoice_file()` all accept the already-prefixed relative path — no user_id parameter needed because the security boundary is the tenant-scoped `db.get(Invoice, id)` upstream, not the filesystem layer.
+
+### Upgrade path
+
+Zero-touch for v0.9.0-alpha.6 deployments:
+
+1. `alembic upgrade head` applies migration 0013.
+2. Every file under `STORAGE_PATH/*.{pdf,xml,ofd}` owned by an invoice row is moved into `STORAGE_PATH/users/{user_id}/invoices/`. Orphan files with no corresponding DB row are left at the root (the migration only touches rows, not disk contents without a DB record).
+3. `invoices.file_path` column is rewritten for every row to the new `users/{user_id}/invoices/{filename}` form.
+4. The service restart is a no-op — the app continues to work immediately because `FileManager.get_full_path()` resolves whatever relative path is in `file_path`.
+5. New uploads and scanner-discovered invoices go directly to per-user subdirectories.
+
+Rollback: `alembic downgrade 0012_tighten_user_id_constraints` reverses every move. Files return to the flat layout; `invoices.file_path` becomes bare filenames. Missing-on-disk rows are rewritten in DB only (same idempotency rule as upgrade). Empty `users/` tree is left in place for operator cleanup.
+
+### Dry-run validation
+
+Migration was dry-run against a fresh copy of the production database before shipping:
+
+- **DRY_RUN=1 pass**: 239 files would be moved, 0 already migrated, 0 missing on disk, 0 collisions. Zero disk changes; zero DB row changes (alembic version bump is outside migration scope).
+- **Real run pass**: 239 files moved in under 0.5 seconds; all 239 `invoices.file_path` values updated to `users/1/invoices/{filename}`; 18 orphan files at root (files with no DB row, legitimate debris) correctly left alone.
+- **Downgrade roundtrip**: 239 files moved back to flat layout, every `file_path` reverted to bare filename, 0 `users/`-prefixed paths remaining in DB.
+
+### Tests
+
+- 571 passing, 100% coverage (+15 from v0.9.0-alpha.6): 10 migration tests, 4 FileManager tests, 1 regression for the `delete_user_files` rmtree-failure branch.
+- Existing 556 tests pass unchanged — only the single pre-existing FileManager test needed its assertions updated for the new `users/{user_id}/invoices/` path prefix.
+- CI-simulated run clean: full 0001 → 0013 migration chain, fresh-install path runs end-to-end, Playwright smoke seeder updated to pass `user_id=admin.id`.
+
+### Security
+
+- **Eliminates silent cross-user file overwrites**. Before this release, if two users legitimately owned invoices with identical canonical metadata (`buyer_seller_invoiceno_date_amount`), the second user's upload would overwrite the first user's file on disk. With per-user subdirectories, this is structurally impossible. The production single-user deployment was never at risk (only one user existed), but any future second-user deployment would have hit this immediately. Fixed pre-emptively.
+
+### Not included (deferred)
+
+- **Registration flow and admin panel** — next up in alpha.8 / alpha.9.
+- **Per-user AI / classifier settings** — instance-wide remains the default.
+- **Per-user webhooks** — instance-wide `WEBHOOK_URL` env var remains the default.
+- **Repository-pattern refactor** — internal code organization only, no user-visible change, deferred to post-v0.9.0.
+
+### Alpha designation
+
+Still `0.9.0-alpha` because Phase 5 (registration flow + admin panel) is not yet shipped. This release makes a future multi-user deployment **physically safe** at the filesystem layer — it does not make one usable. The existing single-user production deployment is unchanged and unaffected.
+
 ## [0.9.0-alpha.6] - 2026-04-21
 
 ### Theme

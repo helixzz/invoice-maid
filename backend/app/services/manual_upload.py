@@ -429,6 +429,7 @@ async def process_uploaded_invoice(
         parsed.invoice_date,
         parsed.amount,
         ext,
+        user_id=user_id,
     )
     invoice = Invoice(
         user_id=user_id,
