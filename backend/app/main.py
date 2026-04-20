@@ -22,6 +22,8 @@ from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.middleware import DEFAULT_PROTECTED_PATHS, ContentSizeLimitMiddleware
+
 from app.api import (
     account_router,
     ai_settings_router,
@@ -115,6 +117,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(
+    ContentSizeLimitMiddleware,
+    max_content_size=25 * 1024 * 1024,
+    protected_paths=DEFAULT_PROTECTED_PATHS,
+)
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(invoice_router, prefix="/api/v1")

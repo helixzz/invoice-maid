@@ -62,5 +62,13 @@ backend/scripts/
 # Ad-hoc screenshots at repo root — committed project screenshots live under assets/
 /[0-9][0-9]-*.png
 
+# Invoice files — never commit real or synthetic invoice payloads.
+# The committed workflow SVG + real screenshots live under assets/ which is
+# unaffected.
+*.ofd
+*.pdf
+*.xml
+!assets/**/*
+
 # Node (root-level only — frontend/node_modules is handled below)
 node_modules/

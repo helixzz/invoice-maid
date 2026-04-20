@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" role="img" aria-labelledby="im-workflow-title im-workflow-desc">
+  <title id="im-workflow-title">Invoice Maid workflow</title>
+  <desc id="im-workflow-desc">Two invoice sources — scheduled email scan and manual upload — converge on a shared five-stage pipeline: tiered classify, parse (PDF/XML/OFD), LLM extract, dedupe, save. Output is persisted to SQLite with audit logs and optional webhook delivery.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3b82f6"/>
+    </marker>
+    <linearGradient id="box-source" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eff6ff"/>
+      <stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+    <linearGradient id="box-stage" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f1f5f9"/>
+    </linearGradient>
+    <linearGradient id="box-sink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0fdf4"/>
+      <stop offset="100%" stop-color="#dcfce7"/>
+    </linearGradient>
+    <style>
+      .t-label { fill: #0f172a; font-size: 14px; font-weight: 600; }
+      .t-sub { fill: #475569; font-size: 11px; }
+      .t-stage-num { fill: #3b82f6; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; }
+      .t-caption { fill: #64748b; font-size: 12px; font-style: italic; }
+    </style>
+  </defs>
+
+  <rect width="1040" height="360" fill="#ffffff"/>
+
+  <!-- Source row -->
+  <g>
+    <rect x="20" y="40" width="170" height="70" rx="10" fill="url(#box-source)" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="105" y="68" text-anchor="middle" class="t-label">Email scanner</text>
+    <text x="105" y="86" text-anchor="middle" class="t-sub">IMAP / POP3 / QQ /</text>
+    <text x="105" y="100" text-anchor="middle" class="t-sub">Outlook &middot; every 60 min</text>
+
+    <rect x="20" y="150" width="170" height="70" rx="10" fill="url(#box-source)" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="105" y="178" text-anchor="middle" class="t-label">Manual upload</text>
+    <text x="105" y="196" text-anchor="middle" class="t-sub">POST /invoices/upload</text>
+    <text x="105" y="210" text-anchor="middle" class="t-sub">PDF / XML / OFD</text>
+  </g>
+
+  <!-- Pipeline stages -->
+  <g>
+    <rect x="230" y="95" width="150" height="70" rx="10" fill="url(#box-stage)" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="305" y="114" text-anchor="middle" class="t-stage-num">STAGE 1</text>
+    <text x="305" y="134" text-anchor="middle" class="t-label">Classify</text>
+    <text x="305" y="152" text-anchor="middle" class="t-sub">heuristic &rarr; LLM</text>
+    <text x="305" y="164" text-anchor="middle" class="t-sub">(email only)</text>
+
+    <rect x="410" y="95" width="150" height="70" rx="10" fill="url(#box-stage)" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="485" y="114" text-anchor="middle" class="t-stage-num">STAGE 2</text>
+    <text x="485" y="134" text-anchor="middle" class="t-label">Parse</text>
+    <text x="485" y="152" text-anchor="middle" class="t-sub">PDF/XML/OFD</text>
+    <text x="485" y="164" text-anchor="middle" class="t-sub">+ QR decode</text>
+
+    <rect x="590" y="95" width="150" height="70" rx="10" fill="url(#box-stage)" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="665" y="114" text-anchor="middle" class="t-stage-num">STAGE 3</text>
+    <text x="665" y="134" text-anchor="middle" class="t-label">Extract</text>
+    <text x="665" y="152" text-anchor="middle" class="t-sub">OpenAI-compatible</text>
+    <text x="665" y="164" text-anchor="middle" class="t-sub">LLM fill gaps</text>
+
+    <rect x="770" y="95" width="110" height="70" rx="10" fill="url(#box-stage)" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="825" y="114" text-anchor="middle" class="t-stage-num">STAGE 4</text>
+    <text x="825" y="134" text-anchor="middle" class="t-label">Dedupe</text>
+    <text x="825" y="152" text-anchor="middle" class="t-sub">invoice_no</text>
+    <text x="825" y="164" text-anchor="middle" class="t-sub">UNIQUE</text>
+
+    <rect x="900" y="95" width="120" height="70" rx="10" fill="url(#box-sink)" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="960" y="114" text-anchor="middle" class="t-stage-num">STAGE 5</text>
+    <text x="960" y="134" text-anchor="middle" class="t-label">Save</text>
+    <text x="960" y="152" text-anchor="middle" class="t-sub">Invoice row</text>
+    <text x="960" y="164" text-anchor="middle" class="t-sub">+ file + log</text>
+  </g>
+
+  <!-- Arrows: source -> Stage 1 / 2 -->
+  <path d="M 190,75 C 210,75 210,120 230,120" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrow-blue)"/>
+  <path d="M 190,185 C 360,185 380,140 410,140" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrow-blue)"/>
+
+  <!-- Stage-to-stage arrows -->
+  <path d="M 380,130 L 410,130" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 560,130 L 590,130" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 740,130 L 770,130" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 880,130 L 900,130" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Caption: manual-upload skips stage 1 -->
+  <text x="300" y="250" class="t-caption">Manual uploads skip Stage 1 — the user already declared it's an invoice.</text>
+
+  <!-- Sinks row -->
+  <g>
+    <rect x="230" y="280" width="170" height="60" rx="10" fill="url(#box-sink)" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="315" y="304" text-anchor="middle" class="t-label">SQLite + FTS5</text>
+    <text x="315" y="322" text-anchor="middle" class="t-sub">Structured fields + raw text</text>
+
+    <rect x="420" y="280" width="170" height="60" rx="10" fill="url(#box-sink)" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="505" y="304" text-anchor="middle" class="t-label">Audit log</text>
+    <text x="505" y="322" text-anchor="middle" class="t-sub">ExtractionLog + ScanLog</text>
+
+    <rect x="610" y="280" width="170" height="60" rx="10" fill="url(#box-sink)" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="695" y="304" text-anchor="middle" class="t-label">sqlite-vec embedding</text>
+    <text x="695" y="322" text-anchor="middle" class="t-sub">Similarity search</text>
+
+    <rect x="800" y="280" width="220" height="60" rx="10" fill="url(#box-sink)" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="910" y="304" text-anchor="middle" class="t-label">Webhook (HMAC-SHA256)</text>
+    <text x="910" y="322" text-anchor="middle" class="t-sub">invoice.created &rarr; your endpoint</text>
+  </g>
+
+  <!-- Stage 5 -> sinks -->
+  <path d="M 960,165 C 960,220 315,250 315,280" stroke="#22c55e" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.6"/>
+  <path d="M 960,165 C 960,220 505,250 505,280" stroke="#22c55e" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.6"/>
+  <path d="M 960,165 C 960,220 695,250 695,280" stroke="#22c55e" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.6"/>
+  <path d="M 960,165 L 910,280" stroke="#22c55e" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.6"/>
+</svg>

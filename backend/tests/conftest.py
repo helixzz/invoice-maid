@@ -357,3 +357,32 @@ async def create_correction_log(db: AsyncSession, create_invoice) -> Callable[..
         return log
 
     return factory
+
+
+@pytest_asyncio.fixture
+async def manual_upload_account(
+    db: AsyncSession, settings: Settings
+) -> EmailAccount:
+    """Seed the sentinel 'Manual Uploads' EmailAccount that the upload
+    endpoint requires. In production this row is created by Alembic
+    migration 0008; the unit-test engine builds the schema via
+    ``Base.metadata.create_all`` and skips migrations, so tests that
+    exercise ``/invoices/upload`` must request this fixture explicitly."""
+    del settings
+    account = EmailAccount(
+        name="Manual Uploads",
+        type="manual",
+        host=None,
+        port=None,
+        username="system@manual-upload.local",
+        outlook_account_type="personal",
+        password_encrypted=None,
+        oauth_token_path=None,
+        is_active=False,
+        last_scan_uid=None,
+    )
+    db.add(account)
+    await db.commit()
+    await db.refresh(account)
+    return account
+

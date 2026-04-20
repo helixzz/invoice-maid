@@ -127,6 +127,23 @@ export const api = {
     await apiClient.post('/invoices/batch-delete', { ids })
   },
 
+  async uploadInvoice(
+    file: File,
+    onProgress?: (percent: number) => void,
+  ): Promise<Invoice> {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await apiClient.post<Invoice>('/invoices/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (evt) => {
+        if (onProgress && evt.total) {
+          onProgress(Math.round((evt.loaded / evt.total) * 100))
+        }
+      },
+    })
+    return res.data
+  },
+
   async getStats(): Promise<StatsResponse> {
     const res = await apiClient.get('/stats')
     return res.data

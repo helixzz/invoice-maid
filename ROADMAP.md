@@ -163,6 +163,22 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.6 — Released
+
+**Theme:** Manual invoice upload — alongside the scheduler, users can now drop PDF / XML / OFD invoice files directly into the same extraction pipeline.
+
+A natural companion to the bulk-export feature shipped in v0.8.5: once you've made the output end flexible, the next question is "what about invoices that never arrive by email?" — scanned paper receipts, historical backlog from before the mailbox was configured, invoices received over WeChat / DingTalk / WhatsApp. v0.8.6 answers that.
+
+New endpoint `POST /api/v1/invoices/upload` accepts a single multipart upload (PDF / XML / OFD, up to 25 MB) and feeds it to the exact same `invoice_parser.parse()` → `AIService.extract_invoice_fields()` → `FileManager.save_invoice()` → `Invoice` row → `ExtractionLog` chain the scheduler uses. Extraction quality is identical because it IS the same code. A new Vue view at `/upload` provides drag-and-drop, client-side validation, progress bar, and structured error handling (409 duplicate with link to existing invoice, 422 with specific outcome reason, 413/415 rejections).
+
+The feature also closes several security surfaces the email-only scanner didn't need: magic-byte MIME sniffing, XXE-hardened XML parser (`lxml.etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)`), OFD zip-bomb detection (`OFD_MAX_UNCOMPRESSED_BYTES = 100 MB`), UUID-only temp filenames, three-layer body-size enforcement (nginx 25 MB → `ContentSizeLimitMiddleware` 25 MB → route-level streaming counter 25 MB), and an updated `python-multipart >= 0.0.22` pin covering three high-severity CVEs from 2024–2026.
+
+Tests: 476 passing, 100% coverage (+42 vs v0.8.5). README grew a new "How it works" section with a hand-authored SVG workflow diagram showing how the two sources (email scanner + manual upload) converge on the shared five-stage pipeline.
+
+See [CHANGELOG.md](CHANGELOG.md#086---2026-04-20).
+
+---
+
 ## v0.8.5 — Released
 
 **Theme:** Bulk-export ZIPs now bundle an `invoices_summary.csv` metadata table; README fully refreshed for the v0.7-v0.8 feature accumulation; CHANGELOG PII sanitization and `.gitignore` hygiene.

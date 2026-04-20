@@ -6,12 +6,15 @@ import io
 import importlib
 import logging
 import re
+import zipfile
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, cast
 
 logger = logging.getLogger(__name__)
+
+OFD_MAX_UNCOMPRESSED_BYTES: int = 100 * 1024 * 1024
 
 
 @dataclass
@@ -321,17 +324,34 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
 
 
 def parse_xml(content: bytes) -> ParsedInvoice:
-    """Parse a Chinese VAT invoice XML file."""
+    """Parse a Chinese VAT invoice XML file.
+
+    Hardened against XXE / billion-laughs / external-DTD attacks by
+    constructing an ``lxml.etree.XMLParser`` with ``resolve_entities=False``,
+    ``no_network=True`` and ``huge_tree=False``. Stock
+    ``lxml.etree.fromstring`` has safer-than-stdlib defaults but still
+    resolves internal entity declarations, which is the exploit vector we
+    want to close. We avoid ``defusedxml.lxml`` because upstream has
+    deprecated the lxml backend (Python 3.13+ will drop it)."""
     result = ParsedInvoice(source_format="xml", extraction_method="xml_xpath")
 
     try:
         etree = importlib.import_module("lxml.etree")
+        safe_parser = etree.XMLParser(
+            resolve_entities=False,
+            no_network=True,
+            huge_tree=False,
+            load_dtd=False,
+        )
 
         try:
-            root = etree.fromstring(content)
+            root = etree.fromstring(content, parser=safe_parser)
         except etree.XMLSyntaxError:
             try:
-                root = etree.fromstring(content.decode("gbk", errors="replace").encode("utf-8"))
+                root = etree.fromstring(
+                    content.decode("gbk", errors="replace").encode("utf-8"),
+                    parser=safe_parser,
+                )
             except Exception:
                 result.raw_text = content.decode("utf-8", errors="ignore")
                 result.confidence = 0.0
@@ -390,8 +410,33 @@ def parse_xml(content: bytes) -> ParsedInvoice:
 
 
 def parse_ofd(content: bytes) -> ParsedInvoice:
-    """Parse an OFD (Open Fixed-layout Document) invoice."""
+    """Parse an OFD (Open Fixed-layout Document) invoice.
+
+    OFD files are ZIP containers, which makes them a zip-bomb vector if
+    arbitrary uploads are accepted. Before handing the bytes to easyofd
+    we enumerate ZIP central-directory entries and reject any file whose
+    sum-of-uncompressed-sizes exceeds OFD_MAX_UNCOMPRESSED_BYTES (100 MB).
+    This catches `42.zip`-style bombs without actually extracting them."""
     result = ParsedInvoice(source_format="ofd", extraction_method="ofd_struct")
+
+    try:
+        if content[:4] == b"PK\x03\x04":
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                total_uncompressed = sum(
+                    max(info.file_size, 0) for info in zf.infolist()
+                )
+            if total_uncompressed > OFD_MAX_UNCOMPRESSED_BYTES:
+                logger.warning(
+                    "OFD rejected: uncompressed size %d > %d limit",
+                    total_uncompressed,
+                    OFD_MAX_UNCOMPRESSED_BYTES,
+                )
+                result.confidence = 0.0
+                return result
+    except zipfile.BadZipFile as exc:
+        logger.warning("OFD rejected: invalid ZIP container (%s)", exc)
+        result.confidence = 0.0
+        return result
 
     try:
         ofd_module = importlib.import_module("easyofd.ofd")

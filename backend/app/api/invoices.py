@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import uuid
 from datetime import date
 from decimal import Decimal
-from typing import Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+import aiofiles
+import filetype
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -16,13 +21,79 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import CurrentUser
 from app.models import CorrectionLog, Invoice
+from app.rate_limiter import limiter
 from app.schemas.invoice import InvoiceListResponse, InvoiceResponse
 from app.services.ai_service import AIService
 from app.services.file_manager import FileManager
 from app.services.invoice_csv import CSV_COLUMNS, CSV_UTF8_BOM, build_csv_content
+from app.services.manual_upload import UploadResult, process_uploaded_invoice
 from app.services.search_service import SearchService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/invoices", tags=["invoices"])
+
+UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 256 * 1024
+UPLOAD_ALLOWED_MIME: frozenset[str] = frozenset(
+    {
+        "application/pdf",
+        "application/xml",
+        "text/xml",
+        "application/octet-stream",
+        "application/ofd",
+        "application/zip",
+        "application/x-zip-compressed",
+    }
+)
+UPLOAD_ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".xml", ".ofd"})
+UPLOAD_MAGIC_PREFIXES: dict[str, tuple[bytes, ...]] = {
+    "pdf": (b"%PDF",),
+    "xml": (b"<?xml", b"\xef\xbb\xbf<?xml"),
+    "ofd": (b"PK\x03\x04",),
+}
+
+
+class UploadErrorDetail(BaseModel):
+    detail: str
+    outcome: str
+    invoice_no: str | None = None
+    confidence: float | None = None
+    existing_invoice_id: int | None = None
+    parse_method: str | None = None
+    parse_format: str | None = None
+
+
+def _outcome_to_status(outcome: str) -> int:
+    if outcome == "duplicate":
+        return status.HTTP_409_CONFLICT
+    if outcome in ("low_confidence", "not_vat_invoice", "scam_detected"):
+        return status.HTTP_422_UNPROCESSABLE_CONTENT
+    if outcome == "parse_failed":
+        return status.HTTP_422_UNPROCESSABLE_CONTENT
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
+def _detect_format_from_magic(head: bytes) -> str | None:
+    for fmt, prefixes in UPLOAD_MAGIC_PREFIXES.items():
+        for prefix in prefixes:
+            if head.startswith(prefix):
+                return fmt
+    guess = filetype.guess(head)
+    if guess is not None and guess.extension in UPLOAD_MAGIC_PREFIXES:
+        return guess.extension
+    return None
+
+
+def _safe_filename(client_filename: str | None) -> str:
+    """UUID + extension. Never uses client-supplied path components —
+    prevents the `../../etc/passwd` class of attack entirely."""
+    ext = ""
+    if client_filename:
+        suffix = Path(client_filename).suffix.lower()
+        if suffix in UPLOAD_ALLOWED_EXTENSIONS:
+            ext = suffix
+    return f"{uuid.uuid4().hex}{ext or '.bin'}"
 
 
 class SemanticSearchRequest(BaseModel):
@@ -73,6 +144,127 @@ def _serialize_invoice(invoice: Invoice) -> InvoiceResponse:
 
 def _build_csv_content(invoices: list[Invoice]) -> str:
     return build_csv_content(invoices)
+
+
+@router.post(
+    "/upload",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+@limiter.limit("30/minute")
+async def upload_invoice(
+    request: Request,
+    response: Response,
+    _current_user: CurrentUser,
+    file: Annotated[UploadFile, File(description="Single PDF, XML, or OFD invoice (max 25 MB)")],
+    db: AsyncSession = Depends(get_db),
+) -> InvoiceResponse:
+    """Manually upload one invoice file (PDF / XML / OFD) and run it
+    through the same parse + LLM extraction pipeline the email scanner
+    uses. Designed for historical backlog, paper invoices the user has
+    scanned, or invoices received via non-email channels (WeChat etc.).
+
+    Errors are returned as structured JSON with an ``outcome`` field so
+    the frontend can give specific feedback:
+        duplicate       -> 409 + existing_invoice_id
+        low_confidence  -> 422 + confidence
+        not_vat_invoice -> 422
+        scam_detected   -> 422
+        parse_failed    -> 422
+        413 / 415       -> file-level rejection before parsing
+    """
+    del request
+    del response
+
+    declared_mime = (file.content_type or "").lower()
+    if declared_mime and declared_mime not in UPLOAD_ALLOWED_MIME:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported content-type: {declared_mime!r}",
+        )
+
+    ext_from_name = Path(file.filename or "").suffix.lower()
+    if ext_from_name and ext_from_name not in UPLOAD_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported extension: {ext_from_name!r}",
+        )
+
+    settings = get_settings()
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    ai = AIService(settings)
+
+    total = 0
+    first_chunk = True
+    detected: str | None = None
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = await file.read(UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > UPLOAD_MAX_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Upload exceeds {UPLOAD_MAX_BYTES} byte limit",
+                )
+            if first_chunk:
+                detected = _detect_format_from_magic(chunk[:512])
+                if detected is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                        detail=(
+                            "File content does not match an accepted format "
+                            "(PDF / XML / OFD)"
+                        ),
+                    )
+                first_chunk = False
+            chunks.append(chunk)
+    finally:
+        await file.close()
+
+    if total == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file"
+        )
+
+    payload = b"".join(chunks)
+    safe_name = _safe_filename(file.filename)
+    parse_filename = safe_name
+    if detected is not None and not safe_name.endswith(f".{detected}"):
+        parse_filename = f"{Path(safe_name).stem}.{detected}"
+
+    try:
+        result: UploadResult = await process_uploaded_invoice(
+            db=db,
+            ai=ai,
+            file_mgr=file_mgr,
+            settings=settings,
+            filename=parse_filename,
+            payload=payload,
+        )
+    except RuntimeError as exc:
+        logger.error("Manual upload precondition failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    if result.outcome == "saved" and result.invoice is not None:
+        return _serialize_invoice(result.invoice)
+
+    raise HTTPException(
+        status_code=_outcome_to_status(result.outcome),
+        detail={
+            "detail": result.detail,
+            "outcome": result.outcome,
+            "invoice_no": result.invoice_no,
+            "confidence": result.confidence,
+            "existing_invoice_id": result.existing_invoice_id,
+            "parse_method": result.parse_method,
+            "parse_format": result.parse_format,
+        },
+    )
 
 
 @router.get("", response_model=InvoiceListResponse)

@@ -29,6 +29,13 @@ const handleLogout = () => {
                 Invoices
               </router-link>
               <router-link
+                to="/upload"
+                class="inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+                :class="[$route.path.startsWith('/upload') ? 'border-blue-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300']"
+              >
+                Upload
+              </router-link>
+              <router-link
                 to="/settings"
                 class="inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
                 :class="[$route.path.startsWith('/settings') ? 'border-blue-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300']"

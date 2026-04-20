@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.8.5-blue" alt="v0.8.5">
+  <img src="https://img.shields.io/badge/version-0.8.6-blue" alt="v0.8.6">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-433%20passing-brightgreen" alt="433 tests">
+  <img src="https://img.shields.io/badge/Tests-476%20passing-brightgreen" alt="476 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -37,6 +37,14 @@ Invoice Maid automates the boring part of invoice handling:
 - Download one invoice, batch-export as ZIP, or export filtered lists as CSV
 
 It is designed for **single-user**, **self-hosted** deployment with minimal operational overhead. The project has shipped 30+ releases of reliability and performance work — see the [CHANGELOG](CHANGELOG.md) for the full arc.
+
+### How it works
+
+<p align="center">
+  <img src="assets/images/workflow.svg" alt="Invoice Maid workflow: two sources (email scan + manual upload) feed a five-stage pipeline of classify, parse, extract, dedupe, save; output persists to SQLite + audit log + optional webhook" width="960">
+</p>
+
+Two invoice sources feed the **same** five-stage pipeline. The email scanner runs on a schedule and does its own classification (is this even an invoice?) before parsing; manual uploads declare invoice-ness up front and skip straight to parsing. The parser handles PDF / XML / OFD with QR-code decoding; an OpenAI-compatible LLM fills in whatever the deterministic parser could not extract; the dedup gate blocks duplicate invoice numbers; a successful save writes the `Invoice` row, the canonical PDF / XML / OFD file on disk, an `ExtractionLog` audit entry, an optional sqlite-vec embedding, and fires the `invoice.created` webhook.
 
 ---
 
@@ -68,6 +76,15 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 - **Scheduled processing** — configurable scan interval via APScheduler (default 60 min), with rate-limiting hygiene so nothing runs when it shouldn't
 - **Incremental scanning** — saves per-folder `UIDVALIDITY` / `UIDNEXT` / `MESSAGES` / highest-UID state so subsequent scans only fetch genuinely new messages
 - **Tiered email classification** — free heuristics first, cheap metadata-only LLM call second, full-body LLM only for ambiguous cases; LLM responses cached by SHA-256 for free replays
+
+### Manual upload
+
+- **Drag-and-drop invoice upload** — single PDF / XML / OFD up to 22 MB (via `/upload` in the web UI or `POST /api/v1/invoices/upload`)
+- **Same pipeline as email** — the uploaded file hits the exact same parse → LLM enrich → dedupe → save path used by the scanner; extraction quality is identical
+- **Streaming upload with progress bar** — axios `onUploadProgress` on the frontend, 256 KB chunked read on the backend so 20 MB OFD files don't pin RAM
+- **Three-layer size enforcement** — nginx `client_max_body_size 25M`, ASGI `ContentSizeLimitMiddleware` (25 MB), route-level streaming counter — nothing can slip past
+- **Magic-byte MIME sniffing** — first 512 bytes validated against real format signatures (not client-declared content-type); unknown or disguised files rejected with 415 before any parsing runs
+- **Structured error responses** — `duplicate` → 409 with `existing_invoice_id`, `low_confidence` → 422 with the actual confidence, `not_vat_invoice` / `scam_detected` → 422 with the reason, `parse_failed` → 422 with the underlying error
 
 ### Invoice intelligence
 

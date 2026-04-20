@@ -327,7 +327,11 @@ def test_parse_xml_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
                 ]
             )
 
-    etree = SimpleNamespace(fromstring=lambda content: Root(), tostring=lambda root, encoding, pretty_print: "增值税电子普通发票 发票号码 价税合计 税额")
+    etree = SimpleNamespace(
+        fromstring=lambda content, parser=None: Root(),
+        tostring=lambda root, encoding, pretty_print: "增值税电子普通发票 发票号码 价税合计 税额",
+        XMLParser=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
     result = parser.parse_xml(b"<xml />")
     assert result.invoice_no == "001"
@@ -352,7 +356,11 @@ def test_parse_xml_missing_optional_fields(monkeypatch: pytest.MonkeyPatch) -> N
         def iter(self):
             return iter([])
 
-    etree = SimpleNamespace(fromstring=lambda content: Root(), tostring=lambda root, encoding, pretty_print: "<xml />")
+    etree = SimpleNamespace(
+        fromstring=lambda content, parser=None: Root(),
+        tostring=lambda root, encoding, pretty_print: "<xml />",
+        XMLParser=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
     result = parser.parse_xml(b"<xml />")
     assert result.invoice_no is None
@@ -380,7 +388,7 @@ def test_parse_xml_gbk_fallback_and_xmlsyntaxerror(monkeypatch: pytest.MonkeyPat
         def iter(self):
             return iter([SimpleNamespace(tag="ItemName", text="服务费")])
 
-    def fromstring(content):
+    def fromstring(content, parser=None):
         calls.append(content)
         if len(calls) == 1:
             raise FakeXMLSyntaxError("bad encoding")
@@ -390,6 +398,7 @@ def test_parse_xml_gbk_fallback_and_xmlsyntaxerror(monkeypatch: pytest.MonkeyPat
         XMLSyntaxError=FakeXMLSyntaxError,
         fromstring=fromstring,
         tostring=lambda root, encoding, pretty_print: "增值税电子普通发票 发票号码 价税合计 税额",
+        XMLParser=lambda **kwargs: SimpleNamespace(**kwargs),
     )
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
     result = parser.parse_xml("中文".encode("gbk"))
@@ -403,10 +412,14 @@ def test_parse_xml_returns_raw_text_when_gbk_fallback_fails(monkeypatch: pytest.
     class FakeXMLSyntaxError(Exception):
         pass
 
-    def fromstring(_content):
+    def fromstring(_content, parser=None):
         raise FakeXMLSyntaxError("bad")
 
-    etree = SimpleNamespace(XMLSyntaxError=FakeXMLSyntaxError, fromstring=fromstring)
+    etree = SimpleNamespace(
+        XMLSyntaxError=FakeXMLSyntaxError,
+        fromstring=fromstring,
+        XMLParser=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
     monkeypatch.setattr(parser.importlib, "import_module", lambda name: etree)
     result = parser.parse_xml(b"<bad />")
     assert result.raw_text == "<bad />"

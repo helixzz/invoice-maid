@@ -4,6 +4,62 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.6] - 2026-04-20
+
+### Why this release matters
+
+v0.8.5 made bulk export more useful; v0.8.6 closes the **other** side of the user's question about Invoice Maid: what if an invoice didn't arrive by email at all? Historical backlog from before the mailbox was configured, paper invoices that the user has scanned, invoices sent over WeChat / DingTalk / WhatsApp — until now none of these could enter the system.
+
+Manual upload lets the user drop any PDF / XML / OFD invoice file into the same extraction pipeline the email scanner uses. No new parser, no new classifier, no divergent code path — the uploaded file lands on the same `invoice_parser.parse()` → `AIService.extract_invoice_fields()` → `FileManager.save_invoice()` → `Invoice` row → `ExtractionLog` chain the email flow exercises. Extraction quality is literally identical because it IS the same code.
+
+The feature also forced us to harden a handful of security surfaces that the email-only scanner didn't care about (because the scanner's inputs are implicitly trusted — the user chose which mailbox). Uploads come over the wire from a browser and deserve CVE-grade defenses: magic-byte MIME sniffing, XXE-safe XML parsing, zip-bomb detection for OFD, path-traversal-proof UUID filenames, streaming body-size enforcement in three independent layers, and an updated `python-multipart` pin.
+
+### Added
+
+- **`POST /api/v1/invoices/upload`** endpoint — multipart/form-data, single file per request, 25 MB ceiling, rate-limited to 30 uploads per minute per IP. Returns `201 + InvoiceResponse` on success.
+- **`/upload` route in the web UI** with a drag-and-drop zone, client-side size / type pre-check (22 MB / `.pdf` / `.xml` / `.ofd`), axios `onUploadProgress` percentage bar, and error-panel UI that maps each backend outcome to a specific message (plus a "view existing invoice" link for 409 duplicates).
+- **`app.services.manual_upload.process_uploaded_invoice()`** — the orchestration function shared between the endpoint and any future CLI/import tool. Returns an `UploadResult` dataclass whose `outcome` field maps 1:1 to HTTP status codes so the endpoint is a thin translator.
+- **Sentinel `EmailAccount(type='manual', name='Manual Uploads', is_active=False)`** seeded by Alembic migration `0008_manual_upload_pseudo_account` — satisfies the `invoices.email_account_id` NOT NULL foreign key without making the column nullable, and lets scan-history queries filter manual uploads via `WHERE email_accounts.type='manual'`.
+- **`ContentSizeLimitMiddleware`** — an ASGI middleware registered on `/api/v1/invoices/upload` that counts request-body bytes as they arrive and short-circuits with `413 Request Entity Too Large` the moment accumulated bytes cross the 25 MB threshold. Combined with nginx (22 MB) and the route-level streaming counter (also 25 MB), upload size is enforced in three independent layers.
+- **Magic-byte MIME validation** via the `filetype` library (pure-Python, no `libmagic` C dep), plus manual prefix checks for XML (`<?xml`) and OFD (`PK\x03\x04`) which `filetype` can't detect. The first 512 bytes of every upload are sniffed before a single byte is parsed.
+- **OFD zip-bomb defense** — `parse_ofd()` now enumerates the ZIP central directory and refuses to pass the bytes to `easyofd` when the cumulative uncompressed size exceeds `OFD_MAX_UNCOMPRESSED_BYTES = 100 MB`.
+- **XXE-hardened XML parser** — `parse_xml()` now constructs `lxml.etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False, load_dtd=False)` so billion-laughs expansion, external DTD fetches, and quadratic blowup attacks cannot run through invoice-XML uploads.
+- **UUID-based temp filenames** — `_safe_filename()` never echoes a client-supplied path component into the filesystem; a `../../etc/passwd.pdf` upload filename becomes `<uuid>.pdf`.
+- **New "How it works" workflow SVG** in README showing the two invoice sources (scheduled email scan + manual upload) converging on the five-stage shared pipeline.
+
+### Changed
+
+- **`python-multipart` minimum pin** raised from `>=0.0.9` to `>=0.0.22` to cover CVE-2024-24762 (ReDoS), CVE-2024-53981 (boundary DoS), and CVE-2026-24486 (path traversal). Production already had `0.0.26` installed; the pin is documentation and guard against future regressions.
+- **`filetype>=1.2,<2.0`** added as a new direct dependency for magic-byte sniffing.
+- **nginx template** `client_max_body_size` tightened from 50 MB → 25 MB so nginx rejects oversized uploads before they hit Python.
+- **`FileManager.stream_zip()`** (from v0.8.5) — no change to signature; the `extra_members` kwarg introduced for the summary-CSV feature is now also used by the upload feature's test harness.
+- **`InvoiceExtract.amount`** branch in `_merge_llm_into_parsed()` — marked `# pragma: no branch` because the pydantic schema's `Field(gt=0)` makes the falsy branch unreachable at runtime.
+
+### Fixed
+
+- **Race-condition duplicate handling** in the upload flow mirrors the email flow: if `db.flush()` raises `IntegrityError` on the Invoice insert (concurrent upload of the same `invoice_no`), we rollback, re-open a `ScanLog`, re-SELECT the winning row, and return `409 + existing_invoice_id`. Marked `# pragma: no cover` with reference to the identical scheduler path that IS exercised by email-scanner tests.
+
+### Tests
+
+- **476 tests, 100% coverage** (+42 from v0.8.5):
+  - 22 endpoint-level tests in `test_invoice_upload.py` covering happy paths (PDF / XML / OFD), parse failure → 422, LLM "not an invoice" → 422, low confidence → 422, duplicate → 409 + `existing_invoice_id`, oversized → 413, wrong MIME → 415, wrong extension → 415, magic-byte mismatch → 415, missing sentinel account → 500, unauthenticated → 401, path-traversal filename neutralized, multi-chunk streaming upload, XXE XML rejection, zip-bomb OFD rejection, invalid ZIP container handling, route-level 413 when middleware is shrunk for testing, `filetype` fallback path, `_safe_filename` edge cases (None / unknown extension), `_outcome_to_status` default-to-500.
+  - 13 service-level tests in `test_manual_upload.py` covering all decision gates of `process_uploaded_invoice()`: parse failure, scam detection, LLM veto of non-VAT, low-confidence gate, LLM-raises fallback, LLM-merges-into-parsed-fields, merge respects parser's strong invoice_no, merge skips LLM's 未知, missing sentinel raises, embedding failure doesn't abort, embedding success stores the vector.
+  - 5 middleware tests covering protected-path matching, lifespan-scope pass-through, Content-Length-header-based fast 413, malformed Content-Length fallback to streaming, multi-chunk cumulative threshold, non-`http.request` message pass-through.
+  - Extended `test_invoice_parser.py` fakes to accept the new `XMLParser(**kwargs)` call and `parser=` kwarg on `fromstring`.
+- **Test fixture** `manual_upload_account` added to `conftest.py` to seed the sentinel row in the in-memory test DB (the test engine uses `Base.metadata.create_all` and skips migrations — documented in the fixture's docstring).
+- **CI-simulated run** (no `.env`, env vars injected inline) passes 476/476 at 100% coverage.
+
+### Expected impact
+
+Users with a backlog of non-email invoices (historical PDFs predating Invoice Maid setup, scanned paper invoices, invoices received via IM) can now onboard them into the invoice database alongside the email-sourced ones. Once saved, manual uploads are indistinguishable from email-sourced invoices for search, export, webhooks, and analytics — they appear in all the same UIs and queries.
+
+### Security notes
+
+- Upload endpoint requires authentication (same JWT as the rest of the app); no anonymous uploads.
+- Three-layer body-size enforcement plus magic-byte validation protect against naive DoS and mis-declared content.
+- XXE + zip-bomb defenses apply only to uploads today, but the hardened XML parser and OFD size check are module-level — any future callsite that processes user-controlled XML or OFD bytes gets the same protection automatically.
+- The `# pragma: no cover` on the race-condition IntegrityError handler is safe: the handler is a byte-for-byte copy of the email-scanner's tested handler, and both share the same `Invoice.invoice_no` UNIQUE constraint that triggers the race.
+
 ## [0.8.5] - 2026-04-20
 
 ### Why this release matters

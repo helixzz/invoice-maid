@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import LoginView from '@/views/LoginView.vue'
 import InvoiceListView from '@/views/InvoiceListView.vue'
 import InvoiceDetailView from '@/views/InvoiceDetailView.vue'
+import InvoiceUploadView from '@/views/InvoiceUploadView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 
 const router = createRouter({
@@ -27,6 +28,12 @@ const router = createRouter({
       path: '/invoices/:id',
       name: 'invoice-detail',
       component: InvoiceDetailView,
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/upload',
+      name: 'upload',
+      component: InvoiceUploadView,
       meta: { requiresAuth: true }
     },
     {
