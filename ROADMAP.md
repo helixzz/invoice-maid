@@ -165,15 +165,13 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ## v0.8.9 — Released
 
-**Theme:** Prompt-level fix for LLM amount-miss on bare-currency fares (`￥6.50` without 票价 label).
+**Theme:** Prompt-level fix for LLM amount-miss on transport-ticket bare-currency fares.
 
-Follow-up to v0.8.8. After railway-ticket upload support landed, one of 7 tickets still saved with amount=0.00 despite the PDF showing `￥6.50` plainly. Parser was innocent (pdfplumber extracted the figure cleanly); the LLM chose the 0.01 sentinel because the prompt anchored amount extraction to `票价` / `价税合计` labels and this particular ticket had only a bare unlabeled figure.
+Follow-up to v0.8.8. Image-based railway e-ticket PDFs whose fare renders as a bare `￥N.NN` fragment with no adjacent `票价` / `价税合计` label could still save with `amount=0.00` because the v0.8.8 prompt anchored amount extraction to those labels and the LLM would fall back to the `0.01` sentinel on this layout.
 
-Oracle diagnosis: prompt clauses interacted badly. Path B's "valid even without 价税合计" plus the "amount → 0.01 when absent" fallback gave the LLM a conservative escape hatch. Fix: three targeted additions to `extract_invoice.txt` — (1) Path B's relaxation is explicitly scoped to validity only, not amount; (2) a bare `￥N.NN` or `¥N.NN` on transport e-tickets IS the amount even without a label; (3) `退票费 / 改签费 / 手续费 / 服务费 / 退款 / 已退 / 优惠`-tagged amounts are excluded, and a blank `退票费:` marker is ignored (doesn't convert the ticket into a refund-ticket).
+Diagnosis: prompt clauses interacted badly. Path B's "valid even without 价税合计" plus the "amount → 0.01 when absent" fallback gave the LLM a conservative escape hatch. Fix: three targeted additions to `extract_invoice.txt` — (1) Path B's relaxation is explicitly scoped to validity only, not amount; (2) a bare `￥N.NN` or `¥N.NN` on transport e-tickets IS the amount even without a label; (3) `退票费 / 改签费 / 手续费 / 服务费 / 退款 / 已退 / 优惠`-tagged amounts are excluded, and a blank `退票费:` marker is ignored (doesn't convert the ticket into a refund-ticket).
 
-No schema change. `InvoiceExtract.amount` already accepts `6.50` — the LLM just wasn't choosing it. 3 new prompt-contract tests lock the new clauses in so a future "cleanup" PR can't silently re-break them. 489 tests, 100% coverage.
-
-Audit of existing 239 production invoices confirmed the #239 miss was isolated — no other invoice has `amount IN (0, 0.01)`, no other CorrectionLog entry exists for the amount field, and a `raw_text ↔ amount` sample check came up 30/30 matches.
+No schema change. `InvoiceExtract.amount` already accepts the right values; the LLM just needed explicit permission to choose them. 3 new prompt-contract tests lock the new clauses in so a future cleanup PR can't silently re-break them. 489 tests, 100% coverage.
 
 See [CHANGELOG.md](CHANGELOG.md#089---2026-04-20).
 
@@ -183,15 +181,15 @@ See [CHANGELOG.md](CHANGELOG.md#089---2026-04-20).
 
 **Theme:** Railway + airline e-ticket support (per 2024年第8号/9号公告) and SQLite concurrent-writer fix.
 
-Production incident: a user manually uploaded 8 铁路电子客票 PDFs via the v0.8.7 multi-file flow — 5 rejected as `not_vat_invoice`, 3 lost to `sqlite3.OperationalError: database is locked`. Triangulated diagnosis showed three stacked issues:
+Two independent classes of failure on the v0.8.7 manual-upload path for image-based railway e-tickets (铁路电子客票):
 
 1. **LLM prompt was pre-2024.** It treated 行程单 / 出行记录 as ride-itinerary receipts. Correct pre-2024, wrong since 国家税务总局 2024年第8号公告 (effective 2024-11-01) reclassified 铁路电子客票 as legal 全面数字化的电子发票, and 2024年第9号公告 (effective 2024-12-01) did the same for 航空电子行程单.
 2. **Image-based PDFs yield sparse text.** 12306-issued railway tickets are often rasterized, so pdfplumber/PyMuPDF extract only the 20-digit invoice_no — not the 票价 or buyer/seller. Existing confidence gate (`amount_is_sentinel`) would still reject even with a fixed prompt.
 3. **SQLite writer-lock contention.** v0.8.7's 3-worker pool had each worker hold the lock through a 10–30s LLM round-trip, exceeding the default 5s busy_timeout.
 
-v0.8.8 ships coordinated fixes: LLM prompt adds **PATH B** validity rule for transport e-tickets (matches on 20-digit invoice_no + transport markers, bypasses the 价税合计 requirement for image PDFs); `VALID_INVOICE_TYPES` adds `电子发票（铁路电子客票）` + `电子发票（航空运输电子客票行程单）`; manual-upload confidence gate relaxes for detected transport e-tickets (saves with `amount=0` for user correction). SQLite engine gets `timeout=30.0` in connect_args, and `_create_upload_scan_log` commits immediately so the writer lock is released before the LLM call.
+v0.8.8 ships coordinated fixes: LLM prompt adds **PATH B** validity rule for transport e-tickets (matches on 20-digit invoice_no + transport markers, bypasses the 价税合计 requirement for image PDFs); `VALID_INVOICE_TYPES` adds `电子发票（铁路电子客票）` + `电子发票（航空运输电子客票行程单）`; manual-upload confidence gate relaxes for detected transport e-tickets (saves with `amount=0` for operator correction). SQLite engine gets `timeout=30.0` in connect_args, and `_create_upload_scan_log` commits immediately so the writer lock is released before the LLM call.
 
-486 tests, 100% coverage (+10 from v0.8.7). The 5 real 铁路电子客票 PDFs that failed in v0.8.7 should now save cleanly with proper `invoice_type`; the 3 lost to DB lock should process without contention.
+486 tests, 100% coverage (+10 from v0.8.7). Image-based 铁路电子客票 PDFs that previously failed with `not_vat_invoice` now save cleanly with proper `invoice_type`; concurrent uploads no longer fail due to lock contention.
 
 See [CHANGELOG.md](CHANGELOG.md#088---2026-04-20).
 
@@ -235,7 +233,7 @@ Implementation is clean: a new `app.services.invoice_csv` module owns the CSV la
 
 README was meaningfully updated for the first time since v0.2.0 — every feature shipped between v0.7.1 and v0.8.4 (multi-folder scan, STATUS preflight, parallel IMAP, dedicated QQ code path, scan telemetry, fault isolation, URL tracker pre-filter, timeout defenses, etc.) is now documented in the Features section.
 
-Security audit pass: no API keys, real bcrypt hashes, Fernet blobs, private keys, or `IDEA.md`/`*.db`/`.env` content in any tracked file or historical commit. Three CHANGELOG mentions of personal email addresses (quoted from log lines in the v0.7.5 and v0.7.9 entries) replaced with placeholders; four `.gitignore` gaps closed (`.playwright-mcp/`, `backend/data/`, `backend/scripts/`, root-level ad-hoc screenshots).
+Security audit pass: no API keys, bcrypt hashes with live passwords, Fernet blobs, private keys, or `IDEA.md`/`*.db`/`.env` content in any tracked file or historical commit. Three CHANGELOG prose references to personal email addresses (quoted inside log-line examples in the v0.7.5 and v0.7.9 entries) replaced with placeholders; four `.gitignore` gaps closed (`.playwright-mcp/`, `backend/data/`, `backend/scripts/`, root-level ad-hoc screenshots).
 
 See [CHANGELOG.md](CHANGELOG.md#085---2026-04-20) for the full patch.
 

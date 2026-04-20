@@ -6,120 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.8.9] - 2026-04-20
 
-### Why this release matters
+### Fixed
 
-v0.8.8 unblocked railway e-ticket uploads, but one of the 7 tickets still saved with `amount=0.00` despite the PDF plainly showing `￥6.50`. The parser extracted the text correctly (confirmed by replaying pdfplumber against the stored file — `￥6.50` was cleanly surfaced). The LLM was fed the correct text. And yet it returned the `amount=0.01` sentinel instead of `6.50`.
-
-Diagnosis via Oracle: the v0.8.8 prompt anchored amount extraction to the `票价` or `价税合计` labels. On this particular 12306 PDF the fare appeared as a bare `￥6.50` fragment with no label nearby — the surrounding lines were `一等座`, `￥6.50`, `退票费:` (blank, indicating "not a refund"). With Path B's "valid even without 价税合计" clause and the "amount → 0.01 when absent" fallback both in force, the LLM took the conservative option: valid ticket, unreadable fare, sentinel.
-
-The prompt needed to explicitly tell the LLM that **a bare `￥N.NN` fragment on a transport e-ticket IS the amount**, even without a 票价 label. It also needed to scope Path B's relaxation to validity only, not amount extraction. And it needed to distinguish `退票费:` with a blank value (ignore) from `退票费: ￥5.00` (refund fee — exclude from amount).
+- **LLM amount-miss on transport e-tickets with bare-currency fares.** On image-based 12306-style railway e-ticket PDFs the fare sometimes appears as a bare `￥N.NN` fragment with no `票价` or `价税合计` label adjacent. The v0.8.8 extraction prompt anchored amount extraction to those labels, so the LLM fell back to the `0.01` sentinel on these tickets and the confidence gate saved them with `amount=0`. The prompt is updated in four narrow places to authorize bare-currency extraction on transport e-tickets, exclude `退票费 / 改签费 / 手续费 / 服务费 / 退款 / 已退 / 优惠`-labeled amounts, scope Path B's relaxation to validity only (not amount extraction), and make the `0.01` fallback conditional on no positive readable fare remaining after exclusions.
 
 ### Added
 
-- **Prompt clause: bare-currency fare extraction** (`extract_invoice.txt` Step 2 amount field). Explicitly authorizes the LLM to bind a standalone `￥6.50` or `¥6.50` to `amount` when the source text lacks a `票价` / `价税合计` label, even on transport e-tickets. Strip the currency symbol; return the decimal.
-- **Prompt clause: refund/fee label exclusion**. Amounts explicitly tied to `退票费 / 改签费 / 手续费 / 服务费 / 退款 / 已退 / 优惠` are NOT `amount`. If `退票费:` appears with no numeric value after it, ignore the marker entirely.
-- **Prompt clause: Path B scope clarification**. "When PATH B matches, set is_valid_tax_invoice=true even if 销售方 / 价税合计 / 税率 are not readable" is now explicitly scoped: *"This rule relaxes VALIDITY only. If a readable fare/price amount appears anywhere in the transport-ticket text, extract it as amount; do NOT use 0.01 merely because the label 价税合计 is absent."*
-- **Prompt clause: sentinel conditional**. The `amount → 0.01` fallback now says "For transport e-tickets, use 0.01 ONLY when no positive readable fare/price amount remains after excluding refund/fee amounts by the rule above."
-- **3 new prompt-contract tests** in `test_ai_service.py`:
-  - `test_extract_prompt_contains_transport_bare_currency_rule` — asserts the new `￥6.50` example, the "even when no 票价" clause, the `退票费` mention, and the "relaxes VALIDITY only" scoping all remain in the prompt.
-  - `test_extract_prompt_still_rejects_scam_signals` — sanity-checks that Step 0 (scam rejection via `代开` / `出售发票` / `加微信`) stays intact so the new bare-currency rule doesn't leak into ad/receipt documents that happen to contain a `￥XX` figure.
-  - `test_extract_prompt_excludes_refund_and_fee_labels_from_amount` — asserts all five refund/fee label classes appear in the exclusion list.
-
-### Fixed
-
-- **LLM amount-miss on transport e-tickets with bare-currency fares**. Class of failure where an image-based transport e-ticket's bare-currency fare was stored as 0.00 under v0.8.8. Now explicitly handled by the prompt. The invoice has already been manually corrected via the inline-edit UI; this change prevents the same class of miss on future uploads.
-- **Stale LLM cache entry** for the specific content hash of a test-case invoice's raw_text invalidated on production so a retry on that exact PDF invokes the v0.8.9 prompt.
+- 3 prompt-contract tests in `test_ai_service.py` that snapshot the new clauses so future cleanup edits can't silently re-introduce the regression:
+  - `test_extract_prompt_contains_transport_bare_currency_rule` — asserts the bare-currency example and the "relaxes VALIDITY only" scoping remain.
+  - `test_extract_prompt_still_rejects_scam_signals` — Step 0 scam-rejection (`代开` / `出售发票` / `加微信`) is unchanged.
+  - `test_extract_prompt_excludes_refund_and_fee_labels_from_amount` — all five refund/fee label classes present in exclusion list.
 
 ### Not changed
 
-- **`InvoiceExtract.amount` schema** stays `ge=0`. Oracle confirmed the failure was prompt-selection logic, not Pydantic validation (`6.50` was always a schema-valid value; the LLM just didn't choose it).
-- **No deterministic post-LLM fallback added yet**. Oracle recommended against this until we see whether the prompt patch alone is sufficient. If this class of miss recurs, a "transport path: if `amount < 0.10` and raw_text contains exactly one bare `￥N.NN` not near refund labels, use it" post-processor is on the table for v0.8.10 or later.
+- **`InvoiceExtract.amount` schema** stays `ge=0`. The failure was prompt selection, not Pydantic validation — schema already accepted the right value; the LLM needed permission to choose it.
+- **No deterministic post-LLM fallback yet.** If this class of miss recurs on future uploads, a narrow heuristic ("for transport e-tickets with `amount < 0.10` and exactly one bare `￥N.NN` not near refund labels, use it") is on the table for a later release.
 
 ### Tests
 
 - 489 passing, 100% coverage (+3 from v0.8.8).
-- Existing 486 tests from v0.8.8 untouched — no behavioral regression in the non-prompt code paths.
 - CI-simulated run (no `.env`, env vars injected inline) passes clean.
-
-### Retrospective: audit of historical invoices
-
-I audited all 239 invoices in production after the #239 discovery to see whether other invoices silently stored a wrong amount under the old prompt:
-
-| Check | Result |
-|---|---|
-| Invoices with `amount IN (0, 0.01)` | 0 |
-| Invoices with a `CorrectionLog` entry for the `amount` field | 1 (only #239, already corrected) |
-| Invoices where `raw_text` doesn't contain the stored amount string (sample of 30 most recent) | 0 mismatches |
-| Low-confidence-rejected extraction_logs that blocked at the pipeline | 20, all from pre-v0.8.8 test uploads or my synthetic probes |
-| LLM cache entries with `amount=0.01` AND `is_valid_tax_invoice=true` | 1 (the #239 content hash, invalidated on deploy) |
-
-Conclusion: the amount-miss was an isolated stochastic incident on one ticket whose text layout tipped the LLM into sentinel mode. No silent corruption in the rest of the DB. No backfill needed.
 
 ## [0.8.8] - 2026-04-20
 
 ### Why this release matters
 
-Manual batch uploads of image-based railway e-ticket PDFs (铁路电子客票) via the v0.8.7 multi-file flow could fail pipeline-wide — 5 with `not_vat_invoice`, 3 lost entirely to `sqlite3.OperationalError: database is locked` under concurrent writer contention. Investigation surfaced three compounding issues:
+Railway e-ticket uploads (`铁路电子客票`) could fail the extraction pipeline end-to-end on v0.8.7 for two independent reasons: the LLM prompt pre-dated the 2024 State Taxation Administration reform that reclassified these tickets as legal VAT invoices, and concurrent upload batches could trip SQLite's default 5-second writer busy_timeout during the LLM round-trip. v0.8.8 addresses both.
 
-1. **The LLM prompt was factually out of date.** It treated anything with 行程单 / 出行记录 as a "ride itinerary" receipt. That was correct pre-2024 — but since **国家税务总局 财政部 中国国家铁路集团有限公司公告 2024年第8号** (effective 2024-11-01), 铁路电子客票 is a full 全面数字化的电子发票 with VAT deduction rights. Likewise **2024年第9号公告** (effective 2024-12-01) reclassified 航空运输电子客票行程单 as legal VAT invoices. The LLM correctly identified these documents by their titles and correctly applied the prompt's "ride itinerary" rule — which was the wrong rule.
+### Regulatory background
 
-2. **Image-based PDFs yield sparse text.** Railway ticket PDFs from 12306 are often rasterized rather than text-layered; pdfplumber + PyMuPDF extract enough for the 20-digit invoice_no to surface but not the 票价, buyer, or seller. Even after fixing the prompt, the existing confidence gate (`amount < 0.10` sentinel) would have kept rejecting them.
-
-3. **Concurrent uploads hit a DB writer lock wall.** v0.8.7's 3-worker upload pool had each worker hold the SQLite writer lock through a 10–30 second LLM round-trip. The other two workers would time out at SQLite's default 5-second busy_timeout and raise `database is locked`. Silent data loss (failed uploads surface to the user as a generic 500).
-
-v0.8.8 fixes all three. The LLM prompt now cites the 2024 regulations by number, the manual-upload confidence gate relaxes for detected transport e-tickets (saving with amount=0 so the user can fill in the 票价 via inline edit), the 20-digit strong-parse check ensures scam documents can't abuse the relaxed gate, and the SQLite engine gets a 30-second busy_timeout plus an immediate ScanLog commit so the writer lock is held only during the actual DB writes — not during the LLM call.
+Per **国家税务总局 财政部 中国国家铁路集团有限公司公告 2024年第8号** (effective 2024-11-01) railway e-tickets (`电子发票（铁路电子客票）`) and **2024年第9号公告** (effective 2024-12-01) airline e-itineraries (`电子发票（航空运输电子客票行程单）`) are full `全面数字化的电子发票` with VAT deduction rights. Pre-2024 the older paper 火车票 / 行程单 were explicitly NOT VAT invoices, and the v0.8.7 prompt reflected that old rule.
 
 ### Added
 
-- **`TRANSPORT_E_TICKET_TYPES`** new frozenset in `app/schemas/invoice.py` listing the two STA-designated transport e-ticket type names: `电子发票（铁路电子客票）` and `电子发票（航空运输电子客票行程单）`. Both added to `VALID_INVOICE_TYPES`.
-- **`_is_transport_e_ticket(parsed)`** helper in `app/services/manual_upload.py` — detects transport e-tickets via official type match OR raw-text marker match (铁路电子客票 / 铁路客运 / 航空运输电子客票行程单 / 电子行程单) AND 20-digit invoice_no. The 20-digit check prevents scam documents from abusing the relaxed gate.
-- **LLM prompt PATH B** in `app/prompts/extract_invoice.txt` — new validity path for railway/airline e-tickets. Matches when invoice_no is 20-digit AND at least one transport marker is present (车次 / 发站 / 到站 / 乘车日期 for railway; 航班号 / 乘机日期 / 燃油附加费 for airline). Accepts the document as a valid VAT invoice even without 价税合计 / 税率.
-- **LLM prompt field extraction guidance** for transport tickets: buyer = 乘车人/乘客, seller = 铁路运输企业 / 航空公司, amount = 票价 (railway) or 票价+燃油附加费+民航发展基金 (airline), item_summary = "铁路客运 [起]→[止] [车次]" or "航空客运 [起]→[止] [航班号]".
-- **5 new manual-upload tests** covering the transport-ticket code paths:
-  - `test_is_transport_e_ticket_by_official_type_name` — direct type-name match
-  - `test_is_transport_e_ticket_by_raw_text_marker_when_type_absent` — image-PDF marker fallback
-  - `test_is_transport_e_ticket_rejects_without_20_digit_invoice_no` — scam-document resistance
-  - `test_is_transport_e_ticket_rejects_non_transport_document` — generic-invoice sanity
-  - `test_valid_invoice_types_includes_railway_and_airline_e_tickets` — schema freeze
-- **4 integration tests** exercising the full `process_uploaded_invoice` pipeline:
-  - `test_process_uploaded_invoice_accepts_railway_eticket_with_image_pdf` — the exact production regression (image PDF with amount=0.01 sentinel now saves)
-  - `test_process_uploaded_invoice_accepts_airline_eitinerary` — airline path
-  - `test_process_uploaded_invoice_railway_eticket_with_readable_amount` — railway tickets with real amounts still flow through normal merge
-  - `test_process_uploaded_invoice_still_rejects_didi_ride_itinerary` — Didi-style ride itineraries stay rejected (they are NOT in the 2024 regulations)
-- **1 new merge-semantics test**: `test_process_uploaded_invoice_merge_skips_zero_amount_from_llm` — LLM returning amount < 0.10 sentinel must not overwrite parser's None amount.
+- **`TRANSPORT_E_TICKET_TYPES`** frozenset in `app/schemas/invoice.py` with the two STA-designated type names. Both added to `VALID_INVOICE_TYPES`.
+- **`_is_transport_e_ticket(parsed)`** helper in `app/services/manual_upload.py` — detects transport e-tickets via official type match OR raw-text marker match (铁路电子客票 / 铁路客运 / 航空运输电子客票行程单 / 电子行程单) AND 20-digit invoice_no. The 20-digit gate prevents scam documents from abusing the relaxed confidence path.
+- **LLM prompt PATH B** in `app/prompts/extract_invoice.txt` — new validity branch for railway/airline e-tickets. Matches when invoice_no is 20 digits AND at least one transport marker is present (车次 / 发站 / 到站 / 乘车日期 for railway; 航班号 / 乘机日期 / 燃油附加费 for airline). Accepts the document as a valid VAT invoice even when `价税合计` / `税率` are not readable.
+- **LLM prompt field guidance** for transport tickets: buyer = 乘车人/乘客, seller = 铁路运输企业 / 航空公司, amount = 票价 for railway or 票价+燃油附加费+民航发展基金 for airline, item_summary = "铁路客运 [起]→[止] [车次]" or "航空客运 [起]→[止] [航班号]".
+- **5 new schema/helper tests** for the transport path: type-name match, raw-text marker fallback, 20-digit scam-resistance, non-transport-document sanity, and a `VALID_INVOICE_TYPES` freeze assertion.
+- **4 integration tests** exercising `process_uploaded_invoice` end-to-end: image-PDF railway path saves with `amount=0`, airline e-itinerary path, readable-amount railway path goes through the normal merge, and Didi-style ride itineraries remain rejected (they are NOT in the 2024 regulations).
+- **1 merge-semantics test**: `_merge_llm_into_parsed` refuses to overwrite parser's `None` amount with an LLM-returned value below `0.10` (prevents sentinel leak).
 
 ### Fixed
 
-- **LLM prompt**: 行程单 removed from the reject list; 用车凭证 / 滴滴 / 出行记录 stay. Reject list now has an explicit NOTE clarifying that railway and airline e-tickets are NOT ride-itinerary receipts. Scam-detection step 0 is unchanged.
-- **`InvoiceExtract.amount`** schema relaxed from `gt=0` to `ge=0`. Image-based transport tickets legitimately have no readable amount; forcing the LLM to return > 0 previously caused it to either fabricate or raise a pydantic validation error. The manual-upload sentinel check (`amount_is_sentinel if amount < 0.10`) still catches this at the gate, so no downstream regression.
-- **`InvoiceExtract.is_valid_tax_invoice`** description rewritten to explicitly list railway/airline e-tickets as valid, citing the 2024 regulations. instructor feeds this description to the LLM as schema metadata, so the description change directly moves the LLM's classification behavior.
-- **Confidence gate in `manual_upload.process_uploaded_invoice`**: for detected transport e-tickets, `amount_is_sentinel` is ignored and the confidence floor drops from 0.6 to 0.5. Invoice saves with `amount=0` (from `parsed.amount or 0`) so the user can correct via inline edit. This is explicit, narrow, audit-trailed behavior — not a blanket relaxation.
-- **`_merge_llm_into_parsed`**: the merge of `extracted.amount` into `parsed.amount` now requires `extracted.amount >= 0.10`. Prevents LLM's 0.01 sentinel from leaking into the parser result and fooling later gates.
+- **LLM prompt**: `行程单` removed from the reject list; `用车凭证 / 滴滴 / 出行记录` stay. Reject list has an explicit NOTE clarifying that railway and airline e-tickets are NOT ride-itinerary receipts. Scam-detection Step 0 is unchanged.
+- **`InvoiceExtract.amount`** schema relaxed from `gt=0` to `ge=0`. Image-based transport tickets may legitimately have no readable amount; forcing `> 0` previously caused fabrication or pydantic validation errors. The `amount < 0.10` sentinel gate still catches this downstream.
+- **`InvoiceExtract.is_valid_tax_invoice`** description rewritten to list railway/airline e-tickets as valid, citing the 2024 regulations. `instructor` feeds this description to the LLM as schema metadata, so the change directly moves classification behavior.
+- **Confidence gate in `manual_upload.process_uploaded_invoice`**: for detected transport e-tickets, `amount_is_sentinel` is ignored and the confidence floor drops from 0.6 to 0.5. Invoice saves with `amount=0` so the operator can correct via inline edit. Narrow and audit-trailed — not a blanket relaxation.
+- **`_merge_llm_into_parsed`**: merge of `extracted.amount` into `parsed.amount` now requires `extracted.amount >= 0.10`. Prevents `0.01` sentinel from leaking through.
 
 ### Fixed (SQLite concurrency)
 
-- **`database.py`**: added `timeout=30.0` to aiosqlite `connect_args`. Default SQLite busy_timeout is 5 seconds, which is too short when one writer holds the lock through a 10–30 second LLM round-trip. 30s accommodates the LLM p99 latency with margin and matches the pattern used by mature FastAPI + SQLite projects (Datasette, Litestream).
-- **`manual_upload._create_upload_scan_log`**: now commits immediately after `db.add(ScanLog) + db.flush()` (previously only flushed, leaving the transaction open). Releases the SQLite writer lock before the LLM enrichment call downstream. Other concurrent requests can now write their own ScanLog rows without blocking on each other.
+- **`database.py`**: added `timeout=30.0` to aiosqlite `connect_args`. Default SQLite `busy_timeout` is 5 seconds, which is too short when a writer holds the lock through a 10–30 second LLM round-trip. Under sustained concurrent upload pressure this produced `sqlite3.OperationalError: database is locked`. 30s accommodates the LLM p99 latency with margin and matches the pattern used by mature FastAPI + SQLite projects (Datasette, Litestream).
+- **`manual_upload._create_upload_scan_log`**: commits immediately after `db.add(ScanLog) + db.flush()` (previously only flushed). Releases the SQLite writer lock before the LLM enrichment call so concurrent requests can write their own ScanLog rows without blocking on each other.
 
 ### Tests
 
-- **486 passing, 100% coverage** (+10 from v0.8.7).
-- Backward-compatibility verified: the v0.8.6 manual-upload test suite (22 tests) and the v0.8.7 multi-file upload flow (all e2e paths) both pass unchanged.
-- CI-simulated run (no `.env`, env vars injected inline) clean.
+- 486 passing, 100% coverage (+10 from v0.8.7).
+- Backward-compat verified: the v0.8.6 manual-upload test suite (22 tests) and the v0.8.7 multi-file upload flow (all e2e paths) pass unchanged.
+- CI-simulated run clean.
 
-### Expected impact
-
-A batch of image-based train-ticket PDFs, re-uploaded after deploying v0.8.8:
-- 5 of them that previously returned `not_vat_invoice` should now return `saved` with `invoice_type="电子发票（铁路电子客票）"`, `amount=0` (pending user correction), and a proper 20-digit `invoice_no`.
-- 3 of them that previously returned 500 from `database is locked` will process cleanly because the 30-second busy_timeout + early-commit pattern eliminates the contention window.
-
-Under sustained concurrent load (the v0.8.7 browser batch of up to 3 parallel uploads), the lock contention is now bounded by the LLM round-trip latency alone — no request should fail due to DB locking.
-
-### Citation
+### Citations
 
 - 国家税务总局 财政部 中国国家铁路集团有限公司公告 2024年第8号《关于铁路客运推广使用全面数字化的电子发票的公告》 — effective 2024-11-01
 - 国家税务总局 财政部 中国民用航空局公告 2024年第9号《关于民航旅客运输服务推广使用全面数字化的电子发票的公告》 — effective 2024-12-01
-- Retail ticket retroactive guidance: STA 货物和劳务税司 answered on 2025-09-17 confirming 退票费 electronic tickets retain full deduction rights.
 
 ## [0.8.7] - 2026-04-20
 
@@ -151,23 +101,23 @@ No backend change — the single-file `POST /api/v1/invoices/upload` endpoint st
 
 ### Expected impact
 
-A user with a historical-backlog folder of 50 invoices can now drag them into the upload zone twice (25 per batch) instead of clicking through the file picker 50 times. Per-file status rows make it obvious which ones saved, which were rejected as duplicates (with a link to the existing invoice so the user can verify), and which need fresh input.
+Operators with a historical-backlog folder of tens of invoices can now drag the whole folder into the upload zone (up to 25 files per batch) instead of clicking through the file picker N times. Per-file status rows make it obvious which files saved, which were rejected as duplicates (with a link to the existing invoice for verification), and which need fresh input.
 
 ### What this intentionally does NOT do
 
 - **No backend batch endpoint.** The server still sees N individual `POST /invoices/upload` requests. Rationale: the v0.8.6 endpoint's security-hardened streaming path, middleware, magic-byte checks, and XXE/zip-bomb defenses are tested against that exact shape; a batch endpoint would double the attack surface to save a few requests.
-- **No server-side queue or background worker.** Processing stays inline to each request so the user gets per-file feedback within a few seconds. At 3 concurrent × ~2s per invoice the batch completes in real time; a 25-file batch finishes in ~15–20 seconds wall clock.
+- **No server-side queue or background worker.** Processing stays inline to each request so per-file feedback arrives within a few seconds. At 3 concurrent × ~2s per invoice the batch completes in real time; a 25-file batch finishes in ~15–20 seconds wall clock.
 - **No drag-and-drop folder picker.** HTML5 `<input type="file" multiple>` gives multi-select within a folder but not recursive folder traversal. Users wanting to upload nested folders can still do so in two drops.
 
 ## [0.8.6] - 2026-04-20
 
 ### Why this release matters
 
-v0.8.5 made bulk export more useful; v0.8.6 closes the **other** side of the user's question about Invoice Maid: what if an invoice didn't arrive by email at all? Historical backlog from before the mailbox was configured, paper invoices that the user has scanned, invoices sent over WeChat / DingTalk / WhatsApp — until now none of these could enter the system.
+v0.8.5 made bulk export more useful; v0.8.6 addresses the other side of that flow: what if an invoice didn't arrive by email at all? Historical backlog from before any mailbox was configured, paper invoices that have been scanned, invoices sent over WeChat / DingTalk / WhatsApp — none of these could enter the system until now.
 
 Manual upload lets the user drop any PDF / XML / OFD invoice file into the same extraction pipeline the email scanner uses. No new parser, no new classifier, no divergent code path — the uploaded file lands on the same `invoice_parser.parse()` → `AIService.extract_invoice_fields()` → `FileManager.save_invoice()` → `Invoice` row → `ExtractionLog` chain the email flow exercises. Extraction quality is literally identical because it IS the same code.
 
-The feature also forced us to harden a handful of security surfaces that the email-only scanner didn't care about (because the scanner's inputs are implicitly trusted — the user chose which mailbox). Uploads come over the wire from a browser and deserve CVE-grade defenses: magic-byte MIME sniffing, XXE-safe XML parsing, zip-bomb detection for OFD, path-traversal-proof UUID filenames, streaming body-size enforcement in three independent layers, and an updated `python-multipart` pin.
+The feature also forced us to harden a handful of security surfaces that the email-only scanner didn't care about (because the scanner's inputs are implicitly trusted — the operator chose which mailbox to connect). Uploads come over the wire from a browser and deserve CVE-grade defenses: magic-byte MIME sniffing, XXE-safe XML parsing, zip-bomb detection for OFD, path-traversal-proof UUID filenames, streaming body-size enforcement in three independent layers, and an updated `python-multipart` pin.
 
 ### Added
 
@@ -269,7 +219,7 @@ Bulk-export users now get a single Excel-ready metadata table alongside their PD
 
 ### Why this release matters
 
-Even with v0.8.3's hang bounding, every QQ Mail scan since v0.7.10 landed had `emails_scanned=0`. The timeouts were firing correctly, the fail-resume was preserving state, the UI was showing honest progress — but zero invoices were actually being fetched. The underlying symptom ("QQ mailbox still can't be scanned properly") was symptomatic of a deeper protocol-level mismatch that v0.8.2/v0.8.3's reliability work couldn't paper over.
+Even with v0.8.3's hang bounding, QQ Mail scans post-v0.7.10 could still complete with `emails_scanned=0`. The timeouts were firing correctly, the fail-resume was preserving state, the UI was showing honest progress — but zero invoices were actually being fetched. The underlying symptom ("QQ mailbox cannot be scanned reliably") turned out to be a deeper protocol-level mismatch that v0.8.2/v0.8.3's reliability work couldn't paper over.
 
 Triangulated diagnosis from three independent sources:
 
