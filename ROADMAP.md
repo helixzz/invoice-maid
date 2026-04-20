@@ -163,6 +163,18 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.3 — Released
+
+**Hotfix:** Login rejected self-hosted-style email addresses.
+
+The v0.9.0-alpha.1 `LoginRequest` used pydantic's `EmailStr` which requires a dotted domain. The bootstrap default `ADMIN_EMAIL=admin@local` failed that validation, so the admin user created by v0.9.0-alpha.1 couldn't log in through the alpha.2 form. Schema relaxed to plain `str` with length bounds; DB lookup still exact-match. Format validation moves to the future `/auth/register` endpoint where it belongs.
+
+520 tests, 100% coverage (regression test added).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.2 — Released
 
 **Hotfix:** Login page email field.

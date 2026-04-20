@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.3] - 2026-04-21
+
+### Fixed
+
+- **Login rejected self-hosted-style email addresses.** v0.9.0-alpha.1's `LoginRequest` used pydantic's `EmailStr` which requires a dotted domain (RFC 5321 §4.5.3.1.2). The bootstrap default `ADMIN_EMAIL=admin@local` does not qualify, so the bootstrap admin created by v0.9.0-alpha.1 could not authenticate through the v0.9.0-alpha.2 login form — the request returned `422 "The part after the @-sign is not valid. It should have a period."` before reaching the DB lookup. `LoginRequest.email` is now a plain `str` with only length bounds; the DB lookup remains exact-match so there's no security regression. Real format validation belongs on a future `/auth/register` endpoint (Phase 5), not on login where we just need to resolve an existing row.
+- **Regression test added** to lock this in: `test_login_accepts_unqualified_hostname_email` seeds a user with `admin@local` and asserts login returns 200 + a valid token. A future maintainer hardening the schema back to `EmailStr` hits this test immediately.
+
+### Upgrade
+
+Zero backend migrations. Operators on v0.9.0-alpha.1 or v0.9.0-alpha.2 who can't log in due to the `@local` issue get the fix via the standard deploy path. Existing `admin@local` users in the DB are preserved as-is — no data migration needed.
+
 ## [0.9.0-alpha.2] - 2026-04-21
 
 ### Fixed

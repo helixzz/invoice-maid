@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr | None = Field(
+    email: str | None = Field(
         default=None,
-        description="Email address. When omitted the request is rejected; "
-        "backward-compat callers that only send `password` get a 422.",
+        min_length=1,
+        max_length=255,
+        description="User email. Format validation is DB-equality only so "
+        "self-hosted deployments can use bare hostnames like 'admin@local'. "
+        "Backward-compat callers that only send `password` get a 422.",
     )
     password: str
 

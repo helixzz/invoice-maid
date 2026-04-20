@@ -30,6 +30,33 @@ async def test_login_rejects_unknown_email(client, admin_user) -> None:
     assert response.status_code == 401
 
 
+async def test_login_accepts_unqualified_hostname_email(
+    client, db, settings, monkeypatch
+) -> None:
+    """Self-hosted deployments use bare hostnames like ``admin@local`` as
+    the bootstrap email. pydantic's ``EmailStr`` rejects these because the
+    domain has no period; the login schema must accept them so operators
+    running on an intranet or VM can log in."""
+    from app.models import User as _User
+
+    del monkeypatch, settings
+    user = _User(
+        email="admin@local",
+        hashed_password="hashed:testpass",
+        is_active=True,
+        is_admin=True,
+    )
+    db.add(user)
+    await db.commit()
+
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@local", "password": "testpass"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["access_token"]
+
+
 async def test_login_requires_email(client) -> None:
     """Backward-compat callers that send only ``password`` must get a
     clear 422, not be silently accepted as 'admin'."""
