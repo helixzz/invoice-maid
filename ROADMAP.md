@@ -163,6 +163,18 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.7 — Released
+
+**Theme:** Multi-file invoice upload — drag in up to 25 PDF / XML / OFD files at once, processed 3 in parallel with per-file progress and retry.
+
+A natural follow-on to v0.8.6's manual-upload feature once real users test it with a historical backlog: picking each file through the browser dialog is untenable past ~3 invoices. v0.8.7 replaces the single-file view with a queue-based UI: drop a folder of invoices, each becomes its own row showing its filename + size + status icon + progress bar, the frontend spawns 3 concurrent workers that greedy-poll the queue, and per-row error panels map the backend's structured outcomes (`duplicate`, `low_confidence`, `not_vat_invoice`, etc.) to specific messaging — including a "view existing invoice" link for 409 duplicates and a retry button for transient failures.
+
+Zero backend change. The v0.8.6 single-file endpoint (`POST /api/v1/invoices/upload`) and its 476-test suite stay exactly as shipped — multi-file is a pure frontend orchestration that loops `api.uploadInvoice()` N times with a concurrency cap. The slowapi `30/min/IP` rate limit on the endpoint naturally paces large batches; when it's tripped the per-file error panel surfaces a `429 Retry` button instead of aborting the whole batch.
+
+See [CHANGELOG.md](CHANGELOG.md#087---2026-04-20).
+
+---
+
 ## v0.8.6 — Released
 
 **Theme:** Manual invoice upload — alongside the scheduler, users can now drop PDF / XML / OFD invoice files directly into the same extraction pipeline.

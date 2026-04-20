@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.8.6-blue" alt="v0.8.6">
+  <img src="https://img.shields.io/badge/version-0.8.7-blue" alt="v0.8.7">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
@@ -79,12 +79,13 @@ Two invoice sources feed the **same** five-stage pipeline. The email scanner run
 
 ### Manual upload
 
-- **Drag-and-drop invoice upload** — single PDF / XML / OFD up to 22 MB (via `/upload` in the web UI or `POST /api/v1/invoices/upload`)
-- **Same pipeline as email** — the uploaded file hits the exact same parse → LLM enrich → dedupe → save path used by the scanner; extraction quality is identical
+- **Drag-and-drop batch upload** — drop a single file or up to 25 PDF / XML / OFD invoices at once in the web UI at `/upload`; the frontend uploads up to 3 in parallel with a per-file progress bar
+- **Per-file status tracking** — each file in a batch shows its own queued / uploading / saved / failed state, its own progress %, its own error banner if rejected (with a 409-duplicate "view existing invoice" shortcut), and its own retry button so one bad file doesn't block the rest
+- **Same pipeline as email** — each uploaded file hits the exact same parse → LLM enrich → dedupe → save path used by the scanner; extraction quality is identical
 - **Streaming upload with progress bar** — axios `onUploadProgress` on the frontend, 256 KB chunked read on the backend so 20 MB OFD files don't pin RAM
 - **Three-layer size enforcement** — nginx `client_max_body_size 25M`, ASGI `ContentSizeLimitMiddleware` (25 MB), route-level streaming counter — nothing can slip past
 - **Magic-byte MIME sniffing** — first 512 bytes validated against real format signatures (not client-declared content-type); unknown or disguised files rejected with 415 before any parsing runs
-- **Structured error responses** — `duplicate` → 409 with `existing_invoice_id`, `low_confidence` → 422 with the actual confidence, `not_vat_invoice` / `scam_detected` → 422 with the reason, `parse_failed` → 422 with the underlying error
+- **Structured error responses** — `duplicate` → 409 with `existing_invoice_id`, `low_confidence` → 422 with the actual confidence, `not_vat_invoice` / `scam_detected` → 422 with the reason, `parse_failed` → 422 with the underlying error, `429` when the 30/min rate limit is exceeded
 
 ### Invoice intelligence
 

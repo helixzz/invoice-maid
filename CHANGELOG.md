@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.7] - 2026-04-20
+
+### Why this release matters
+
+v0.8.6 shipped manual upload but only accepted one file at a time. The obvious next step: onboarding a historical backlog means dragging in a folder full of PDFs, not picking each one through the browser's file dialog. v0.8.7 replaces the single-file view with a **batch-aware queue** that accepts up to 25 files per drop and processes up to 3 in parallel.
+
+No backend change — the single-file `POST /api/v1/invoices/upload` endpoint stays exactly as it shipped in v0.8.6 (476 tests, 100% coverage). Multi-file is a purely frontend orchestration: the browser loops through the selected files and fires N concurrent requests, respecting both the client-side 3-at-a-time concurrency cap and the server's existing 30/min rate limit (which surfaces as a per-file `429` with a Retry button if tripped).
+
+### Added
+
+- **Multi-file drag-and-drop** — drop up to 25 PDF / XML / OFD files at once. The file input now has `multiple` and `addFiles()` ingests every `File` in the `DataTransfer` payload. Each dropped file becomes its own `QueueEntry` with its own status and progress.
+- **Per-file queue UI** — each entry renders a row showing filename, size, an icon reflecting its state (queued / uploading / saved / error / blocked), and a per-row progress bar while uploading. Done entries link to the saved invoice; failed entries show a red inline error panel with the backend's structured `outcome` message and a Retry button.
+- **Parallel upload with concurrency cap** — `runQueue()` spawns 3 workers that each greedy-poll the queue for the next `queued` entry. The cap keeps us well under the slowapi `30/min/IP` server limit for normal backlog sizes and prevents a single browser from saturating the backend.
+- **Queue summary badge** — header row shows live counts (`N queued · M uploading · K saved · X failed · Y blocked`) so the user knows at a glance whether the batch is still processing. When all entries settle the badge becomes a green confirmation with a link to the invoice list.
+- **Retry individual failures** — `retryEntry()` resets one failed entry back to `queued` and kicks the queue again. Successful neighbors are untouched. Clears-finished button strips `done`/`error`/`blocked` rows after review so re-dropping doesn't double-count.
+- **Client-side pre-flight validation** — invalid files (too big, wrong extension / MIME) enter the queue as `blocked` with the rejection reason surfaced immediately. Network round-trip only happens for files that pass the local check.
+
+### Changed
+
+- **`InvoiceUploadView.vue`** fully rewritten around the `QueueEntry[]` state model. The previous single-file view grew by ~250 lines for the multi-file orchestration; render logic stays below the fold with Tailwind classes reused from the existing app shell.
+- **Upload input** now has `multiple` attribute so Cmd/Ctrl-click selection in the browser dialog picks multiple files at once.
+- **Bundle size** grew by ~3 KB gzipped (88.14 KB vs 87.07 KB) — small enough that no code splitting is warranted.
+
+### Tests
+
+- Backend unchanged: 476 passing, 100% coverage (same as v0.8.6). The feature is purely frontend; no new backend surface to test.
+- Frontend builds clean under `vue-tsc -b && vite build`, 107 modules transformed, no TypeScript errors.
+
+### Expected impact
+
+A user with a historical-backlog folder of 50 invoices can now drag them into the upload zone twice (25 per batch) instead of clicking through the file picker 50 times. Per-file status rows make it obvious which ones saved, which were rejected as duplicates (with a link to the existing invoice so the user can verify), and which need fresh input.
+
+### What this intentionally does NOT do
+
+- **No backend batch endpoint.** The server still sees N individual `POST /invoices/upload` requests. Rationale: the v0.8.6 endpoint's security-hardened streaming path, middleware, magic-byte checks, and XXE/zip-bomb defenses are tested against that exact shape; a batch endpoint would double the attack surface to save a few requests.
+- **No server-side queue or background worker.** Processing stays inline to each request so the user gets per-file feedback within a few seconds. At 3 concurrent × ~2s per invoice the batch completes in real time; a 25-file batch finishes in ~15–20 seconds wall clock.
+- **No drag-and-drop folder picker.** HTML5 `<input type="file" multiple>` gives multi-select within a folder but not recursive folder traversal. Users wanting to upload nested folders can still do so in two drops.
+
 ## [0.8.6] - 2026-04-20
 
 ### Why this release matters
