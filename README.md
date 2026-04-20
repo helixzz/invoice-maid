@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>AI-powered invoice extraction for self-hosted workflows.</strong><br>
-  Scan inboxes, detect invoices, parse PDF/XML/OFD files, and manage everything from one clean web UI.
+  Scan inboxes, detect invoices, parse PDF / XML / OFD files, and manage everything from one clean web UI.
 </p>
 
 <p align="center">
@@ -19,6 +19,7 @@
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
+  <img src="https://img.shields.io/badge/Tests-421%20passing-brightgreen" alt="421 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -28,13 +29,14 @@
 
 Invoice Maid automates the boring part of invoice handling:
 
-- Pull invoice emails from **IMAP**, **POP3**, **QQ Mail**, and **Microsoft Outlook**
+- Pull invoice emails from **IMAP**, **POP3**, **QQ Mail**, and **Microsoft Outlook** — including every scannable sub-folder, not just INBOX
 - Use an **OpenAI-compatible LLM** to classify emails and extract invoice fields
-- Parse **PDF**, **XML**, and **OFD (数电票)** invoice formats — including download links in email body
+- Parse **PDF**, **XML**, and **OFD (数电票)** invoice formats — including invoices linked from the email body
+- Watch live scan progress fold-by-folder and batch-by-batch
 - Search, review, correct, and export invoices from a modern web UI
 - Download one invoice, batch-export as ZIP, or export filtered lists as CSV
 
-It is designed for **single-user**, **self-hosted** deployment with minimal operational overhead.
+It is designed for **single-user**, **self-hosted** deployment with minimal operational overhead. The project has shipped 30+ releases of reliability and performance work — see the [CHANGELOG](CHANGELOG.md) for the full arc.
 
 ---
 
@@ -58,33 +60,46 @@ It is designed for **single-user**, **self-hosted** deployment with minimal oper
 ## Features
 
 ### Email ingestion
-- **Automated Email Scanning** — IMAP, POP3, QQ Mail (via auth code), Microsoft Outlook (OAuth2 device code flow)
-- **Scheduled Processing** — configurable scan intervals via APScheduler
-- **Tiered Email Classification** — free heuristics first, cheap metadata second, LLM fallback only for ambiguous cases
-- **LLM-Guided Body Link Downloads** — Tier 3 analysis classifies invoice emails and selects the single best direct invoice download link instead of blindly following every body link
-- **Extraction Audit Log** — per-email tracking of why each message was saved, skipped, or failed
+
+- **Multi-provider support** — IMAP, POP3, QQ Mail (via 16-char authorization code), Microsoft Outlook (OAuth2 device code flow for both personal and work / school accounts)
+- **Multi-folder scan** — walks every scannable folder per account (INBOX plus Sent, Archive, and custom sub-folders); skips unchanged folders via IMAP `STATUS` preflight for massive repeat-scan speedups
+- **Parallel IMAP fetch** — up to 4 concurrent IMAP connections per large folder on generic providers for ~3.35× faster cold scans (single-connection fallback is automatic when providers rate-limit)
+- **QQ Mail dedicated code path** — single connection, `bulk=50`, UID-range `SEARCH` instead of `SEARCH ALL`, 1s inter-batch sleep and periodic `NOOP` keepalive — all empirically tuned for imap.qq.com's per-account connection limits and throughput ceiling
+- **Scheduled processing** — configurable scan interval via APScheduler (default 60 min), with rate-limiting hygiene so nothing runs when it shouldn't
+- **Incremental scanning** — saves per-folder `UIDVALIDITY` / `UIDNEXT` / `MESSAGES` / highest-UID state so subsequent scans only fetch genuinely new messages
+- **Tiered email classification** — free heuristics first, cheap metadata-only LLM call second, full-body LLM only for ambiguous cases; LLM responses cached by SHA-256 for free replays
 
 ### Invoice intelligence
-- **AI Classification & Extraction** — OpenAI-compatible LLMs classify emails and extract structured invoice data
-- **Multi-format Parsing** — PDF, XML, and OFD (数电票) with QR code decoding
-- **Manual Correction** — edit any extracted field inline with a full audit trail
-- **Confidence Scoring** — extraction confidence and method displayed per invoice
-- **Duplicate Detection** — composite dedup on invoice number + email UID + attachment filename
+
+- **AI classification & extraction** — OpenAI-compatible LLMs classify emails and extract structured invoice data via the Instructor library
+- **Tier-3 body-link analysis** — when an email contains download links, the LLM picks the **single best direct invoice link** instead of blindly following every URL, with a pre-download URL blocklist that rejects tracking pixels and unsubscribe links before spending any HTTP round-trip
+- **Multi-format parsing** — PDF (pdfplumber + PyMuPDF), XML (lxml), OFD (easyofd) with QR code decoding via pyzbar
+- **Manual correction** — edit any extracted field inline with a full audit trail (`CorrectionLog`)
+- **Confidence scoring** — extraction confidence and method displayed per invoice as coloured badges
+- **Duplicate detection** — composite deduplication on invoice number + email UID + attachment filename
+- **Per-email extraction audit log** — `ExtractionLog` tracks why each email was saved, skipped, or failed, with drill-down links from each `ScanLog` row
 
 ### Search, export & analytics
-- **Full-text Search** — SQLite FTS5 with optional sqlite-vec semantic search
-- **Saved Views** — persist named filter combinations for quick daily access
-- **CSV Export** — export filtered invoice lists with one click
-- **Spend Analytics** — monthly spend, top sellers, invoice counts by type and extraction method
-- **Similar Invoices** — "more like this" discovery via embeddings or FTS5 fallback
-- **Batch Actions** — select multiple invoices for ZIP download or bulk deletion
 
-### Operations & security
-- **AI Model Settings UI** — manage LLM provider, API key, model selection, and embedding config from the browser
-- **Rate Limiting** — brute-force protection (10 req/min/IP) on login
-- **Rich Health Endpoint** — reports DB, scheduler, sqlite-vec, invoice count, and last scan time
-- **Outbound Webhooks** — `invoice.created` events with HMAC-SHA256 signed payloads
-- **Project Branding** — favicon, login icon, and nav bar logo
+- **Full-text search** — SQLite FTS5 with optional sqlite-vec semantic similarity
+- **Saved views** — persist named search + filter combinations for daily workflows
+- **CSV export** — export filtered invoice lists with one click (UTF-8 BOM, opens cleanly in Excel / Numbers / WPS)
+- **Batch actions** — select multiple invoices for ZIP download or bulk deletion
+- **Spend analytics** — monthly spend, top sellers, invoice counts by type and extraction method
+- **Similar invoices** — "more like this" discovery via embeddings (sqlite-vec) with FTS5 fallback
+
+### Operations & reliability
+
+- **Live scan telemetry** — the scan progress bar shows which account, which folder (e.g. `Folder 3/22: Archive`), and the fetching scanner's own status (`Archive: +1400 msgs`, `INBOX: unchanged, skipped`, `INBOX: searching UIDs (~35 626 msgs)`) moment by moment
+- **Scan fault isolation** — one slow / broken account never takes down the rest; orphan log cleanup stamps interrupted scans as `Scan interrupted — service was restarted` instead of leaving them forever `in_progress`
+- **Socket-level timeouts** — TCP handshake, per-recv, and per-parallel-worker deadlines so no IMAP session can hang the scheduler (learned the hard way against `imap.qq.com`)
+- **Partial-state preservation** — when a session drops mid-fold, the per-folder highest UID seen so far is still saved, so the next scan resumes from the right place
+- **Per-invocation scan options** — manually triggered scans can override scope: `unread_only`, `since=<date>`, and `reset_state` to force a full rescan
+- **AI model settings in the UI** — switch LLM provider, API key, chat model, and embedding model from the browser; stored in the DB and always wins over `.env` defaults. Test both models before saving
+- **Rate limiting** — brute-force protection (10 req/min/IP) on login
+- **Rich health endpoint** — reports DB, scheduler, sqlite-vec, invoice count, and last-scan time for monitoring
+- **Outbound webhooks** — `invoice.created` events with HMAC-SHA256 signed payloads (GitHub-style `X-Signature-256` header); delivery failures are logged but never block the scan pipeline
+- **100% test coverage** — 421 unit + e2e tests, enforced in CI with `--cov-fail-under=100`
 
 ---
 
@@ -114,7 +129,7 @@ Full structured data with inline editing, confidence badge, extraction method, a
 
 ### Email Account Settings
 
-Add, edit, test, and manage email accounts for automatic scanning.
+Add, edit, test, and manage email accounts. Compact scan-state summary per account (`5 folders · 47 849 messages · UID 40 993`) with a tooltip holding the raw JSON for debugging.
 
 <p align="center">
   <img src="assets/screenshots/04-settings.png" alt="Email account settings" width="900">
@@ -122,7 +137,7 @@ Add, edit, test, and manage email accounts for automatic scanning.
 
 ### Scan Operations
 
-Manual scan trigger, scan history with per-email extraction audit logs.
+Manual scan trigger with `unread_only` / `since` / `reset_state` options, live progress bar showing account, folder index, folder name, and batch-by-batch fetch status, plus scan history with per-email extraction audit drill-down.
 
 <p align="center">
   <img src="assets/screenshots/05-scan-operations.png" alt="Scan operations" width="900">
@@ -130,7 +145,7 @@ Manual scan trigger, scan history with per-email extraction audit logs.
 
 ### AI Model Configuration
 
-Configure your LLM provider, API key, and model selection — all from the browser. Retrieve available models directly from your provider's API.
+Configure your LLM provider, API key, chat model, and embedding model from the browser. Retrieve available models directly from your provider's API. Test both models before saving.
 
 <p align="center">
   <img src="assets/screenshots/06-ai-settings.png" alt="AI model settings" width="900">
@@ -142,18 +157,21 @@ Configure your LLM provider, API key, and model selection — all from the brows
 
 | Layer | Stack |
 |------|-------|
-| Backend | FastAPI, SQLAlchemy 2.0, APScheduler, slowapi |
-| Frontend | Vue 3, Vite, Tailwind CSS, Pinia |
+| Backend | FastAPI, SQLAlchemy 2.0 async, APScheduler, slowapi, Instructor |
+| Frontend | Vue 3, Vite, Tailwind CSS, Pinia, vue-router |
 | Database | SQLite (WAL), FTS5, sqlite-vec |
-| AI | OpenAI-compatible API, Instructor |
-| Parsing | pdfplumber, PyMuPDF, easyofd, lxml, pyzbar |
+| AI | OpenAI-compatible HTTP API |
+| Parsing | pdfplumber, PyMuPDF, easyofd, lxml, pyzbar, imap-tools, msal |
+| Testing | pytest (421 tests, 100% coverage), Playwright (e2e smoke) |
+
+Roughly 6 800 lines of Python and 3 600 lines of Vue / TypeScript.
 
 ---
 
 ## Prerequisites
 
 - Python 3.11+
-- Node.js 18+ (for frontend development only — pre-built dist/ included)
+- Node.js 18+ (for frontend development only — pre-built `dist/` is committed)
 - System packages:
   - `libzbar0` — QR code decoding
   - `fonts-noto-cjk` — optional, recommended for Chinese rendering
@@ -218,16 +236,16 @@ For backend hot-reload, copy `docker-compose.override.yml.example` to `docker-co
 | `LLM_API_KEY` | API key for the LLM service | `sk-...` | Yes |
 | `STORAGE_PATH` | Invoice file storage directory | `./data/invoices` | No |
 | `JWT_EXPIRE_MINUTES` | Token expiration (minutes) | `1440` | No |
-| `LLM_MODEL` | Model for classification/extraction | `gpt-4o-mini` | No |
+| `LLM_MODEL` | Model for classification / extraction | `gpt-4o-mini` | No |
 | `LLM_EMBED_MODEL` | Model for embeddings | `text-embedding-3-small` | No |
 | `EMBED_DIM` | Embedding vector dimensions | `1536` | No |
-| `SCAN_INTERVAL_MINUTES` | Minutes between scans | `60` | No |
+| `SCAN_INTERVAL_MINUTES` | Minutes between scheduled scans | `60` | No |
 | `SQLITE_VEC_ENABLED` | Enable semantic search | `true` | No |
 | `WEBHOOK_URL` | Outbound webhook endpoint | `https://example.com/hook` | No |
 | `WEBHOOK_SECRET` | HMAC-SHA256 signing key for webhooks | `your-secret` | No |
 | `LOG_LEVEL` | App log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` | No |
-| `OUTLOOK_PERSONAL_CLIENT_ID` | Microsoft public client ID for personal Outlook/Live/Hotmail accounts | `04b07795-8ddb-461a-bbee-02f9e1bf7b46` | No |
-| `OUTLOOK_AAD_CLIENT_ID` | Microsoft public client ID for work/school Azure AD accounts | `d3590ed6-52b3-4102-aeff-aad2292ab01c` | No |
+| `OUTLOOK_PERSONAL_CLIENT_ID` | Microsoft public client ID for personal Outlook / Live / Hotmail accounts | `04b07795-8ddb-461a-bbee-02f9e1bf7b46` | No |
+| `OUTLOOK_AAD_CLIENT_ID` | Microsoft public client ID for work / school Azure AD accounts | `d3590ed6-52b3-4102-aeff-aad2292ab01c` | No |
 
 AI model settings can also be managed from the **Settings > AI 模型** page in the web UI. Database-stored values override `.env` defaults.
 
@@ -236,15 +254,21 @@ AI model settings can also be managed from the **Settings > AI 模型** page in 
 ## Email Account Setup
 
 ### IMAP / POP3
-Use your provider's server address, port, username, and password/app password.
+
+Use your provider's server address, port, username, and password / app password. The generic IMAP scanner uses a 4-worker parallel fetch on folders with 500+ new UIDs and falls back to a single-connection serial fetch when the provider rate-limits.
 
 ### QQ Mail
+
 1. Log in to QQ Mail web interface → **Settings > Account**
-2. Enable **POP3/IMAP Service**
-3. Generate a **16-character Authorization Code** and use it as the password
+2. Enable **POP3 / IMAP Service**
+3. Generate a **16-character Authorization Code** and use it as the password in Invoice Maid
+4. Select account type **`qq`** when adding the account — this triggers the dedicated QQ code path (single connection, `bulk=50`, UID-range search, NOOP keepalive) rather than the generic IMAP path. Host-based detection (`imap.qq.com` / `imap.exmail.qq.com`) also enables this code path if you pick generic `imap` by mistake
+
+The first full scan of a large QQ INBOX takes real wall-clock time — roughly 18–20 minutes for ~35 000 messages at QQ's per-IP throughput ceiling. Subsequent incremental scans complete in seconds because Invoice Maid restricts the IMAP `SEARCH` to `UID last+1:*` once a baseline is saved.
 
 ### Microsoft Outlook
-Invoice Maid uses **OAuth2 Device Code Flow** via the Settings page. For Outlook accounts, set **username** to the mailbox email address. Invoice Maid automatically detects personal Microsoft domains like `@outlook.com` and `@hotmail.com`, stores the account type, and uses the matching Microsoft authority/client ID for personal vs work/school accounts. Authentication is initiated explicitly and scans/test-connection only use cached tokens.
+
+Invoice Maid uses **OAuth2 Device Code Flow** via the Settings page. Set **username** to the mailbox email address; Invoice Maid automatically detects personal Microsoft domains (`@outlook.com`, `@hotmail.com`, `@live.*`, etc.) and picks the correct Microsoft authority / client ID for personal vs. work / school. Authentication is initiated explicitly from the UI; scans and test-connection only use cached tokens.
 
 ---
 
@@ -293,6 +317,10 @@ systemctl enable --now invoice-maid
 ### Nginx
 Use `deploy/invoice-maid.nginx.conf` as your site template. Replace `{{DOMAIN}}` and SSL paths.
 
+### One-shot install + upgrade scripts
+
+`deploy/install.sh` bootstraps the full production stack (service user, venv, systemd unit, nginx config, SSL via certbot) interactively on a fresh Debian / Ubuntu host. `deploy/invoice-maid-upgrade` (installed by `install.sh`) pulls the latest tag from origin, runs `alembic upgrade head`, restarts the service, and waits for `/api/v1/health` to report OK — so you can redeploy with a single command. Both scripts are safe to re-run.
+
 ---
 
 ## Development
@@ -303,6 +331,8 @@ cd backend
 pip install -e ".[dev]"
 pytest --cov=app --cov-report=term-missing --cov-fail-under=100
 ```
+
+100% line and branch coverage is enforced in CI.
 
 ### Frontend
 ```bash
@@ -318,11 +348,13 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
+The Playwright smoke test spins up a throwaway backend against a fresh SQLite DB with a placeholder admin password, logs in, adds a dummy email account, and verifies the dashboard renders — all with no real credentials anywhere.
+
 ---
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for planned features and version history.
+See [ROADMAP.md](ROADMAP.md) for planned features and [CHANGELOG.md](CHANGELOG.md) for version-by-version history.
 
 ---
 
