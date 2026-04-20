@@ -25,6 +25,8 @@ class _JWTModule(Protocol):
 class _BcryptHasher(Protocol):
     def verify(self, secret: str, hash: str) -> bool: ...
 
+    def hash(self, secret: str) -> str: ...
+
 
 jwt = cast(_JWTModule, cast(object, import_module("jose.jwt")))
 bcrypt = cast(_BcryptHasher, getattr(import_module("passlib.hash"), "bcrypt"))
@@ -32,6 +34,16 @@ bcrypt = cast(_BcryptHasher, getattr(import_module("passlib.hash"), "bcrypt"))
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.verify(plain_password, hashed_password)
+
+
+def hash_password(plain_password: str) -> str:
+    """Bcrypt-hash a password for storage in ``users.hashed_password``.
+
+    Same algorithm the bootstrap admin uses via ``ADMIN_PASSWORD_HASH``.
+    The test harness stubs ``bcrypt.hash`` with a deterministic
+    ``hashed:{plain}`` fake so fixtures don't pay the bcrypt cost on
+    every test setup — see ``tests/conftest.py``."""
+    return bcrypt.hash(plain_password)
 
 
 def create_access_token(data: dict[str, object], expires_delta: timedelta | None = None) -> str:

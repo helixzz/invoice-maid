@@ -244,3 +244,252 @@ async def test_login_handles_missing_client_ip(
         client = _BlankClient()
 
     assert auth_module._client_ip(_FakeRequestBlankHost()) is None
+
+
+async def test_register_disabled_by_default(client, settings) -> None:
+    settings.ALLOW_REGISTRATION = False
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "new@example.com",
+            "password": "newpass123",
+            "password_confirm": "newpass123",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Registration is disabled on this instance"}
+
+
+async def test_register_creates_user_when_allowed(client, settings, db) -> None:
+    settings.ALLOW_REGISTRATION = True
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "new@example.com",
+            "password": "newpass123",
+            "password_confirm": "newpass123",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "access_token" in body
+    assert body["token_type"] == "bearer"
+
+    from app.models import User
+    from sqlalchemy import select
+
+    result = await db.execute(select(User).where(User.email == "new@example.com"))
+    user = result.scalar_one()
+    assert user.is_admin is False
+    assert user.is_active is True
+    assert user.hashed_password == "hashed:newpass123"
+
+
+async def test_register_rejects_duplicate_email(client, settings, admin_user) -> None:
+    settings.ALLOW_REGISTRATION = True
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": admin_user.email,
+            "password": "newpass123",
+            "password_confirm": "newpass123",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Email is already registered"}
+
+
+async def test_register_rejects_password_mismatch(client, settings) -> None:
+    settings.ALLOW_REGISTRATION = True
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "mismatch@example.com",
+            "password": "password123",
+            "password_confirm": "differentpass",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_register_rejects_bare_username_without_at_sign(
+    client, settings
+) -> None:
+    settings.ALLOW_REGISTRATION = True
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "no-at-sign",
+            "password": "newpass123",
+            "password_confirm": "newpass123",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_register_rejects_leading_trailing_at_sign(client, settings) -> None:
+    settings.ALLOW_REGISTRATION = True
+
+    for bad_email in ("@domain.com", "local@"):
+        response = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": bad_email,
+                "password": "newpass123",
+                "password_confirm": "newpass123",
+            },
+        )
+        assert response.status_code == 422, f"expected 422 for {bad_email!r}"
+
+
+async def test_register_rejects_short_password(client, settings) -> None:
+    settings.ALLOW_REGISTRATION = True
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "short@example.com",
+            "password": "short",
+            "password_confirm": "short",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_change_password_success(
+    client, auth_headers, admin_user, db, settings
+) -> None:
+    """Change-password revokes OTHER sessions but preserves the caller's
+    current session so this device stays logged in. We seed a second
+    session for the SAME user (simulating the user being logged in on
+    another device) and verify it gets revoked."""
+    from app.services.auth_service import create_access_token, create_user_session
+
+    other_token = create_access_token({"sub": str(admin_user.id)})
+    await create_user_session(db, admin_user, other_token, settings=settings)
+    other_headers = {"Authorization": f"Bearer {other_token}"}
+
+    pre_check = await client.get("/api/v1/auth/me", headers=other_headers)
+    assert pre_check.status_code == 200
+
+    response = await client.put(
+        "/api/v1/auth/me/password",
+        headers=auth_headers,
+        json={
+            "current_password": "testpass",
+            "new_password": "brand-new-password",
+            "new_password_confirm": "brand-new-password",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+
+    from sqlalchemy import select
+    from app.models import User
+
+    refreshed = (
+        await db.execute(select(User).where(User.id == admin_user.id))
+    ).scalar_one()
+    assert refreshed.hashed_password == "hashed:brand-new-password"
+
+    still_valid = await client.get("/api/v1/auth/me", headers=auth_headers)
+    assert still_valid.status_code == 200
+
+    other_now_revoked = await client.get("/api/v1/auth/me", headers=other_headers)
+    assert other_now_revoked.status_code == 401
+
+
+async def test_change_password_only_revokes_other_users_not_peers(
+    client, auth_headers, admin_user, second_auth_headers
+) -> None:
+    """Changing admin_user's password must NOT affect sessions belonging
+    to other users. This is the tenant-isolation invariant for the
+    session-revocation side-effect."""
+    del admin_user
+
+    response = await client.put(
+        "/api/v1/auth/me/password",
+        headers=auth_headers,
+        json={
+            "current_password": "testpass",
+            "new_password": "another-new-password",
+            "new_password_confirm": "another-new-password",
+        },
+    )
+
+    assert response.status_code == 200
+
+    second_still_works = await client.get(
+        "/api/v1/auth/me", headers=second_auth_headers
+    )
+    assert second_still_works.status_code == 200
+
+
+async def test_change_password_wrong_current(client, auth_headers) -> None:
+    response = await client.put(
+        "/api/v1/auth/me/password",
+        headers=auth_headers,
+        json={
+            "current_password": "wrong",
+            "new_password": "brand-new-password",
+            "new_password_confirm": "brand-new-password",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Current password is incorrect"}
+
+
+async def test_change_password_mismatch(client, auth_headers) -> None:
+    response = await client.put(
+        "/api/v1/auth/me/password",
+        headers=auth_headers,
+        json={
+            "current_password": "testpass",
+            "new_password": "brand-new-password",
+            "new_password_confirm": "different-password-here",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_change_password_must_differ_from_current(
+    client, auth_headers
+) -> None:
+    response = await client.put(
+        "/api/v1/auth/me/password",
+        headers=auth_headers,
+        json={
+            "current_password": "testpass",
+            "new_password": "testpass",
+            "new_password_confirm": "testpass",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_change_password_requires_auth(client) -> None:
+    response = await client.put(
+        "/api/v1/auth/me/password",
+        json={
+            "current_password": "x",
+            "new_password": "brand-new-password",
+            "new_password_confirm": "brand-new-password",
+        },
+    )
+
+    assert response.status_code == 401

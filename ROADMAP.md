@@ -163,6 +163,24 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.8 — Released
+
+**Phase 5a of multi-user transition:** authentication UX (user identity in UI + self-service registration + change-password flow).
+
+Backend: `POST /api/v1/auth/register` (gated by `ALLOW_REGISTRATION` env var, default false; rate-limited 5/min; validates email format, password length, and confirmation match; returns 403 when disabled, 409 on duplicate). `PUT /api/v1/auth/me/password` (verifies current password, hashes new, revokes every other session for the same user so stolen tokens on other devices stop working; the caller's current session stays valid). `hash_password()` bcrypt helper in `auth_service.py`. `ALLOW_REGISTRATION` setting in `config.py`.
+
+Frontend: `UserInfo` type + auth store with `user` state, `isAdmin` getter, `register/fetchMe/changePassword` actions. App-init `fetchMe()` call so AppLayout shows the logged-in user's email immediately. `RegisterView.vue` with client-side validation and a `Registration is disabled` message for 403 responses. LoginView has a "Sign up" link. AppLayout user menu: profile dropdown with avatar/email/admin-badge + Change-password modal (with success banner explaining other-device sign-out). Router guard redirects already-authenticated users away from `/login` and `/register`.
+
+13 new backend tests covering every branch of register + change-password, including the tenant-isolation invariant that changing one user's password does NOT revoke another user's sessions.
+
+Zero-touch upgrade — no schema changes, no migration, no config changes. `ALLOW_REGISTRATION=false` default keeps production single-user and closed.
+
+584 tests, 100% coverage (+13).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.7.post1 — Released
 
 **Hotfix**: alembic's ``env.py`` did not auto-load ``backend/.env``, so migration 0013's ``_derive_storage_path`` hit its URL-derived fallback on production deployments where ``STORAGE_PATH`` lives in ``.env`` rather than as a systemd-level env var. The DB ``file_path`` column was rewritten to ``users/{user_id}/...`` correctly, but the files stayed at the flat layout — downloads would have 404'd for every invoice.

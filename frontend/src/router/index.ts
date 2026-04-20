@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import LoginView from '@/views/LoginView.vue'
+import RegisterView from '@/views/RegisterView.vue'
 import InvoiceListView from '@/views/InvoiceListView.vue'
 import InvoiceDetailView from '@/views/InvoiceDetailView.vue'
 import InvoiceUploadView from '@/views/InvoiceUploadView.vue'
@@ -17,6 +18,11 @@ const router = createRouter({
       path: '/login',
       name: 'login',
       component: LoginView
+    },
+    {
+      path: '/register',
+      name: 'register',
+      component: RegisterView
     },
     {
       path: '/invoices',
@@ -49,6 +55,8 @@ router.beforeEach((to, _from, next) => {
   const authStore = useAuthStore()
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next({ name: 'login' })
+  } else if ((to.name === 'login' || to.name === 'register') && authStore.isAuthenticated) {
+    next({ name: 'invoices' })
   } else {
     next()
   }

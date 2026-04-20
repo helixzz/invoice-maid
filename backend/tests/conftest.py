@@ -121,6 +121,7 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
         "bcrypt",
         SimpleNamespace(
             verify=lambda secret, hashed: hashed == f"hashed:{secret}",
+            hash=lambda secret: f"hashed:{secret}",
         ),
     )
     return settings_obj

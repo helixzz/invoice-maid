@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     WEBHOOK_URL: str = ""
     WEBHOOK_SECRET: str = ""
     ENABLE_TEST_HELPERS: bool = False
+    ALLOW_REGISTRATION: bool = False
     LOG_LEVEL: str = "INFO"
     OUTLOOK_PERSONAL_CLIENT_ID: str = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
     OUTLOOK_AAD_CLIENT_ID: str = "d3590ed6-52b3-4102-aeff-aad2292ab01c"

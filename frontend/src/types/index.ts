@@ -15,6 +15,14 @@ export interface Invoice {
   created_at: string
 }
 
+export interface UserInfo {
+  id: number
+  email: string
+  is_active: boolean
+  is_admin: boolean
+  created_at: string
+}
+
 export interface InvoiceListResponse {
   items: Invoice[]
   total: number

@@ -4,6 +4,90 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.8] - 2026-04-21
+
+### Theme
+
+Phase 5a of the multi-user transition: **authentication UX**. Users finally have an identity visible in the app, a self-service registration flow (gated by `ALLOW_REGISTRATION`), and a change-password flow that cleans up stolen tokens on other devices. Admin-panel user management comes in the next release (alpha.9).
+
+### Added
+
+Backend:
+
+- **`POST /api/v1/auth/register`** — create a new non-admin user and return a session token. Gated by `ALLOW_REGISTRATION` env var (default `false` for security). Rate-limited to 5 requests/minute. Validates email format (must contain `@`, not at start or end), password length (8–128 chars), and password confirmation match. Returns 403 when disabled (distinguishable from 404 so a frontend can show "registration is disabled" rather than 404-lying). 409 on duplicate email.
+
+- **`PUT /api/v1/auth/me/password`** — change the caller's password. Verifies the current password server-side (bcrypt), hashes the new one, then revokes every OTHER session for the user so stolen tokens on lost/stolen devices stop working immediately. The caller's current session stays valid — no forced re-login on this device. Validates new-vs-confirm match and new-must-differ-from-current.
+
+- **`ALLOW_REGISTRATION` setting** in `app/config.py`. Defaults to `false`; operators set to `true` in `.env` (or systemd environment) to open self-service registration.
+
+- **`hash_password()` in `app/services/auth_service.py`** — bcrypt wrapper, same algorithm the bootstrap admin uses via `ADMIN_PASSWORD_HASH`. Test harness stubs `bcrypt.hash` with a deterministic `hashed:{plain}` fake.
+
+- **13 new backend tests** covering every branch: registration disabled/enabled/duplicate/password-mismatch/bad-email/bad-email-edges/short-password, change-password success/wrong-current/mismatch/same-as-current/unauthenticated/peer-user-isolation. The change-password session-revocation behavior has dedicated coverage proving (a) other sessions for the SAME user get revoked, (b) sessions belonging to OTHER users do not get touched (tenant-isolation invariant for the side-effect).
+
+Frontend:
+
+- **`UserInfo` type** in `src/types/index.ts`: `{id, email, is_active, is_admin, created_at}`.
+
+- **Auth store extended** (`src/stores/auth.ts`):
+  - `user: UserInfo | null` state
+  - `isAdmin` getter
+  - `register(email, password, passwordConfirm)` action
+  - `fetchMe()` action (calls `GET /auth/me`, populates `user`)
+  - `changePassword(current, new, confirm)` action
+  - `logout()` now also clears `user`
+
+- **App-init `fetchMe()` call** in `src/main.ts`: if a token is present in localStorage at startup, fetch the user profile before mounting the app.
+
+- **`RegisterView.vue`**: three-field form (email, password, confirm), client-side validation (password match + min length), submits via `authStore.register`. Handles 403 with a distinct "Registration is disabled — contact administrator" message. Links to login. Router guard redirects already-authenticated users to `/invoices`.
+
+- **LoginView** now has a "Don't have an account? Sign up" link.
+
+- **AppLayout user menu**: replaces the bare "Logout" button with a profile dropdown showing user initials + email + admin badge (if applicable), with a "Change password" menu item that opens a modal. The modal has client-side validation (match + min length + new-vs-current), posts to `PUT /auth/me/password`, and shows a success banner explaining that sessions on other devices have been signed out.
+
+- **Router guard**: `/login` and `/register` redirect to `/invoices` if the user is already authenticated, so an accidental visit to `/login` while signed in doesn't require a fresh login.
+
+### Changed
+
+- **Login flow now hydrates the user profile** before navigating to `/invoices`. A successful `POST /auth/login` is immediately followed by `GET /auth/me` so the AppLayout shows the user's email without waiting for a subsequent navigation.
+
+- **401 auto-logout** continues to work as before — `api/client.ts` interceptor clears the store and redirects to `/login` on any 401, which means a password-changed-on-another-device token sees a clean transition.
+
+### Upgrade path
+
+Zero-touch for v0.9.0-alpha.7 deployments. No schema changes, no migration, no config changes. `ALLOW_REGISTRATION` defaults to `false`, so production remains single-user and closed.
+
+To enable self-service registration:
+```
+# /etc/invoice-maid/invoice-maid.env
+ALLOW_REGISTRATION=true
+```
+Then restart the service. New registrations create non-admin users. The admin can later deactivate misbehaving accounts via the admin panel (alpha.9).
+
+### Security
+
+- **Information-disclosure**: registration-disabled returns 403 (not 404) to distinguish "feature turned off" from "URL doesn't exist." This is a deliberate product decision — the endpoint's existence is public knowledge (anyone can try it); what's secret is the user database, which 403 does not leak.
+
+- **Session revocation on password change**: the `PUT /auth/me/password` endpoint revokes every other session for the same user. Combined with JWT expiry (default 24 hours), this closes the window where a stolen token survives a password rotation.
+
+- **Tenant isolation for the revocation side-effect**: session revocation is scoped to `user_id == current_user.id`. A user changing their password cannot affect other users' sessions. This invariant has a dedicated test (`test_change_password_only_revokes_other_users_not_peers`) to prevent regression.
+
+### Not included (deferred)
+
+- **Admin panel** — backend `/admin/users` endpoints + frontend AdminView. Ships in alpha.9.
+- **Startup orphan-directory scan** — logs WARN if a `users/{id}/` subdirectory exists on disk but no `users.id` row in DB. Ships in alpha.9 alongside the admin delete flow.
+- **Per-user AI / classifier settings** — deferred to post-v0.9.0.
+- **Per-user webhooks** — deferred to post-v0.9.0.
+
+### Tests
+
+- 584 passing, 100% coverage (+13 from v0.9.0-alpha.7.post1). All new tests are in `tests/test_api/test_auth.py`.
+- Frontend build clean (109 modules, 90 KB gzipped JS, 6 KB gzipped CSS).
+- CI-simulated run clean.
+
+### Alpha designation
+
+Still `0.9.0-alpha` because the admin panel is not yet shipped. A second user created via `POST /auth/register` works correctly (full tenant isolation from alpha.6, per-user file storage from alpha.7), but there's no UI path for an admin to see or manage them. That ships in alpha.9.
+
 ## [0.9.0-alpha.7.post1] - 2026-04-21
 
 ### Hotfix for 0.9.0-alpha.7 migration 0013

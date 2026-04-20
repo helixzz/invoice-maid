@@ -20,7 +20,8 @@ import type {
   SavedView,
   StatsAnalytics,
   OAuthInitiateResponse,
-  OAuthStatusResponse
+  OAuthStatusResponse,
+  UserInfo,
 } from '@/types'
 
 export const apiClient = axios.create({
@@ -76,6 +77,32 @@ export const api = {
   async login(email: string, password: string): Promise<{access_token: string}> {
     const res = await apiClient.post('/auth/login', { email, password })
     return res.data
+  },
+
+  async register(email: string, password: string, passwordConfirm: string): Promise<{access_token: string}> {
+    const res = await apiClient.post('/auth/register', {
+      email,
+      password,
+      password_confirm: passwordConfirm,
+    })
+    return res.data
+  },
+
+  async me(): Promise<UserInfo> {
+    const res = await apiClient.get('/auth/me')
+    return res.data
+  },
+
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+    newPasswordConfirm: string,
+  ): Promise<void> {
+    await apiClient.put('/auth/me/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+      new_password_confirm: newPasswordConfirm,
+    })
   },
 
   // Invoices
