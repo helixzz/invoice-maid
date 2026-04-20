@@ -36,7 +36,11 @@ async def create_view(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> SavedViewResponse:
-    saved_view = SavedView(name=payload.name, filter_json=payload.filter_json)
+    saved_view = SavedView(
+        user_id=_current_user.id,
+        name=payload.name,
+        filter_json=payload.filter_json,
+    )
     db.add(saved_view)
     await db.commit()
     await db.refresh(saved_view)

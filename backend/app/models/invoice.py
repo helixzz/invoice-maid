@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -20,12 +20,15 @@ def utcnow() -> datetime:
 
 class Invoice(Base):
     __tablename__: ClassVar[str] = "invoices"
+    __table_args__ = (
+        UniqueConstraint("user_id", "invoice_no", name="uq_invoices_user_id_invoice_no"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    invoice_no: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    invoice_no: Mapped[str] = mapped_column(String(128), index=True)
     buyer: Mapped[str] = mapped_column(String(255))
     seller: Mapped[str] = mapped_column(String(255))
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))

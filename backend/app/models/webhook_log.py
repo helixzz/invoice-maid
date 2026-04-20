@@ -17,8 +17,8 @@ class WebhookLog(Base):
     __tablename__: ClassVar[str] = "webhook_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     event: Mapped[str] = mapped_column(String(128), index=True)
     invoice_no: Mapped[str] = mapped_column(String(128), index=True)

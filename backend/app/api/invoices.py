@@ -243,6 +243,7 @@ async def upload_invoice(
             settings=settings,
             filename=parse_filename,
             payload=payload,
+            user_id=_current_user.id,
         )
     except RuntimeError as exc:
         logger.error("Manual upload precondition failed: %s", exc)
@@ -388,6 +389,7 @@ async def update_invoice(
         setattr(invoice, field_name, new_value)
         db.add(
             CorrectionLog(
+                user_id=_current_user.id,
                 invoice_id=invoice.id,
                 field_name=field_name,
                 old_value=_stringify_field_value(old_value),

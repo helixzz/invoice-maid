@@ -37,13 +37,12 @@ def test_models_exports_and_relationships() -> None:
     assert "classification_tier" in ExtractionLog.__table__.columns
 
 
-def test_tenant_models_have_nullable_user_id_fk_to_users() -> None:
+def test_tenant_models_have_non_null_user_id_fk_to_users() -> None:
     for model in TENANT_MODELS:
         column = model.__table__.columns.get("user_id")
         assert column is not None, f"{model.__name__} is missing user_id column"
-        assert column.nullable is True, (
-            f"{model.__name__}.user_id must be nullable in Phase 2 "
-            "(Phase 3 tightens to NOT NULL)"
+        assert column.nullable is False, (
+            f"{model.__name__}.user_id must be NOT NULL as of Phase 3"
         )
         assert column.index is True, (
             f"{model.__name__}.user_id must be indexed for per-tenant filtering"
@@ -62,6 +61,31 @@ def test_tenant_models_have_nullable_user_id_fk_to_users() -> None:
         assert fk.ondelete == "CASCADE", (
             f"{model.__name__}.user_id must cascade on user deletion"
         )
+
+
+def test_invoice_has_composite_unique_on_user_id_and_invoice_no() -> None:
+    """Phase 3 replaced the global ``UNIQUE(invoice_no)`` with a
+    per-user composite ``UNIQUE(user_id, invoice_no)`` so two distinct
+    users can legally receive an invoice with the same number."""
+    from sqlalchemy import UniqueConstraint
+
+    from app.models import Invoice
+
+    composite = [
+        c for c in Invoice.__table__.constraints
+        if isinstance(c, UniqueConstraint)
+    ]
+    assert len(composite) == 1, "Invoice must have exactly one UniqueConstraint"
+    cols = [c.name for c in composite[0].columns]
+    assert cols == ["user_id", "invoice_no"], (
+        f"Invoice unique constraint columns must be (user_id, invoice_no), got {cols}"
+    )
+
+    invoice_no_col = Invoice.__table__.columns["invoice_no"]
+    assert invoice_no_col.unique is not True, (
+        "Invoice.invoice_no must no longer be globally unique; "
+        "uniqueness is scoped to the composite UniqueConstraint now."
+    )
 
 
 def test_non_tenant_tables_do_not_have_user_id() -> None:

@@ -103,6 +103,7 @@ async def test_scan_all_accounts_happy_path_with_embedding(
 
 def test_record_extraction_log_truncates_long_error_detail() -> None:
     log = scheduler._record_extraction_log(
+        user_id=1,
         scan_log_id=1,
         email_uid="uid",
         email_subject="subject",
@@ -1416,7 +1417,7 @@ async def test_process_single_email_returns_email_result_and_saves_invoice(
 ) -> None:
     account = await create_email_account(last_scan_uid=None)
     scan_log = ScanLog(
-        email_account_id=account.id,
+        user_id=account.user_id, email_account_id=account.id,
         started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         emails_scanned=0,
         invoices_found=0,
@@ -1448,6 +1449,7 @@ async def test_process_single_email_returns_email_result_and_saves_invoice(
         settings=settings,
         log_id=scan_log.id,
         account_id=account.id,
+        user_id=account.user_id,
     )
 
     assert result == scheduler._EmailResult(invoices_added=1, last_uid="uid-1", error=None)
@@ -1522,6 +1524,7 @@ async def test_process_single_email_handles_invoice_integrity_error(monkeypatch:
         settings=SimpleNamespace(sqlite_vec_available=False),
         log_id=1,
         account_id=1,
+        user_id=1,
     )
 
     assert result.invoices_added == 0
@@ -1559,6 +1562,7 @@ async def test_process_single_email_returns_error_result_on_outer_failure(monkey
         settings=SimpleNamespace(sqlite_vec_available=False),
         log_id=1,
         account_id=1,
+        user_id=1,
     )
 
     assert result == scheduler._EmailResult(invoices_added=0, last_uid="uid-fail", error="boom")
@@ -1587,6 +1591,7 @@ async def test_process_single_email_returns_default_when_no_db_session(monkeypat
         settings=SimpleNamespace(sqlite_vec_available=False),
         log_id=1,
         account_id=1,
+        user_id=1,
     )
 
     assert result == scheduler._EmailResult()
@@ -2306,7 +2311,7 @@ async def test_scheduler_stamps_orphan_scan_logs_on_next_scan_start(
 
     await create_email_account(last_scan_uid=None)
     orphan = ScanLog(
-        email_account_id=1,
+        user_id=1, email_account_id=1,
         started_at=_dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=_dt.timezone.utc),
         finished_at=None,
         error_message=None,
@@ -2451,20 +2456,20 @@ async def test_cleanup_extraction_logs_removes_old_entries(db, monkeypatch: pyte
     recent = now - timedelta(days=1)
 
     account = EmailAccount(
-        name="t", type="imap", host="h", port=143,
+        user_id=1, name="t", type="imap", host="h", port=143,
         username="u", password_encrypted="pw",
     )
     db.add(account)
     await db.flush()
 
-    scan = ScanLog(email_account_id=account.id, started_at=now, emails_scanned=1)
+    scan = ScanLog(user_id=account.user_id, email_account_id=account.id, started_at=now, emails_scanned=1)
     db.add(scan)
     await db.flush()
 
     db.add_all([
-        ExtractionLog(scan_log_id=scan.id, email_subject="old-1", outcome="saved", created_at=very_old),
-        ExtractionLog(scan_log_id=scan.id, email_subject="old-2", outcome="skipped", created_at=very_old),
-        ExtractionLog(scan_log_id=scan.id, email_subject="recent-1", outcome="saved", created_at=recent),
+        ExtractionLog(user_id=scan.user_id, scan_log_id=scan.id, email_subject="old-1", outcome="saved", created_at=very_old),
+        ExtractionLog(user_id=scan.user_id, scan_log_id=scan.id, email_subject="old-2", outcome="skipped", created_at=very_old),
+        ExtractionLog(user_id=scan.user_id, scan_log_id=scan.id, email_subject="recent-1", outcome="saved", created_at=recent),
     ])
     await db.commit()
 
@@ -2487,16 +2492,16 @@ async def test_cleanup_extraction_logs_is_no_op_when_nothing_expired(
 
     now = datetime.now(timezone.utc)
     account = EmailAccount(
-        name="t", type="imap", host="h", port=143,
+        user_id=1, name="t", type="imap", host="h", port=143,
         username="u", password_encrypted="pw",
     )
     db.add(account)
     await db.flush()
-    scan = ScanLog(email_account_id=account.id, started_at=now, emails_scanned=1)
+    scan = ScanLog(user_id=account.user_id, email_account_id=account.id, started_at=now, emails_scanned=1)
     db.add(scan)
     await db.flush()
     db.add(ExtractionLog(
-        scan_log_id=scan.id, email_subject="fresh",
+        user_id=scan.user_id, scan_log_id=scan.id, email_subject="fresh",
         outcome="saved", created_at=now - timedelta(days=1),
     ))
     await db.commit()
@@ -2519,18 +2524,18 @@ async def test_cleanup_extraction_logs_respects_batch_size(
     very_old = now - timedelta(days=scheduler.EXTRACTION_LOG_RETENTION_DAYS + 5)
 
     account = EmailAccount(
-        name="t", type="imap", host="h", port=143,
+        user_id=1, name="t", type="imap", host="h", port=143,
         username="u", password_encrypted="pw",
     )
     db.add(account)
     await db.flush()
-    scan = ScanLog(email_account_id=account.id, started_at=now, emails_scanned=1)
+    scan = ScanLog(user_id=account.user_id, email_account_id=account.id, started_at=now, emails_scanned=1)
     db.add(scan)
     await db.flush()
 
     db.add_all([
         ExtractionLog(
-            scan_log_id=scan.id, email_subject=f"old-{i}",
+            user_id=scan.user_id, scan_log_id=scan.id, email_subject=f"old-{i}",
             outcome="saved", created_at=very_old,
         )
         for i in range(5)

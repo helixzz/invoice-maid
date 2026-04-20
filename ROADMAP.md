@@ -163,6 +163,28 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.5 — Released
+
+**Phase 3 of multi-user transition:** `NOT NULL` + FK constraints on every tenant `user_id` column, plus composite `UNIQUE(user_id, invoice_no)` on `invoices`.
+
+Alembic migration 0012 tightens seven tenant tables (`invoices`, `email_accounts`, `scan_logs`, `extraction_logs`, `correction_logs`, `saved_views`, `webhook_logs`). Every `user_id` column goes `NOT NULL` with `ondelete=CASCADE` to `users.id`. The global `UNIQUE(invoice_no)` on `invoices` is replaced by composite `UNIQUE(user_id, invoice_no)` so two users can legally own an invoice with the same number. A non-unique `ix_invoices_invoice_no` is kept so partial-key queries still hit an index.
+
+Invoices are processed last in the migration because their FTS5 sync triggers (`invoices_ai` / `invoices_ad` / `invoices_au`) don't survive a `batch_alter_table` rewrite. The migration drops them up front, performs the rewrite, recreates them against the rebuilt table, and repopulates the FTS5 content with `INSERT INTO invoices_fts(invoices_fts) VALUES ('rebuild')`.
+
+On a fresh install where `alembic upgrade head` runs before the app's first boot, migration 0012 seeds `users[1]` itself from `ADMIN_EMAIL` / `ADMIN_PASSWORD_HASH` so the `NOT NULL` tightening succeeds. The application's first-boot bootstrap hook becomes a no-op. Missing env vars cause the migration to refuse rather than insert a placeholder row.
+
+Downgrade carries a preflight check: if any two invoices share an `invoice_no` (possible only once a second user has been added), the downgrade raises rather than violating the pre-0012 global unique.
+
+Every application insert site (`Invoice`, `ScanLog`, `ExtractionLog`, `CorrectionLog`, `SavedView`, `WebhookLog`, `EmailAccount`) now populates `user_id` from `_current_user.id` in request contexts or from `account.user_id` in the scheduler. Test fixtures in `conftest.py` updated to match.
+
+Dry-run against a production database copy completed in under one second (239 invoices, 273,580 extraction logs). Every row count preserved, zero NULL `user_id`s, composite unique index present, all three FTS5 triggers recreated, FTS index repopulated, live-insert smoke test confirmed trigger firing, subsequent downgrade restored the prior schema cleanly.
+
+534 tests, 100% coverage (+8).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.4 — Released
 
 **Phase 2 of multi-user transition:** `user_id` columns on every tenant table.

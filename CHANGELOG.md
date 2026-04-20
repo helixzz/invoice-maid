@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.5] - 2026-04-21
+
+### Theme
+
+Phase 3 of the multi-user transition. The seven tenant-scoped tables now carry `NOT NULL user_id` columns with `CASCADE` foreign keys to `users.id`, and `invoices` enforces per-user uniqueness on `(user_id, invoice_no)` instead of the old global `UNIQUE(invoice_no)`. The schema is now structurally ready for a second user — Phases 4 and 5 (repository pattern, admin UI, registration) are what make that useful in practice.
+
+### Added
+
+- **Alembic migration `0012_tighten_user_id_constraints`** — processes the seven tenant tables in dependency order, with `invoices` last because of its FTS5 entanglement. For each non-invoice table: `batch_alter_table` tightens `user_id` to `NOT NULL` and adds `fk_{table}_user_id_users` with `ondelete=CASCADE`. For `invoices` specifically: drops the three FTS5 sync triggers (`invoices_ai` / `invoices_ad` / `invoices_au`) before the rewrite, runs the same tightening, drops the legacy global unique index, creates the new composite `uq_invoices_user_id_invoice_no` unique index, recreates the three triggers against the rebuilt table, and repopulates the FTS5 content via `INSERT INTO invoices_fts(invoices_fts) VALUES ('rebuild')`.
+
+- **Composite `UNIQUE(user_id, invoice_no)` on invoices** — replaces the global `UNIQUE(invoice_no)`. The plain `ix_invoices_invoice_no` index (non-unique) is kept so existing per-user lookups on `invoice_no` alone still use an index.
+
+- **Just-in-time admin seeding inside migration 0012** — on a fresh install where `alembic upgrade head` runs before the app's first boot, the `users` table is still empty at this revision. 0012 reads `ADMIN_EMAIL` and `ADMIN_PASSWORD_HASH` from the environment and inserts `users[1]` itself so the `NOT NULL` tightening succeeds. The application's first-boot `bootstrap_admin_user` hook becomes a no-op (table already non-empty) and the env-var credentials remain the source of truth. If neither env var is available, the migration refuses to run with an actionable error message rather than inserting a placeholder or leaving `NULL`s behind.
+
+- **Downgrade preflight on `invoices`** — the pre-0012 schema enforces global `UNIQUE(invoice_no)`. If any two invoices share an `invoice_no` (possible only once a second user exists), the downgrade would either fail halfway through or silently corrupt. 0012's `downgrade()` queries for duplicates first and raises `RuntimeError` with the offending invoice number if found.
+
+- **ORM model changes to match the tightened schema**:
+  - `Invoice.user_id` is now `Mapped[int]` (non-null) with the same FK + CASCADE as before
+  - `Invoice.invoice_no` drops `unique=True`; the composite constraint is declared via `__table_args__ = (UniqueConstraint("user_id", "invoice_no", name="uq_invoices_user_id_invoice_no"),)`
+  - The other six tenant models (`EmailAccount`, `ScanLog`, `ExtractionLog`, `CorrectionLog`, `SavedView`, `WebhookLog`) have their `user_id` typed as `Mapped[int]` non-null
+
+- **`user_id` propagated through every insert site**:
+  - `_record_extraction_log` in the scheduler now takes `user_id: int` and threads it through to every `ExtractionLog` row
+  - `_process_single_email` in the scheduler takes `user_id: int` at the top of the per-email pipeline; `scan_all_accounts` derives it from `account.user_id` for each active `EmailAccount`
+  - `Invoice(...)` and `WebhookLog(...)` construction sites in `tasks/scheduler.py` pass `user_id` explicitly
+  - `process_uploaded_invoice` in `services/manual_upload.py` takes `user_id: int` keyword-only; the `/invoices/upload` endpoint supplies it from `_current_user.id`
+  - `_create_upload_scan_log` takes `user_id: int` and its enclosing closure's `_log_extraction` helper captures it
+  - `/accounts` POST, `/views` POST, and `/invoices/{id}` PATCH (CorrectionLog) all populate `user_id` from `_current_user.id`
+  - The `/test-helpers/reset-smoke` seeder pulls the bootstrap admin from the DB and uses it as the owner of the seeded `EmailAccount`, `Invoice`, and `ScanLog` rows; raises 500 with an actionable message if no admin user exists yet
+
+- **Schema-shape assertions** (`tests/test_models/test_orm_models.py`):
+  - `test_tenant_models_have_non_null_user_id_fk_to_users` — replaces the Phase-2 nullable assertion
+  - `test_invoice_has_composite_unique_on_user_id_and_invoice_no` — asserts the composite `UniqueConstraint` is the only `UniqueConstraint` on `Invoice` and that `invoice_no` is no longer globally unique
+
+- **End-to-end migration tests** (`tests/test_migrations.py`, +5 cases covering Phase 3):
+  - `test_0012_upgrade_tightens_user_id_and_replaces_unique` — upgrade path with a pre-existing admin and invoice, checks `NOT NULL` + FK + composite-unique shape
+  - `test_0012_recreates_fts_triggers_and_rebuilds_index` — asserts the three FTS5 triggers are present after the rewrite and that `invoices_fts MATCH` returns pre-existing rows
+  - `test_0012_seeds_admin_from_env_when_users_empty` — fresh-install path, exercises the just-in-time admin seeding + manual-account backfill
+  - `test_0012_refuses_to_run_without_admin_seed_inputs` — env vars missing, migration must raise `RuntimeError`
+  - `test_0012_downgrade_refuses_on_cross_user_invoice_no_collision` — second user with a colliding `invoice_no`, downgrade preflight must raise
+  - `test_0012_downgrade_restores_nullable_and_global_unique` — clean downgrade roundtrip, asserts the schema goes back to the 0011 shape exactly
+
+### Upgrade path
+
+Zero-touch for v0.9.0-alpha.4 deployments:
+
+1. `alembic upgrade head` applies migration 0012.
+2. Every tenant table has its `user_id` tightened to `NOT NULL` with a CASCADE FK to `users.id`. All seven rewrites happen under `batch_alter_table`, which SQLite implements as copy-then-rename.
+3. The `invoices` table rewrite drops and recreates its three FTS5 sync triggers and rebuilds the FTS5 content via `invoices_fts('rebuild')`.
+4. The global `UNIQUE(invoice_no)` index is replaced by composite `UNIQUE(user_id, invoice_no)`. The plain `ix_invoices_invoice_no` index (non-unique) is kept so partial-key queries still hit an index.
+5. No API contract change. No user-visible behavior change. Search, list, detail, upload, scan, and export continue to work exactly as they did on v0.9.0-alpha.4.
+
+Rollback: `alembic downgrade 0011_add_user_id_to_tenant_tables` reverses every step. A preflight check refuses the downgrade if any two invoices share an `invoice_no` — that would violate the pre-0012 global uniqueness. Resolve any such duplicate manually before retrying.
+
+### Dry-run validation
+
+Migration was dry-run against a fresh copy of the production database before shipping. Total wall time under one second on this workload (239 invoices, 273,580 extraction logs, 85 scan logs, 3 email accounts, 1 correction log). Post-upgrade: every row count preserved exactly; zero `user_id IS NULL` across all seven tenant tables; composite unique index present; all three FTS5 triggers present; `invoices_fts` returned 239 documents; live `INSERT INTO invoices` fired the recreated `invoices_ai` trigger and synced the new row into the FTS index. Subsequent downgrade dropped the column + constraints cleanly and restored the global `UNIQUE(invoice_no)` index; subsequent re-upgrade returned to the post-0012 state.
+
+### Tests
+
+- 534 passing, 100% coverage (+8 from v0.9.0-alpha.4): 5 new migration tests, 2 new schema-shape assertions, 1 new regression for the smoke-seeder admin-user guard.
+- Test fixtures in `tests/conftest.py` updated to populate `user_id` on every tenant-model factory (`create_email_account`, `create_invoice`, `create_scan_log`, `create_extraction_log`, `create_correction_log`, `manual_upload_account`). Every factory now takes the `admin_user` fixture as a dependency so the seeded rows have a valid owner.
+- CI-simulated run clean: the app boots from environment variables alone (no `.env`), runs the full 0001 → 0012 migration chain via 0012's just-in-time admin seeding, and passes every test.
+
+### Alpha designation
+
+Still `0.9.0-alpha` because Phases 4 and 5 of the multi-user transition are not yet shipped:
+- Phase 4: repository pattern, per-user file-storage layout, tenant-isolation test suite for every read path (no endpoint may return user A's data to user B)
+- Phase 5: admin UI, registration flow, per-user settings, per-user webhooks, per-user LLM cache scope
+
+Single-operator deployments can run this in production: all existing behavior is preserved, no user-visible change, every query continues to return the same rows it returned yesterday. A second user cannot yet be created through the UI — that lands in Phase 5.
+
 ## [0.9.0-alpha.4] - 2026-04-21
 
 ### Theme

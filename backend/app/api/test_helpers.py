@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.deps import CurrentUser
-from app.models import EmailAccount, Invoice, LLMCache, ScanLog
+from app.models import EmailAccount, Invoice, LLMCache, ScanLog, User
 from app.services.email_scanner import encrypt_password
 from app.services.file_manager import FileManager
 
@@ -63,8 +63,18 @@ async def _reset_database(db: AsyncSession, settings: Settings) -> None:
 async def seed_smoke_data(db: AsyncSession, settings: Settings) -> SmokeSeedResponse:
     await _reset_database(db, settings)
 
+    admin = (
+        await db.execute(select(User).order_by(User.id).limit(1))
+    ).scalar_one_or_none()
+    if admin is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No admin user; bootstrap hook must run before seeding smoke data",
+        )
+
     file_manager = FileManager(settings.STORAGE_PATH)
     account = EmailAccount(
+        user_id=admin.id,
         name=SMOKE_ACCOUNT_NAME,
         type=SMOKE_ACCOUNT_TYPE,
         host=SMOKE_ACCOUNT_HOST,
@@ -87,6 +97,7 @@ async def seed_smoke_data(db: AsyncSession, settings: Settings) -> SmokeSeedResp
         extension=".pdf",
     )
     invoice = Invoice(
+        user_id=admin.id,
         invoice_no=SMOKE_INVOICE_NO,
         buyer=SMOKE_INVOICE_BUYER,
         seller=SMOKE_INVOICE_SELLER,
@@ -106,6 +117,7 @@ async def seed_smoke_data(db: AsyncSession, settings: Settings) -> SmokeSeedResp
     await db.flush()
 
     scan_log = ScanLog(
+        user_id=admin.id,
         email_account_id=account.id,
         started_at=datetime(2024, 1, 15, 8, 0, tzinfo=timezone.utc),
         finished_at=datetime(2024, 1, 15, 8, 1, tzinfo=timezone.utc),
@@ -133,6 +145,7 @@ async def _run_smoke_scan_in_session(db: AsyncSession) -> None:
     account.last_scan_uid = f"{SMOKE_ACCOUNT_LAST_UID}-triggered"
     db.add(
         ScanLog(
+            user_id=account.user_id,
             email_account_id=account.id,
             started_at=now,
             finished_at=now,

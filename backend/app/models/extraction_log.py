@@ -20,8 +20,8 @@ class ExtractionLog(Base):
     __tablename__: ClassVar[str] = "extraction_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     scan_log_id: Mapped[int] = mapped_column(ForeignKey("scan_logs.id", ondelete="CASCADE"), index=True)
     email_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)

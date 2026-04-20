@@ -52,9 +52,10 @@ def _strong_llm_extract(**overrides) -> InvoiceExtract:
 
 
 @pytest.fixture
-async def seeded_manual_account(db, settings) -> EmailAccount:
+async def seeded_manual_account(db, settings, admin_user) -> EmailAccount:
     del settings
     account = EmailAccount(
+        user_id=admin_user.id,
         name="Manual Uploads",
         type="manual",
         host=None,
@@ -96,7 +97,7 @@ async def test_process_uploaded_invoice_parse_failure_returns_parse_failed(
 
     result = await mu.process_uploaded_invoice(
         db=db, ai=_mock_ai(), file_mgr=file_mgr,
-        settings=settings, filename="bad.pdf", payload=b"xxx",
+        settings=settings, filename="bad.pdf", payload=b"xxx", user_id=1,
     )
     assert result.outcome == "parse_failed"
     assert "cannot parse" in result.detail
@@ -122,7 +123,7 @@ async def test_process_uploaded_invoice_scam_detected(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=_mock_ai(), file_mgr=file_mgr,
-        settings=settings, filename="scam.pdf", payload=b"x",
+        settings=settings, filename="scam.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "scam_detected"
     assert "lottery" in result.detail.lower()
@@ -155,7 +156,7 @@ async def test_process_uploaded_invoice_not_vat_invoice_llm_veto(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="notvat.pdf", payload=b"x",
+        settings=settings, filename="notvat.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "not_vat_invoice"
 
@@ -180,7 +181,7 @@ async def test_process_uploaded_invoice_low_confidence_after_enrichment(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="weak.pdf", payload=b"x",
+        settings=settings, filename="weak.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "low_confidence"
 
@@ -212,7 +213,7 @@ async def test_process_uploaded_invoice_enrichment_raises_continues_with_parser(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="ok.pdf", payload=b"x",
+        settings=settings, filename="ok.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved", result.detail
     assert result.invoice is not None
@@ -254,7 +255,7 @@ async def test_process_uploaded_invoice_merges_llm_fields_when_parser_weak(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="weak.pdf", payload=b"x",
+        settings=settings, filename="weak.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved"
     assert result.invoice.buyer == "Real Buyer"
@@ -279,6 +280,7 @@ async def test_process_uploaded_invoice_race_condition_returns_duplicate(
     # Pre-create a conflicting invoice by putting it in the DB after
     # the service's initial SELECT but before its flush.
     existing_invoice = Invoice(
+        user_id=1,
         invoice_no="RACE-001",
         buyer="Pre-existing",
         seller="Pre-existing",
@@ -304,7 +306,7 @@ async def test_process_uploaded_invoice_race_condition_returns_duplicate(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=_mock_ai(), file_mgr=file_mgr,
-        settings=settings, filename="race.pdf", payload=b"x",
+        settings=settings, filename="race.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "duplicate"
     assert result.existing_invoice_id == existing_invoice.id
@@ -320,7 +322,7 @@ async def test_process_uploaded_invoice_missing_manual_account_raises(
     with pytest.raises(RuntimeError, match="alembic upgrade head"):
         await mu.process_uploaded_invoice(
             db=db, ai=_mock_ai(), file_mgr=file_mgr,
-            settings=settings, filename="x.pdf", payload=b"x",
+            settings=settings, filename="x.pdf", payload=b"x", user_id=1,
         )
 
 
@@ -342,7 +344,7 @@ async def test_process_uploaded_invoice_embedding_failure_does_not_abort(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="ok.pdf", payload=b"x",
+        settings=settings, filename="ok.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved"
     assert result.invoice is not None
@@ -375,7 +377,7 @@ async def test_process_uploaded_invoice_embedding_success_stores_vector(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="ok.pdf", payload=b"x",
+        settings=settings, filename="ok.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved"
     assert result.invoice is not None
@@ -415,7 +417,7 @@ async def test_process_uploaded_invoice_llm_merge_respects_parser_strong_invoice
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="x.pdf", payload=b"x",
+        settings=settings, filename="x.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved"
     assert result.invoice.invoice_no == "88888888"
@@ -459,7 +461,7 @@ async def test_process_uploaded_invoice_llm_merge_skips_unknown_fields(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="x.pdf", payload=b"x",
+        settings=settings, filename="x.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved"
     # Parser fields kept despite LLM returning 未知
@@ -584,7 +586,7 @@ async def test_process_uploaded_invoice_accepts_railway_eticket_with_image_pdf(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="railway.pdf", payload=b"x",
+        settings=settings, filename="railway.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved", (
         f"Railway e-ticket should save despite unreadable amount; got {result.outcome} / {result.detail}"
@@ -622,7 +624,7 @@ async def test_process_uploaded_invoice_accepts_airline_eitinerary(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="flight.pdf", payload=b"x",
+        settings=settings, filename="flight.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved", f"{result.outcome} / {result.detail}"
     assert result.invoice is not None
@@ -674,7 +676,7 @@ async def test_process_uploaded_invoice_still_rejects_didi_ride_itinerary(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="didi.pdf", payload=b"x",
+        settings=settings, filename="didi.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "not_vat_invoice", (
         f"Didi ride-itinerary must still be rejected; got {result.outcome}"
@@ -707,7 +709,7 @@ async def test_process_uploaded_invoice_railway_eticket_with_readable_amount(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="railway-hires.pdf", payload=b"x",
+        settings=settings, filename="railway-hires.pdf", payload=b"x", user_id=1,
     )
     assert result.outcome == "saved"
     assert result.invoice is not None
@@ -758,7 +760,7 @@ async def test_process_uploaded_invoice_merge_skips_zero_amount_from_llm(
     file_mgr = FileManager(settings.STORAGE_PATH)
     result = await mu.process_uploaded_invoice(
         db=db, ai=ai, file_mgr=file_mgr,
-        settings=settings, filename="x.pdf", payload=b"x",
+        settings=settings, filename="x.pdf", payload=b"x", user_id=1,
     )
     # The crucial assertion: amount=0.05 from LLM did NOT get merged in,
     # because it's below the 0.10 sentinel. Invoice was saved (not

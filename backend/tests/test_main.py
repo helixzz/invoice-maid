@@ -20,7 +20,7 @@ async def test_health_and_spa_catch_all(
 ) -> None:
     account = await create_email_account()
     await create_invoice(email_account=account)
-    scan_log = ScanLog(email_account_id=account.id, finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    scan_log = ScanLog(user_id=account.user_id, email_account_id=account.id, finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc))
     db.add(scan_log)
     await db.commit()
     monkeypatch.setattr(main_module, "get_scheduler", lambda: type("Scheduler", (), {"running": True})())
@@ -90,7 +90,7 @@ async def test_health_normalizes_naive_last_scan_datetime(
     client, db, create_email_account, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     account = await create_email_account()
-    db.add(ScanLog(email_account_id=account.id, finished_at=datetime(2026, 1, 2)))
+    db.add(ScanLog(user_id=account.user_id, email_account_id=account.id, finished_at=datetime(2026, 1, 2)))
     await db.commit()
     monkeypatch.setattr(main_module, "get_scheduler", lambda: type("Scheduler", (), {"running": True})())
 

@@ -23,7 +23,7 @@ async def test_trigger_scan_and_list_logs(client, auth_headers, db, create_email
 
     account = await create_email_account()
     log = ScanLog(
-        email_account_id=account.id,
+        user_id=account.user_id, email_account_id=account.id,
         started_at=datetime(2024, 1, 1),
         finished_at=datetime(2024, 1, 1, 0, 1),
         emails_scanned=2,
@@ -45,7 +45,7 @@ async def test_trigger_scan_and_list_logs(client, auth_headers, db, create_email
 async def test_scan_logs_preserve_timezone_aware_datetimes(client, auth_headers, db, create_email_account) -> None:
     account = await create_email_account()
     log = ScanLog(
-        email_account_id=account.id,
+        user_id=account.user_id, email_account_id=account.id,
         started_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
         finished_at=datetime(2024, 6, 15, 12, 5, 0, tzinfo=timezone.utc),
         emails_scanned=50,

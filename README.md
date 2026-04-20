@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.0--alpha.4-blue" alt="v0.9.0-alpha.4">
+  <img src="https://img.shields.io/badge/version-0.9.0--alpha.5-blue" alt="v0.9.0-alpha.5">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-526%20passing-brightgreen" alt="526 tests">
+  <img src="https://img.shields.io/badge/Tests-534%20passing-brightgreen" alt="534 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -118,7 +118,7 @@ Two invoice sources feed the **same** five-stage pipeline. The email scanner run
 - **Rate limiting** — brute-force protection (10 req/min/IP) on login
 - **Rich health endpoint** — reports DB, scheduler, sqlite-vec, invoice count, and last-scan time for monitoring
 - **Outbound webhooks** — `invoice.created` events with HMAC-SHA256 signed payloads (GitHub-style `X-Signature-256` header); delivery failures are logged but never block the scan pipeline
-- **100% test coverage** — 526 unit + e2e tests, enforced in CI with `--cov-fail-under=100`
+- **100% test coverage** — 534 unit + e2e tests, enforced in CI with `--cov-fail-under=100`
 
 ---
 
@@ -181,7 +181,7 @@ Configure your LLM provider, API key, chat model, and embedding model from the b
 | Database | SQLite (WAL), FTS5, sqlite-vec |
 | AI | OpenAI-compatible HTTP API |
 | Parsing | pdfplumber, PyMuPDF, easyofd, lxml, pyzbar, imap-tools, msal |
-| Testing | pytest (526 tests, 100% coverage), Playwright (e2e smoke) |
+| Testing | pytest (534 tests, 100% coverage), Playwright (e2e smoke) |
 
 Roughly 6 800 lines of Python and 3 600 lines of Vue / TypeScript.
 

@@ -257,11 +257,12 @@ def mock_ai_service() -> SimpleNamespace:
 
 @pytest_asyncio.fixture
 async def create_email_account(
-    db: AsyncSession, settings: Settings
+    db: AsyncSession, settings: Settings, admin_user: "User"
 ) -> Callable[..., Awaitable[EmailAccount]]:
     async def factory(**overrides) -> EmailAccount:
         password = overrides.pop("password", "secret")
         defaults = {
+            "user_id": admin_user.id,
             "name": "Test Account",
             "type": "imap",
             "host": "imap.example.com",
@@ -287,11 +288,14 @@ async def create_email_account(
 
 @pytest_asyncio.fixture
 async def create_invoice(
-    db: AsyncSession, create_email_account: Callable[..., Awaitable[EmailAccount]]
+    db: AsyncSession,
+    create_email_account: Callable[..., Awaitable[EmailAccount]],
+    admin_user: "User",
 ) -> Callable[..., Awaitable[Invoice]]:
     async def factory(**overrides) -> Invoice:
         account = overrides.pop("email_account", None) or await create_email_account()
         defaults = {
+            "user_id": admin_user.id,
             "invoice_no": "INV-001",
             "buyer": "Alpha Buyer",
             "seller": "Beta Seller",
@@ -322,11 +326,14 @@ async def create_invoice(
 
 @pytest_asyncio.fixture
 async def create_scan_log(
-    db: AsyncSession, create_email_account: Callable[..., Awaitable[EmailAccount]]
+    db: AsyncSession,
+    create_email_account: Callable[..., Awaitable[EmailAccount]],
+    admin_user: "User",
 ) -> Callable[..., Awaitable[object]]:
     async def factory(**overrides):
         account = overrides.pop("email_account", None) or await create_email_account()
         defaults = {
+            "user_id": admin_user.id,
             "email_account_id": account.id,
             "emails_scanned": 0,
             "invoices_found": 0,
@@ -345,10 +352,13 @@ async def create_scan_log(
 
 
 @pytest_asyncio.fixture
-async def create_extraction_log(db: AsyncSession, create_scan_log) -> Callable[..., Awaitable[ExtractionLog]]:
+async def create_extraction_log(
+    db: AsyncSession, create_scan_log, admin_user: "User"
+) -> Callable[..., Awaitable[ExtractionLog]]:
     async def factory(**overrides) -> ExtractionLog:
         scan_log = overrides.pop("scan_log", None) or await create_scan_log()
         defaults = {
+            "user_id": admin_user.id,
             "scan_log_id": scan_log.id,
             "email_uid": "uid-1",
             "email_subject": "Invoice",
@@ -369,10 +379,13 @@ async def create_extraction_log(db: AsyncSession, create_scan_log) -> Callable[.
 
 
 @pytest_asyncio.fixture
-async def create_correction_log(db: AsyncSession, create_invoice) -> Callable[..., Awaitable[CorrectionLog]]:
+async def create_correction_log(
+    db: AsyncSession, create_invoice, admin_user: "User"
+) -> Callable[..., Awaitable[CorrectionLog]]:
     async def factory(**overrides) -> CorrectionLog:
         invoice = overrides.pop("invoice", None) or await create_invoice()
         defaults = {
+            "user_id": admin_user.id,
             "invoice_id": invoice.id,
             "field_name": "buyer",
             "old_value": "Alpha Buyer",
@@ -390,7 +403,7 @@ async def create_correction_log(db: AsyncSession, create_invoice) -> Callable[..
 
 @pytest_asyncio.fixture
 async def manual_upload_account(
-    db: AsyncSession, settings: Settings
+    db: AsyncSession, settings: Settings, admin_user: "User"
 ) -> EmailAccount:
     """Seed the sentinel 'Manual Uploads' EmailAccount that the upload
     endpoint requires. In production this row is created by Alembic
@@ -399,6 +412,7 @@ async def manual_upload_account(
     exercise ``/invoices/upload`` must request this fixture explicitly."""
     del settings
     account = EmailAccount(
+        user_id=admin_user.id,
         name="Manual Uploads",
         type="manual",
         host=None,

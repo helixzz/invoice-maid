@@ -148,6 +148,7 @@ async def create_account(
         )
 
     account = EmailAccount(
+        user_id=_current_user.id,
         name=payload.name,
         type=payload.type,
         host=payload.host,

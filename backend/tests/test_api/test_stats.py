@@ -60,7 +60,7 @@ async def test_get_stats_populated_db(client, auth_headers, db, create_email_acc
     )
 
     older_log = ScanLog(
-        email_account_id=active_account.id,
+        user_id=active_account.user_id, email_account_id=active_account.id,
         started_at=datetime(2024, 1, 1, 8, 0, tzinfo=timezone.utc),
         finished_at=datetime(2024, 1, 1, 8, 5, tzinfo=timezone.utc),
         emails_scanned=5,
@@ -68,7 +68,7 @@ async def test_get_stats_populated_db(client, auth_headers, db, create_email_acc
         error_message=None,
     )
     latest_log = ScanLog(
-        email_account_id=active_account.id,
+        user_id=active_account.user_id, email_account_id=active_account.id,
         started_at=datetime(2024, 1, 2, 9, 0, tzinfo=timezone.utc),
         finished_at=datetime(2024, 1, 2, 9, 10, tzinfo=timezone.utc),
         emails_scanned=8,

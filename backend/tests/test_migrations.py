@@ -332,3 +332,298 @@ def test_0011_upgrade_and_downgrade_when_all_tables_exist(
             col_names = [c[1] for c in cols]
             assert "user_id" not in col_names
     engine.dispose()
+
+
+@pytest.fixture
+def bootstrap_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set ADMIN_EMAIL + ADMIN_PASSWORD_HASH so migration 0012's
+    just-in-time admin seeding can run when users[] is empty."""
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@local")
+    monkeypatch.setenv(
+        "ADMIN_PASSWORD_HASH",
+        "$2b$12$placeholderhashforunittestsonly",
+    )
+
+
+def _seed_admin_user(db_path: Path) -> None:
+    """Insert users[1] manually (simulating the bootstrap hook running
+    after migration 0011 but before migration 0012 — the production
+    path on an upgrade from v0.9.0-alpha.4)."""
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO users (id, email, hashed_password, is_active, is_admin, "
+                "created_at, updated_at) VALUES "
+                "(1, 'admin@local', 'hash', 1, 1, '2026-04-21', '2026-04-21')"
+            )
+        )
+    engine.dispose()
+
+
+def _insert_invoice(
+    db_path: Path, *, invoice_no: str, user_id: int | None = 1, email_account_id: int = 1
+) -> None:
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO invoices (invoice_no, buyer, seller, amount, "
+                "invoice_date, invoice_type, file_path, raw_text, email_uid, "
+                "email_account_id, source_format, extraction_method, confidence, "
+                "is_manually_corrected, created_at, user_id) VALUES "
+                "(:invoice_no, 'B', 'S', 10.00, '2026-01-01', 'vat', 'f.pdf', 'buyer seller summary', "
+                "'u1', :email_account_id, 'pdf', 'regex', 0.9, 0, '2026-04-21', :user_id)"
+            ),
+            {"invoice_no": invoice_no, "user_id": user_id, "email_account_id": email_account_id},
+        )
+    engine.dispose()
+
+
+def test_0012_upgrade_tightens_user_id_and_replaces_unique(
+    migration_db: Path,
+) -> None:
+    """Upgrade path: users[1] already exists, existing invoices are
+    carried forward, user_id goes NOT NULL with FK, the global
+    UNIQUE(invoice_no) index becomes non-unique, and a composite
+    UNIQUE(user_id, invoice_no) index takes its place."""
+    _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+    _seed_admin_user(migration_db)
+    _insert_invoice(migration_db, invoice_no="INV-1", user_id=1)
+
+    _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    assert _current_revision(migration_db) == "0012_tighten_user_id_constraints"
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        cols = {
+            row[1]: row
+            for row in conn.execute(sa.text("PRAGMA table_info(invoices)")).all()
+        }
+        user_id_col = cols["user_id"]
+        assert user_id_col[3] == 1, "invoices.user_id must be NOT NULL"
+
+        indexes = {
+            row[1]: row[0]
+            for row in conn.execute(
+                sa.text(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE type='index' AND tbl_name='invoices'"
+                )
+            ).all()
+        }
+        assert "uq_invoices_user_id_invoice_no" in indexes
+        assert "ix_invoices_invoice_no" in indexes
+
+        composite_sql = conn.execute(
+            sa.text(
+                "SELECT sql FROM sqlite_master WHERE name='uq_invoices_user_id_invoice_no'"
+            )
+        ).scalar_one()
+        assert "UNIQUE" in composite_sql.upper()
+        assert "user_id" in composite_sql
+        assert "invoice_no" in composite_sql
+
+        legacy_sql = conn.execute(
+            sa.text("SELECT sql FROM sqlite_master WHERE name='ix_invoices_invoice_no'")
+        ).scalar_one()
+        assert "UNIQUE" not in legacy_sql.upper()
+
+        fks = conn.execute(sa.text("PRAGMA foreign_key_list(invoices)")).all()
+        fk_targets = [(fk[2], fk[3], fk[4], fk[6]) for fk in fks]
+        assert ("users", "user_id", "id", "CASCADE") in fk_targets
+    engine.dispose()
+
+
+def test_0012_recreates_fts_triggers_and_rebuilds_index(
+    migration_db: Path,
+) -> None:
+    """FTS5 trigger lifecycle: the three invoices_ai/ad/au triggers
+    don't survive a batch_alter_table rewrite. 0012 drops them up front
+    and recreates them after, and repopulates the invoices_fts index so
+    FTS queries against existing rows still return the right docids."""
+    _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+    _seed_admin_user(migration_db)
+    _insert_invoice(migration_db, invoice_no="INV-FTS", user_id=1)
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS invoices_fts USING fts5("
+                "invoice_no, buyer, seller, invoice_type, item_summary, raw_text, "
+                "content='invoices', content_rowid='id')"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "CREATE TRIGGER IF NOT EXISTS invoices_ai AFTER INSERT ON invoices BEGIN "
+                "INSERT INTO invoices_fts(rowid, invoice_no, buyer, seller, invoice_type, "
+                "item_summary, raw_text) VALUES (new.id, new.invoice_no, new.buyer, "
+                "new.seller, new.invoice_type, new.item_summary, new.raw_text); END"
+            )
+        )
+        conn.execute(sa.text("INSERT INTO invoices_fts(invoices_fts) VALUES ('rebuild')"))
+    engine.dispose()
+
+    _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        triggers = {
+            row[0]
+            for row in conn.execute(
+                sa.text(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='invoices'"
+                )
+            ).all()
+        }
+        assert triggers == {"invoices_ai", "invoices_ad", "invoices_au"}, (
+            f"FTS triggers must be recreated, got {triggers}"
+        )
+
+        match_row = conn.execute(
+            sa.text(
+                "SELECT rowid FROM invoices_fts WHERE invoices_fts MATCH 'buyer' LIMIT 1"
+            )
+        ).first()
+        assert match_row is not None, "FTS index must contain pre-existing invoice rows"
+    engine.dispose()
+
+
+def test_0012_seeds_admin_from_env_when_users_empty(
+    migration_db: Path, bootstrap_env: None
+) -> None:
+    """Fresh-install path: alembic runs before the app has ever booted,
+    users table is empty. Migration 0012 reads ADMIN_EMAIL and
+    ADMIN_PASSWORD_HASH from the environment and inserts users[1]
+    itself so the NOT NULL + FK tightening succeeds."""
+    del bootstrap_env
+    _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+
+    _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        users = conn.execute(sa.text("SELECT id, email FROM users")).all()
+        assert len(users) == 1
+        assert users[0][0] == 1
+        assert users[0][1] == "admin@local"
+
+        manual_account_user = conn.execute(
+            sa.text("SELECT user_id FROM email_accounts WHERE type='manual'")
+        ).scalar_one_or_none()
+        assert manual_account_user == 1, (
+            "The manual-upload sentinel account from migration 0008 "
+            "must have its user_id backfilled by 0012"
+        )
+    engine.dispose()
+
+
+def test_0012_refuses_to_run_without_admin_seed_inputs(
+    migration_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If users table is empty and ADMIN_EMAIL / ADMIN_PASSWORD_HASH are
+    missing, the migration must fail loudly with an actionable message
+    rather than silently leave NULL user_ids in place."""
+    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
+
+    _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+
+    with pytest.raises(RuntimeError, match="bootstrap admin"):
+        _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+
+def test_0012_downgrade_refuses_on_cross_user_invoice_no_collision(
+    migration_db: Path,
+) -> None:
+    """The pre-0012 schema enforces global UNIQUE(invoice_no). If a
+    second user has been added and both own an invoice with the same
+    invoice_no, downgrading would violate that constraint.
+    Preflight must refuse rather than either blowing up halfway
+    through or silently dropping data."""
+    _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+    _seed_admin_user(migration_db)
+    _insert_invoice(migration_db, invoice_no="INV-CONFLICT", user_id=1)
+
+    _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO users (id, email, hashed_password, is_active, "
+                "is_admin, created_at, updated_at) VALUES "
+                "(2, 'other@example.com', 'h', 1, 0, '2026-04-21', '2026-04-21')"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "INSERT INTO email_accounts (id, user_id, name, type, username, "
+                "is_active, created_at) VALUES "
+                "(99, 2, 'Other', 'imap', 'o@example.com', 1, '2026-04-21')"
+            )
+        )
+    engine.dispose()
+
+    _insert_invoice(migration_db, invoice_no="INV-CONFLICT", user_id=2, email_account_id=99)
+
+    with pytest.raises(RuntimeError, match="Cannot downgrade 0012"):
+        _downgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+
+
+def test_0012_downgrade_restores_nullable_and_global_unique(
+    migration_db: Path,
+) -> None:
+    """Clean downgrade: when no invoice_no collisions exist, 0012
+    downgrades cleanly back to the 0011 shape — user_id nullable,
+    no FK to users, and ix_invoices_invoice_no back to UNIQUE."""
+    _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+    _seed_admin_user(migration_db)
+    _insert_invoice(migration_db, invoice_no="INV-ROUNDTRIP", user_id=1)
+
+    _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
+    _downgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+
+    assert _current_revision(migration_db) == "0011_add_user_id_to_tenant_tables"
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        cols = {
+            row[1]: row
+            for row in conn.execute(sa.text("PRAGMA table_info(invoices)")).all()
+        }
+        assert cols["user_id"][3] == 0, "user_id must be nullable again"
+
+        fks = conn.execute(sa.text("PRAGMA foreign_key_list(invoices)")).all()
+        fk_targets = [fk[2] for fk in fks]
+        assert "users" not in fk_targets, "FK to users must be dropped on downgrade"
+
+        legacy_sql = conn.execute(
+            sa.text(
+                "SELECT sql FROM sqlite_master WHERE name='ix_invoices_invoice_no'"
+            )
+        ).scalar_one()
+        assert "UNIQUE" in legacy_sql.upper()
+
+        composite = conn.execute(
+            sa.text(
+                "SELECT 1 FROM sqlite_master WHERE name='uq_invoices_user_id_invoice_no'"
+            )
+        ).first()
+        assert composite is None
+
+        surviving = conn.execute(
+            sa.text("SELECT invoice_no FROM invoices")
+        ).scalar_one()
+        assert surviving == "INV-ROUNDTRIP"
+    engine.dispose()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 import app.api.scan as scan_api
@@ -86,7 +88,8 @@ async def test_run_smoke_scan_returns_when_smoke_account_missing(settings, db) -
     assert await test_helpers_api._run_smoke_scan_in_session(db) is None
 
 
-async def test_run_smoke_scan_uses_get_db_generator(settings, db, monkeypatch) -> None:
+async def test_run_smoke_scan_uses_get_db_generator(settings, db, monkeypatch, admin_user) -> None:
+    del admin_user
     settings.ENABLE_TEST_HELPERS = True
     await test_helpers_api.seed_smoke_data(db, settings)
 
@@ -111,3 +114,15 @@ async def test_run_smoke_scan_returns_when_get_db_yields_nothing(settings, monke
     monkeypatch.setattr(test_helpers_api, "get_db", empty_get_db)
 
     assert await test_helpers_api.run_smoke_scan() is None
+
+
+async def test_seed_smoke_data_raises_when_no_admin_user(db, settings) -> None:
+    """The seeder reuses the bootstrap admin to satisfy NOT NULL user_id
+    on the seeded EmailAccount/Invoice/ScanLog. If no User row exists
+    (bootstrap hook never ran), the seeder must fail loudly rather than
+    silently insert rows with no owner."""
+    with pytest.raises(HTTPException) as excinfo:
+        await test_helpers_api.seed_smoke_data(db, settings)
+
+    assert excinfo.value.status_code == 500
+    assert "bootstrap hook" in excinfo.value.detail

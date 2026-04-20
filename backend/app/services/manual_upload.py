@@ -84,10 +84,11 @@ async def _get_or_fail_manual_account(db: AsyncSession) -> EmailAccount:
 
 
 async def _create_upload_scan_log(
-    db: AsyncSession, account_id: int, filename: str
+    db: AsyncSession, account_id: int, user_id: int, filename: str
 ) -> ScanLog:
     del filename
     scan_log = ScanLog(
+        user_id=user_id,
         email_account_id=account_id,
         started_at=datetime.now(timezone.utc),
         emails_scanned=1,
@@ -201,13 +202,14 @@ async def process_uploaded_invoice(
     settings: Settings,
     filename: str,
     payload: bytes,
+    user_id: int,
 ) -> UploadResult:
     """End-to-end processing of one uploaded file.
     Commits a ScanLog + ExtractionLog + (on success) an Invoice row.
     Never raises for expected outcomes — returns UploadResult instead so
     the endpoint can map each outcome to the right HTTP status."""
     account = await _get_or_fail_manual_account(db)
-    scan_log = await _create_upload_scan_log(db, account.id, filename)
+    scan_log = await _create_upload_scan_log(db, account.id, user_id, filename)
     subject = f"Manual upload: {filename}"
 
     def _log_extraction(
@@ -221,6 +223,7 @@ async def process_uploaded_invoice(
     ) -> None:
         db.add(
             ExtractionLog(
+                user_id=user_id,
                 scan_log_id=scan_log.id,
                 email_uid=None,
                 email_subject=subject,
@@ -425,6 +428,7 @@ async def process_uploaded_invoice(
         ext,
     )
     invoice = Invoice(
+        user_id=user_id,
         invoice_no=parsed.invoice_no,
         buyer=parsed.buyer or "未知",
         seller=parsed.seller or "未知",
@@ -454,7 +458,7 @@ async def process_uploaded_invoice(
         # engine requires nested-session gymnastics that trip SQLAlchemy's
         # greenlet machinery.
         await db.rollback()
-        scan_log = await _create_upload_scan_log(db, account.id, filename)
+        scan_log = await _create_upload_scan_log(db, account.id, user_id, filename)
         dup_row = await db.execute(
             select(Invoice).where(Invoice.invoice_no == parsed.invoice_no)
         )

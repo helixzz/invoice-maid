@@ -196,6 +196,7 @@ def _truncate_error_detail(error_detail: str | None) -> str | None:
 
 def _record_extraction_log(
     *,
+    user_id: int,
     scan_log_id: int,
     email_uid: str | None,
     email_subject: str,
@@ -210,6 +211,7 @@ def _record_extraction_log(
     error_detail: str | None = None,
 ) -> ExtractionLog:
     return ExtractionLog(
+        user_id=user_id,
         scan_log_id=scan_log_id,
         email_uid=email_uid,
         email_subject=email_subject,
@@ -301,6 +303,7 @@ async def _send_invoice_webhook(db, settings: Settings, invoice: Invoice) -> Non
 
     db.add(
         WebhookLog(
+            user_id=invoice.user_id,
             event="invoice.created",
             invoice_no=invoice.invoice_no,
             url=settings.WEBHOOK_URL,
@@ -320,6 +323,7 @@ async def _process_single_email(
     settings: Settings,
     log_id: int,
     account_id: int,
+    user_id: int,
     scanner: Any = None,
     account: Any = None,
 ) -> _EmailResult:
@@ -365,6 +369,7 @@ async def _process_single_email(
                 if not is_invoice:
                     db.add(
                         _record_extraction_log(
+                            user_id=user_id,
                             scan_log_id=log_id,
                             email_uid=email_data.uid,
                             email_subject=email_data.subject,
@@ -399,6 +404,7 @@ async def _process_single_email(
                     if await _was_attachment_seen(db, email_data.uid, filename):
                         db.add(
                             _record_extraction_log(
+                                user_id=user_id,
                                 scan_log_id=log_id,
                                 email_uid=email_data.uid,
                                 email_subject=email_data.subject,
@@ -487,6 +493,7 @@ async def _process_single_email(
                         if scam_hit:
                             db.add(
                                 _record_extraction_log(
+                                    user_id=user_id,
                                     scan_log_id=log_id,
                                     email_uid=email_data.uid,
                                     email_subject=email_data.subject,
@@ -521,6 +528,7 @@ async def _process_single_email(
                         if llm_rejected or (not type_is_valid and heuristic_rejected):
                             db.add(
                                 _record_extraction_log(
+                                    user_id=user_id,
                                     scan_log_id=log_id,
                                     email_uid=email_data.uid,
                                     email_subject=email_data.subject,
@@ -541,6 +549,7 @@ async def _process_single_email(
                         if parsed.confidence < 0.6 or not parsed.invoice_no or amount_is_sentinel:
                             db.add(
                                 _record_extraction_log(
+                                    user_id=user_id,
                                     scan_log_id=log_id,
                                     email_uid=email_data.uid,
                                     email_subject=email_data.subject,
@@ -566,6 +575,7 @@ async def _process_single_email(
                         if existing.scalar_one_or_none():
                             db.add(
                                 _record_extraction_log(
+                                    user_id=user_id,
                                     scan_log_id=log_id,
                                     email_uid=email_data.uid,
                                     email_subject=email_data.subject,
@@ -592,6 +602,7 @@ async def _process_single_email(
                             ext,
                         )
                         invoice = Invoice(
+                            user_id=user_id,
                             invoice_no=parsed.invoice_no,
                             buyer=parsed.buyer or "未知",
                             seller=parsed.seller or "未知",
@@ -614,6 +625,7 @@ async def _process_single_email(
                             await db.rollback()
                             db.add(
                                 _record_extraction_log(
+                                    user_id=user_id,
                                     scan_log_id=log_id,
                                     email_uid=email_data.uid,
                                     email_subject=email_data.subject,
@@ -630,6 +642,7 @@ async def _process_single_email(
 
                         db.add(
                             _record_extraction_log(
+                                user_id=user_id,
                                 scan_log_id=log_id,
                                 email_uid=email_data.uid,
                                 email_subject=email_data.subject,
@@ -664,6 +677,7 @@ async def _process_single_email(
                         logger.error("Failed to process invoice payload %s: %s", filename, exc)
                         db.add(
                             _record_extraction_log(
+                                user_id=user_id,
                                 scan_log_id=log_id,
                                 email_uid=email_data.uid,
                                 email_subject=email_data.subject,
@@ -713,6 +727,7 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                 for account_idx, account in enumerate(accounts):
                     account_id = account.id
                     account_name = account.name
+                    account_user_id = account.user_id
                     await sp.update_progress(
                         current_account_idx=account_idx + 1,
                         current_account_name=account_name,
@@ -720,6 +735,7 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                         emails_processed=0,
                     )
                     log = ScanLog(
+                        user_id=account_user_id,
                         email_account_id=account_id,
                         started_at=datetime.now(timezone.utc),
                         emails_scanned=0,
@@ -767,6 +783,7 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                                 settings=settings,
                                 log_id=log.id,
                                 account_id=account.id,
+                                user_id=account.user_id,
                                 scanner=scanner,
                                 account=account,
                             )

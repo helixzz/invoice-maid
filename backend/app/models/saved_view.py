@@ -17,8 +17,8 @@ class SavedView(Base):
     __tablename__: ClassVar[str] = "saved_views"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255))
     filter_json: Mapped[str] = mapped_column(Text())
