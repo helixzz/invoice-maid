@@ -103,6 +103,8 @@ def upgrade() -> None:
     storage = _derive_storage_path()
     dry = _is_dry_run()
 
+    logger.info("migration 0013 storage_path=%s dry_run=%s", storage, dry)
+
     if dry:
         logger.warning("DRY_RUN=1 — no disk or DB writes will be performed")
 
@@ -185,6 +187,8 @@ def downgrade() -> None:
     bind = op.get_bind()
     storage = _derive_storage_path()
     dry = _is_dry_run()
+
+    logger.info("migration 0013 downgrade storage_path=%s dry_run=%s", storage, dry)
 
     if dry:
         logger.warning("DRY_RUN=1 — no disk or DB writes will be performed")

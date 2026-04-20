@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.7.post1] - 2026-04-21
+
+### Hotfix for 0.9.0-alpha.7 migration 0013
+
+**Problem**: On deployments where `STORAGE_PATH` lives in `backend/.env` rather than being set as a systemd-level environment variable, alembic's `env.py` did not load `.env` before running migrations. Migration 0013's `_derive_storage_path` consequently hit its URL-derived fallback (`{db_parent.parent}/invoices`), which on production resolved to a path that did not contain the actual invoice files. Every row in `invoices.file_path` was rewritten to `users/{user_id}/invoices/{filename}` as expected, but the files themselves were NOT moved — they stayed at the flat layout. Downloads for every existing invoice would have returned 404 if not for the manual recovery.
+
+**Manual recovery on production**: all 239 flat files were moved to their DB-declared `users/1/invoices/` subdirectory via a one-off script before any user-visible impact. Production recovered before the end of the deploy window.
+
+**Fix in this release**:
+
+1. **`alembic/env.py` now auto-loads `backend/.env` on every invocation** via python-dotenv (already a transitive dependency). `load_dotenv(override=False)` respects any env vars already set by the caller, so systemd-level vars continue to win. Honors `ALEMBIC_SKIP_DOTENV=1` as a test-only escape hatch.
+2. **Migration 0013 now logs the resolved `STORAGE_PATH` at the start of both upgrade and downgrade** so operators can immediately spot a misresolution from the log line itself: `migration 0013 storage_path=... dry_run=...`.
+3. **Two regression tests** now set `ALEMBIC_SKIP_DOTENV=1` so they can exercise the missing-env fallback branches cleanly regardless of whether the developer has `.env` in their workspace.
+
+### Why a `.post1` and not `alpha.8`?
+
+`alpha.8` is reserved for the next planned feature slice (registration flow). A `.post1` post-release per PEP 440 is the right label for "same feature scope as `.7`, bug-fix only." Operators upgrading from `.7` directly to a later release (`alpha.8`, etc.) will transit through this fix automatically; no extra action needed.
+
+### Tests
+
+571 passing, 100% coverage (no new tests — the two tests that already exercised these fallback branches now use `ALEMBIC_SKIP_DOTENV=1` to neutralize the dev `.env` so they reliably fail if the fix regresses).
+
 ## [0.9.0-alpha.7] - 2026-04-21
 
 ### Theme

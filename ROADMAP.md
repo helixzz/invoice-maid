@@ -163,6 +163,18 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.7.post1 — Released
+
+**Hotfix**: alembic's ``env.py`` did not auto-load ``backend/.env``, so migration 0013's ``_derive_storage_path`` hit its URL-derived fallback on production deployments where ``STORAGE_PATH`` lives in ``.env`` rather than as a systemd-level env var. The DB ``file_path`` column was rewritten to ``users/{user_id}/...`` correctly, but the files stayed at the flat layout — downloads would have 404'd for every invoice.
+
+Recovery: all 239 flat files were moved to their DB-declared user subdirectory via a one-off script before end-of-deploy. Production never saw user-visible impact.
+
+Fix: ``env.py`` now auto-loads ``backend/.env`` on every invocation (via python-dotenv, already a transitive dep). ``load_dotenv(override=False)`` respects systemd-level vars. ``ALEMBIC_SKIP_DOTENV=1`` as a test-only escape hatch. Migration 0013 also logs the resolved ``STORAGE_PATH`` at the start of upgrade/downgrade so operators can spot misresolution from a single log line.
+
+See [CHANGELOG.md](CHANGELOG.md) for full incident report.
+
+---
+
 ## v0.9.0-alpha.7 — Released
 
 **Phase 4b.1 of multi-user transition:** per-user file storage.

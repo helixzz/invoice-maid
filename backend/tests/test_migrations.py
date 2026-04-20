@@ -531,11 +531,19 @@ def test_0012_refuses_to_run_without_admin_seed_inputs(
 ) -> None:
     """If users table is empty and ADMIN_EMAIL / ADMIN_PASSWORD_HASH are
     missing, the migration must fail loudly with an actionable message
-    rather than silently leave NULL user_ids in place."""
-    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
-    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
+    rather than silently leave NULL user_ids in place.
+
+    Note: alembic env.py calls ``load_dotenv`` on every invocation to
+    surface ``backend/.env`` to migrations (see
+    ``_load_dotenv_if_present``). That would silently re-hydrate the
+    admin credentials here; we neutralize it for this test by
+    pointing env.py at a non-existent path."""
+    monkeypatch.setenv("ALEMBIC_SKIP_DOTENV", "1")
 
     _upgrade_to(migration_db, "0011_add_user_id_to_tenant_tables")
+
+    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
 
     with pytest.raises(RuntimeError, match="bootstrap admin"):
         _upgrade_to(migration_db, "0012_tighten_user_id_constraints")
@@ -898,8 +906,13 @@ def test_0013_storage_path_falls_back_to_db_relative_when_env_unset(
     (``{db_parent.parent}/invoices``) -> ``./data/invoices``. This
     exercises the URL-derived branch so a deploy that sets
     ``DATABASE_URL`` but forgets ``STORAGE_PATH`` still targets the
-    right directory."""
+    right directory. ``ALEMBIC_SKIP_DOTENV`` disables env.py's
+    ``.env`` auto-load so a dev ``.env`` doesn't smuggle its
+    ``STORAGE_PATH`` in."""
+    monkeypatch.setenv("ALEMBIC_SKIP_DOTENV", "1")
     monkeypatch.delenv("STORAGE_PATH", raising=False)
+
+    _seed_invoice_infra(migration_db)
 
     storage_root = migration_db.parent.parent / "invoices"
     storage_root.mkdir(parents=True, exist_ok=True)
@@ -907,7 +920,6 @@ def test_0013_storage_path_falls_back_to_db_relative_when_env_unset(
     flat_file = storage_root / "derived.pdf"
     flat_file.write_bytes(b"derived-branch")
 
-    _seed_invoice_infra(migration_db)
     _insert_invoice_with_file_path(
         migration_db, invoice_id=1, invoice_no="INV-D", user_id=1,
         file_path="derived.pdf",
