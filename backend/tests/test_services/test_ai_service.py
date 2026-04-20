@@ -296,3 +296,63 @@ async def test_set_cache_rolls_back_on_integrity_error(db, settings, monkeypatch
     await service._set_cache(db, "hash", "extract", "{}")
 
     assert rollback_calls == [True]
+
+
+def test_extract_prompt_contains_transport_bare_currency_rule(settings) -> None:
+    """Regression for v0.8.9: the extract prompt must explicitly authorize
+    the LLM to bind a bare ``￥N.NN`` fragment to ``amount`` on transport
+    e-tickets, even without a ``票价`` label. Without this clause the LLM
+    falls back to the 0.01 sentinel (see production a test-case invoice where
+    `￥6.50` sat unlabeled in the text and was discarded).
+
+    A future edit removing this clause should fail this test loudly
+    rather than silently reintroducing the regression."""
+    from app.services.ai_service import AIService
+
+    service = AIService(settings)
+    prompt = service._load_prompt("extract_invoice.txt")
+
+    assert "￥6.50" in prompt or "¥6.50" in prompt, (
+        "prompt must show a bare-currency example so the LLM learns the pattern"
+    )
+    assert "even when no 票价" in prompt, (
+        "prompt must explicitly say bare amounts are valid without a 票价 label"
+    )
+    assert "退票费" in prompt, (
+        "prompt must mention 退票费 so the LLM knows to treat it as a refund-fee "
+        "label, not a ticket-price label"
+    )
+    assert "relaxes VALIDITY only" in prompt, (
+        "Path B relaxation must be scoped to validity, not amount extraction"
+    )
+
+
+def test_extract_prompt_still_rejects_scam_signals(settings) -> None:
+    """Sanity: the v0.8.9 bare-currency rule must NOT weaken the Step 0
+    scam rejection. Scam documents containing 代开 / 出售发票 / 加微信 must
+    still be rejected even if they happen to have a ``￥XX`` figure."""
+    from app.services.ai_service import AIService
+
+    service = AIService(settings)
+    prompt = service._load_prompt("extract_invoice.txt")
+
+    assert "STEP 0 — SCAM / FRAUD REJECTION" in prompt
+    assert "代开" in prompt
+    assert "出售发票" in prompt
+    assert "加微信" in prompt
+
+
+def test_extract_prompt_excludes_refund_and_fee_labels_from_amount(settings) -> None:
+    """The v0.8.9 change teaches the LLM to bind bare-currency to amount —
+    but that must NOT spill into the refund/fee amount siblings. Verify
+    the exclusion list is present and covers the five known label classes."""
+    from app.services.ai_service import AIService
+
+    service = AIService(settings)
+    prompt = service._load_prompt("extract_invoice.txt")
+
+    for label in ("退票费", "改签费", "手续费", "服务费", "退款"):
+        assert label in prompt, (
+            f"refund/fee label {label!r} must appear in the amount-exclusion rule"
+        )
+

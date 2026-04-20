@@ -163,6 +163,22 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.9 — Released
+
+**Theme:** Prompt-level fix for LLM amount-miss on bare-currency fares (`￥6.50` without 票价 label).
+
+Follow-up to v0.8.8. After railway-ticket upload support landed, one of 7 tickets still saved with amount=0.00 despite the PDF showing `￥6.50` plainly. Parser was innocent (pdfplumber extracted the figure cleanly); the LLM chose the 0.01 sentinel because the prompt anchored amount extraction to `票价` / `价税合计` labels and this particular ticket had only a bare unlabeled figure.
+
+Oracle diagnosis: prompt clauses interacted badly. Path B's "valid even without 价税合计" plus the "amount → 0.01 when absent" fallback gave the LLM a conservative escape hatch. Fix: three targeted additions to `extract_invoice.txt` — (1) Path B's relaxation is explicitly scoped to validity only, not amount; (2) a bare `￥N.NN` or `¥N.NN` on transport e-tickets IS the amount even without a label; (3) `退票费 / 改签费 / 手续费 / 服务费 / 退款 / 已退 / 优惠`-tagged amounts are excluded, and a blank `退票费:` marker is ignored (doesn't convert the ticket into a refund-ticket).
+
+No schema change. `InvoiceExtract.amount` already accepts `6.50` — the LLM just wasn't choosing it. 3 new prompt-contract tests lock the new clauses in so a future "cleanup" PR can't silently re-break them. 489 tests, 100% coverage.
+
+Audit of existing 239 production invoices confirmed the #239 miss was isolated — no other invoice has `amount IN (0, 0.01)`, no other CorrectionLog entry exists for the amount field, and a `raw_text ↔ amount` sample check came up 30/30 matches.
+
+See [CHANGELOG.md](CHANGELOG.md#089---2026-04-20).
+
+---
+
 ## v0.8.8 — Released
 
 **Theme:** Railway + airline e-ticket support (per 2024年第8号/9号公告) and SQLite concurrent-writer fix.

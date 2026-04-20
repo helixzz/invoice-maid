@@ -47,6 +47,9 @@ Set is_valid_tax_invoice=true when EITHER of the following holds:
     When PATH B matches, set is_valid_tax_invoice=true even if 销售方 / 价税合计
     / 税率 are not readable from the PDF. Image-based transport tickets commonly
     have only invoice_no + title extractable, and that is sufficient evidence.
+    This rule relaxes VALIDITY only. If a readable fare/price amount appears
+    anywhere in the transport-ticket text, extract it as amount; do NOT use
+    0.01 merely because the label 价税合计 is absent.
 
 Rationale: Path A pins generic VAT invoices via the VAT-specific signals that
 prevent ordinary receipts from slipping through. Path B handles the 2024 reform
@@ -77,8 +80,18 @@ the document is any of the following — do NOT attempt field extraction:
   invoice_no   发票号码 — digits only, 8 or 20 digits
   invoice_date 开票日期 — YYYY-MM-DD
   amount       价税合计 (grand total incl. tax) — decimal, no symbols.
-                For railway tickets, use 票价 (ticket price). For airline,
-                use 票价 + 燃油附加费 + 民航发展基金 as the total.
+                For railway tickets, use 票价 (ticket price).
+                For transport e-tickets, if the fare is shown as a bare currency
+                amount such as ￥6.50 or ¥6.50, use that numeric value as amount
+                even when no 票价 / 价税合计 label is present. Strip ￥/¥ and
+                return only the decimal number.
+                Ignore any amount explicitly tied to 退票费 / 改签费 / 手续费 /
+                服务费 / 退款 / 已退 / 优惠 — those are not the ticket price.
+                If a marker like "退票费:" appears with NO numeric value after it,
+                ignore that marker; it does not make the document a refund ticket
+                and does not override a separate readable fare amount elsewhere.
+                Never use 0 or an empty refund/fee field as amount.
+                For airline, use 票价 + 燃油附加费 + 民航发展基金 as the total.
   item_summary single-line Chinese summary of all goods/services, ≤30 chars.
                 For railway: "铁路客运 [起点]→[终点] [车次] [席别]".
                 For airline: "航空客运 [起点]→[终点] [航班号]".
@@ -88,6 +101,8 @@ the document is any of the following — do NOT attempt field extraction:
   confidence   your confidence that extracted fields are correct (0.0–1.0)
 
 If a field is genuinely absent: strings → "未知"  |  amount → 0.01
+For transport e-tickets, use 0.01 ONLY when no positive readable fare/price
+amount remains after excluding refund/fee amounts by the rule above.
 Do NOT invent or guess values. 0.01 signals unreadable amount to the pipeline.
 If the extracted buyer or seller contains scam signals listed in STEP 0, reset
 is_valid_tax_invoice=false instead of returning the suspicious name.

@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.9] - 2026-04-20
+
+### Why this release matters
+
+v0.8.8 unblocked railway e-ticket uploads, but one of the 7 tickets still saved with `amount=0.00` despite the PDF plainly showing `￥6.50`. The parser extracted the text correctly (confirmed by replaying pdfplumber against the stored file — `￥6.50` was cleanly surfaced). The LLM was fed the correct text. And yet it returned the `amount=0.01` sentinel instead of `6.50`.
+
+Diagnosis via Oracle: the v0.8.8 prompt anchored amount extraction to the `票价` or `价税合计` labels. On this particular 12306 PDF the fare appeared as a bare `￥6.50` fragment with no label nearby — the surrounding lines were `一等座`, `￥6.50`, `退票费:` (blank, indicating "not a refund"). With Path B's "valid even without 价税合计" clause and the "amount → 0.01 when absent" fallback both in force, the LLM took the conservative option: valid ticket, unreadable fare, sentinel.
+
+The prompt needed to explicitly tell the LLM that **a bare `￥N.NN` fragment on a transport e-ticket IS the amount**, even without a 票价 label. It also needed to scope Path B's relaxation to validity only, not amount extraction. And it needed to distinguish `退票费:` with a blank value (ignore) from `退票费: ￥5.00` (refund fee — exclude from amount).
+
+### Added
+
+- **Prompt clause: bare-currency fare extraction** (`extract_invoice.txt` Step 2 amount field). Explicitly authorizes the LLM to bind a standalone `￥6.50` or `¥6.50` to `amount` when the source text lacks a `票价` / `价税合计` label, even on transport e-tickets. Strip the currency symbol; return the decimal.
+- **Prompt clause: refund/fee label exclusion**. Amounts explicitly tied to `退票费 / 改签费 / 手续费 / 服务费 / 退款 / 已退 / 优惠` are NOT `amount`. If `退票费:` appears with no numeric value after it, ignore the marker entirely.
+- **Prompt clause: Path B scope clarification**. "When PATH B matches, set is_valid_tax_invoice=true even if 销售方 / 价税合计 / 税率 are not readable" is now explicitly scoped: *"This rule relaxes VALIDITY only. If a readable fare/price amount appears anywhere in the transport-ticket text, extract it as amount; do NOT use 0.01 merely because the label 价税合计 is absent."*
+- **Prompt clause: sentinel conditional**. The `amount → 0.01` fallback now says "For transport e-tickets, use 0.01 ONLY when no positive readable fare/price amount remains after excluding refund/fee amounts by the rule above."
+- **3 new prompt-contract tests** in `test_ai_service.py`:
+  - `test_extract_prompt_contains_transport_bare_currency_rule` — asserts the new `￥6.50` example, the "even when no 票价" clause, the `退票费` mention, and the "relaxes VALIDITY only" scoping all remain in the prompt.
+  - `test_extract_prompt_still_rejects_scam_signals` — sanity-checks that Step 0 (scam rejection via `代开` / `出售发票` / `加微信`) stays intact so the new bare-currency rule doesn't leak into ad/receipt documents that happen to contain a `￥XX` figure.
+  - `test_extract_prompt_excludes_refund_and_fee_labels_from_amount` — asserts all five refund/fee label classes appear in the exclusion list.
+
+### Fixed
+
+- **LLM amount-miss on transport e-tickets with bare-currency fares**. Class of failure where an image-based transport e-ticket's bare-currency fare was stored as 0.00 under v0.8.8. Now explicitly handled by the prompt. The invoice has already been manually corrected via the inline-edit UI; this change prevents the same class of miss on future uploads.
+- **Stale LLM cache entry** for the specific content hash of a test-case invoice's raw_text invalidated on production so a retry on that exact PDF invokes the v0.8.9 prompt.
+
+### Not changed
+
+- **`InvoiceExtract.amount` schema** stays `ge=0`. Oracle confirmed the failure was prompt-selection logic, not Pydantic validation (`6.50` was always a schema-valid value; the LLM just didn't choose it).
+- **No deterministic post-LLM fallback added yet**. Oracle recommended against this until we see whether the prompt patch alone is sufficient. If this class of miss recurs, a "transport path: if `amount < 0.10` and raw_text contains exactly one bare `￥N.NN` not near refund labels, use it" post-processor is on the table for v0.8.10 or later.
+
+### Tests
+
+- 489 passing, 100% coverage (+3 from v0.8.8).
+- Existing 486 tests from v0.8.8 untouched — no behavioral regression in the non-prompt code paths.
+- CI-simulated run (no `.env`, env vars injected inline) passes clean.
+
+### Retrospective: audit of historical invoices
+
+I audited all 239 invoices in production after the #239 discovery to see whether other invoices silently stored a wrong amount under the old prompt:
+
+| Check | Result |
+|---|---|
+| Invoices with `amount IN (0, 0.01)` | 0 |
+| Invoices with a `CorrectionLog` entry for the `amount` field | 1 (only #239, already corrected) |
+| Invoices where `raw_text` doesn't contain the stored amount string (sample of 30 most recent) | 0 mismatches |
+| Low-confidence-rejected extraction_logs that blocked at the pipeline | 20, all from pre-v0.8.8 test uploads or my synthetic probes |
+| LLM cache entries with `amount=0.01` AND `is_valid_tax_invoice=true` | 1 (the #239 content hash, invalidated on deploy) |
+
+Conclusion: the amount-miss was an isolated stochastic incident on one ticket whose text layout tipped the LLM into sentinel mode. No silent corruption in the rest of the DB. No backfill needed.
+
 ## [0.8.8] - 2026-04-20
 
 ### Why this release matters
