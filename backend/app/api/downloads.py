@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import CurrentUser
+from app.deps import CurrentUser, assert_owned
 from app.models import Invoice
 from app.services.file_manager import FileManager
 from app.services.invoice_csv import SUMMARY_FILENAME, build_csv_bytes
@@ -31,9 +31,7 @@ async def download_invoice(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
-    invoice = await db.get(Invoice, invoice_id)
-    if invoice is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    invoice = assert_owned(await db.get(Invoice, invoice_id), _current_user)
 
     file_manager = FileManager(get_settings().STORAGE_PATH)
     try:
@@ -56,7 +54,12 @@ async def batch_download_invoices(
     if not payload.ids:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No invoice ids provided")
 
-    result = await db.execute(select(Invoice).where(Invoice.id.in_(payload.ids)))
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.user_id == _current_user.id,
+            Invoice.id.in_(payload.ids),
+        )
+    )
     invoices = list(result.scalars().all())
     if not invoices:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoices not found")

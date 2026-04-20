@@ -4,6 +4,86 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0-alpha.6] - 2026-04-21
+
+### Theme
+
+Phase 4a of the multi-user transition: **tenant isolation on every read path**. Every API endpoint now filters by `user_id`. Every `db.get(...)` for a tenant-scoped row is wrapped in an ownership guard that returns 404 — not 403 — for rows belonging to other users, to avoid leaking existence through a distinguishable status code. A second user calling any endpoint sees their own data only; cross-tenant reads, updates, deletes, downloads, exports, searches, and stats queries are structurally impossible.
+
+This is a **security** release. Without it, creating a second user (Phase 5) would immediately break tenant isolation — every read path treated the database as single-tenant.
+
+### Added
+
+- **`assert_owned(resource, user)` in `app/deps.py`** — every endpoint that does `db.get(Model, id)` now wraps the result in this helper. Raises 404 with detail `"Not found"` if the row is missing or belongs to a different user. 404 (not 403) is deliberate: a 403 would leak that the resource exists for someone else. Docstring in-place explains the security tradeoff so future refactors don't silently regress.
+
+- **`SearchService` takes `user_id` on every entry point** — `search_fts`, `search`, and `fetch_invoices_by_ids` all require a `user_id` parameter and filter the ORM hydration query by `Invoice.user_id == user_id`. The FTS5 MATCH branch still queries the shared FTS index for candidate rowids (FTS5 has no user concept), then hydrates through the tenant-scoped SELECT — this is safe because the ORM filter, not the FTS index, is the security boundary. `search_semantic` and `similar_invoice_ids` are documented as "caller must apply own tenant filter" since the shared sqlite-vec index similarly has no user concept; every call site passes through a scoped hydration step afterwards.
+
+- **Tenant-scoped queries on every endpoint**:
+  - `GET/PUT/DELETE /invoices/{id}`, `/invoices/{id}/similar`, `/invoices/{id}/download` — guarded by `assert_owned`
+  - `GET /invoices` (list), `/invoices/export` — filter through `SearchService` with `user_id`
+  - `POST /invoices/search` (semantic) — filter through `SearchService` with `user_id`
+  - `POST /invoices/batch-delete` — selects only invoices owned by caller; other-user IDs in the payload are silently ignored (no 403, no per-id error — that would leak existence)
+  - `POST /invoices/batch-download` — 404 if no owned invoices match the payload
+  - `PUT /invoices/{id}` duplicate-check: the `invoice_no` uniqueness SELECT is scoped to `Invoice.user_id == current_user.id`, so two users may legitimately own invoices with the same `invoice_no`
+  - `GET /accounts` (list), `PUT/DELETE /accounts/{id}`, `/accounts/{id}/test-connection`, `/oauth/initiate`, `/oauth/status` — all filter/guard by `user_id`
+  - `GET /scan/logs` (list), `/scan/logs/{id}/extractions`, `/scan/logs/{id}/summary` — all filter/guard by `user_id`; the `scan_log.user_id` guard runs before the extraction query, so a user cannot enumerate another user's extraction logs even by guessing scan_log IDs
+  - `POST /scan/trigger full=true` — the "reset `last_scan_uid`" sweep only touches accounts owned by the caller
+  - `GET /stats` — every aggregation (total, monthly, top sellers, invoice types, extraction methods, avg confidence, last scan, active accounts) now filters by `user_id`. Two users see two independent dashboards.
+  - `GET /views`, `DELETE /views/{id}` — filter/guard by `user_id`
+
+- **Service-layer duplicate checks scoped to user**:
+  - `tasks/scheduler.py` pre-flush `invoice_no` SELECT uses `Invoice.user_id == user_id`
+  - `services/manual_upload.py` pre-flush and race-path `invoice_no` SELECTs both use `Invoice.user_id == user_id`
+
+- **`tests/test_api/test_tenant_isolation.py`** — 22 tests, one per endpoint family. Each test seeds resources under `admin_user` (user 1), calls the endpoint with `second_auth_headers` (user 2), and asserts:
+  - Direct-lookup endpoints return 404 with body `{"detail": "Not found"}` (never a resource-specific string like `"Invoice not found"` that would leak existence)
+  - List + stats + export + semantic endpoints return empty / zero
+  - Batch operations silently no-op on other-user IDs
+  - The admin's original resource is untouched after the second user's attempt
+  - Manual-upload duplicate check: user 2 can upload an invoice with the same `invoice_no` as user 1's existing invoice, and the upload succeeds (not a duplicate from the upload path's perspective; still a duplicate for user 2 only if they uploaded it themselves)
+
+- **`second_user` and `second_auth_headers` fixtures in `tests/conftest.py`** — seeds a second distinct user with its own session token so tenant-isolation tests can exercise two-user flows without bespoke setup.
+
+### Changed
+
+- **404 response body is now generic `{"detail": "Not found"}`** — previously endpoint-specific (`"Invoice not found"`, `"Saved view not found"`, etc.). This is a security improvement: a distinguishable detail string for each resource kind leaks which kind of thing exists at that ID for another user. Downstream test suites and API consumers that asserted the old strings need updating. The HTTP status code is unchanged.
+
+- **Test fixtures updated** — existing unit tests that directly inserted `ScanLog`, `EmailAccount`, `ExtractionLog`, `Invoice` rows now seed `user_id` from the `admin_user` fixture; the `create_*` factory fixtures in `conftest.py` do this automatically. No API test needed behavior changes — the assertions still hold — but a handful of unit tests that literally asserted `"Invoice not found"` as a 404 body needed their detail strings relaxed to `"Not found"`.
+
+### Security
+
+- **Information-disclosure hardening**: every 404 returned by a tenant-scoped endpoint is now indistinguishable between "no such ID anywhere" and "exists, but not yours." Before this release, the endpoint-specific detail strings (`"Scan log not found"`, `"Saved view not found"`, etc.) didn't actively leak because there was only one user — but under a multi-user deployment they would have. Fixed pre-emptively.
+
+- **Search index guarantees**: FTS5 and sqlite-vec are shared-content indexes with no user concept; the security boundary is the ORM hydration step (`WHERE invoices.user_id = ?`). Documented inline in `SearchService` so a future "optimization" that returns `invoices_fts` rowids directly, without hydrating, can't accidentally bypass tenant isolation.
+
+### Not included (deferred to future phases)
+
+- **Per-user file-storage layout.** Invoice PDFs are still stored in a single `STORAGE_PATH` directory, keyed by invoice-number-derived filenames. The `/invoices/{id}/download` endpoint is tenant-safe because it resolves the path through the tenant-scoped `db.get(Invoice, id)` — the filesystem has no user concept, but it doesn't need one as long as the DB lookup gates access. Splitting storage into per-user subdirectories is a cleanup for v0.9.0-alpha.7.
+
+- **Per-user LLM cache scope.** `LLMCache` remains shared across users; identical prompt/response pairs are cached once for the whole instance. This is a feature, not a bug, for single-org deployments — it avoids paying for the same LLM call twice just because two users uploaded structurally identical invoices. A future "LLM cache per tenant" mode is trackable under Phase 5.
+
+- **Per-user `app_settings`, `user_sessions`, webhook config, AI settings.** These remain instance-wide by design. Multi-tenant scoping of these is Phase 5 work.
+
+- **Registration flow / admin UI.** A second user cannot yet be created through the UI. This release makes it safe to add the feature — the database and read paths are now structurally tenant-isolated.
+
+### Upgrade path
+
+Zero-touch for v0.9.0-alpha.5 deployments. No schema changes, no migration, no config changes. The existing single-user production deployment continues to work identically: the sole `users[1]` row owns everything, and every tenant filter is effectively a no-op on its queries because `user_id == 1` matches all rows.
+
+### Dry-run validation
+
+Production DB copied; a second user was inserted with `id=2`; tenant-scoped SELECTs were run against all seven tenant tables. Result: `user_id=2` returned zero rows across the board (239 invoices, 3 accounts, 85 scan logs, 273,580 extraction logs, 1 correction log, 0 saved views, 0 webhook logs all remain owned by `user_id=1`). The tenant filter works correctly on production-shape data.
+
+### Tests
+
+- 556 passing, 100% coverage (+22 from v0.9.0-alpha.5): 22 new tenant-isolation tests covering every endpoint family.
+- Existing 534 tests all pass without semantic change — only detail-string assertions updated where the generic 404 body replaced resource-specific strings.
+- CI-simulated run clean: the app boots from environment variables alone and runs the full 0001 → 0012 migration chain.
+
+### Alpha designation
+
+Still `0.9.0-alpha` because Phase 5 (admin UI, registration flow, per-user settings scoping) is not yet shipped. This release makes a multi-user deployment **safe** — it does not make one **useful**. The existing single-user production deployment is unchanged and unaffected.
+
 ## [0.9.0-alpha.5] - 2026-04-21
 
 ### Theme

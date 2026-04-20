@@ -69,6 +69,7 @@ async def test_list_get_delete_and_search_invoices(
         {
             "db": ANY,
             "query": "Alpha",
+            "user_id": ANY,
             "query_embedding": [0.1, 0.2, 0.3],
             "page": 3,
             "size": 5,
@@ -229,7 +230,7 @@ async def test_update_invoice_missing_returns_404(client, auth_headers) -> None:
     )
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Invoice not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_get_similar_invoices_with_embeddings(client, auth_headers, create_invoice, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,7 +272,7 @@ async def test_get_similar_invoices_missing_invoice_returns_404(client, auth_hea
     response = await client.get("/api/v1/invoices/999/similar", headers=auth_headers)
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Invoice not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_export_invoices_csv(client, auth_headers, create_invoice) -> None:

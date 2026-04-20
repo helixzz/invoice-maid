@@ -28,15 +28,24 @@ class SearchService:
         self,
         db: AsyncSession,
         query: str,
+        user_id: int,
         date_from: date | None = None,
         date_to: date | None = None,
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
-        """Full-text search via FTS5 with optional date range filter and pagination."""
+        """Full-text search via FTS5 with optional date range filter and pagination.
+
+        Tenant isolation: every branch filters ``Invoice.user_id == user_id``.
+        The FTS MATCH branch first gets candidate rowids from the shared
+        FTS index (FTS5 cannot filter by user_id itself), then the SQL
+        hydration query constrains to the caller's rows. This is safe
+        because we rely on the ORM filter, not on the FTS index, for
+        authorization — the FTS index is a shared tokenizer, not a
+        security boundary."""
         if not query.strip():
-            stmt = select(Invoice)
-            count_stmt = select(func.count(Invoice.id))
+            stmt = select(Invoice).where(Invoice.user_id == user_id)
+            count_stmt = select(func.count(Invoice.id)).where(Invoice.user_id == user_id)
 
             if date_from is not None:
                 stmt = stmt.where(Invoice.invoice_date >= date_from)
@@ -68,8 +77,14 @@ class SearchService:
         if not matching_ids:
             return [], 0
 
-        stmt = select(Invoice).where(Invoice.id.in_(matching_ids))
-        count_stmt = select(func.count(Invoice.id)).where(Invoice.id.in_(matching_ids))
+        stmt = select(Invoice).where(
+            Invoice.user_id == user_id,
+            Invoice.id.in_(matching_ids),
+        )
+        count_stmt = select(func.count(Invoice.id)).where(
+            Invoice.user_id == user_id,
+            Invoice.id.in_(matching_ids),
+        )
 
         if date_from is not None:
             stmt = stmt.where(Invoice.invoice_date >= date_from)
@@ -91,7 +106,10 @@ class SearchService:
         query_embedding: list[float],
         limit: int = 20,
     ) -> list[int]:
-        """Semantic search via sqlite-vec KNN. Returns invoice IDs ordered by similarity."""
+        """Semantic search via sqlite-vec KNN. Returns invoice IDs
+        ordered by similarity. Caller must apply its own tenant filter
+        on the returned IDs — the shared vector index has no user
+        concept."""
         if not self._settings.sqlite_vec_available or not query_embedding:
             return []
 
@@ -118,16 +136,19 @@ class SearchService:
         self,
         db: AsyncSession,
         query: str,
+        user_id: int,
         date_from: date | None = None,
         date_to: date | None = None,
         page: int = 1,
         size: int = 20,
         query_embedding: list[float] | None = None,
     ) -> tuple[list[Invoice], int]:
-        """Combined search: FTS5 + optional semantic fallback/augmentation."""
+        """Combined search: FTS5 + optional semantic fallback/augmentation,
+        both tenant-scoped to ``user_id``."""
         fts_results, fts_total = await self.search_fts(
             db=db,
             query=query,
+            user_id=user_id,
             date_from=date_from,
             date_to=date_to,
             page=page,
@@ -146,7 +167,10 @@ class SearchService:
         if not additional_ids:
             return fts_results, fts_total
 
-        additional_stmt = select(Invoice).where(Invoice.id.in_(additional_ids[:size]))
+        additional_stmt = select(Invoice).where(
+            Invoice.user_id == user_id,
+            Invoice.id.in_(additional_ids[:size]),
+        )
         if date_from is not None:
             additional_stmt = additional_stmt.where(Invoice.invoice_date >= date_from)
         if date_to is not None:
@@ -166,15 +190,26 @@ class SearchService:
 
         return merged_results, max(fts_total, len(merged_results))
 
-    async def fetch_invoices_by_ids(self, db: AsyncSession, invoice_ids: list[int]) -> list[Invoice]:
+    async def fetch_invoices_by_ids(
+        self, db: AsyncSession, invoice_ids: list[int], user_id: int
+    ) -> list[Invoice]:
         if not invoice_ids:
             return []
 
-        result = await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
+        result = await db.execute(
+            select(Invoice).where(
+                Invoice.user_id == user_id,
+                Invoice.id.in_(invoice_ids),
+            )
+        )
         invoices_by_id = {invoice.id: invoice for invoice in result.scalars().all()}
         return [invoices_by_id[invoice_id] for invoice_id in invoice_ids if invoice_id in invoices_by_id]
 
     async def similar_invoice_ids(self, db: AsyncSession, invoice: Invoice, limit: int = 5) -> list[int]:
+        """Find invoices similar to ``invoice``. The caller is
+        responsible for having already resolved ``invoice`` through a
+        tenant-scoped query; the returned IDs are filtered back to the
+        same ``invoice.user_id`` via ``fetch_invoices_by_ids``."""
         if self._settings.sqlite_vec_available:
             try:
                 embedding_result = await db.execute(

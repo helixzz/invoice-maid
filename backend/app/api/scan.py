@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app.database import get_db
-from app.deps import CurrentUser
+from app.deps import CurrentUser, assert_owned
 from app.models import EmailAccount, ExtractionLog, ScanLog
 from app.services import scan_progress as sp
 from app.services.email_scanner import ScanOptions
@@ -128,7 +128,12 @@ async def trigger_scan(
     unread_only = body.unread_only if body is not None else False
     since = body.since if body is not None else None
     if effective_full:
-        result = await db.execute(select(EmailAccount).where(EmailAccount.is_active.is_(True)))
+        result = await db.execute(
+            select(EmailAccount).where(
+                EmailAccount.user_id == _current_user.id,
+                EmailAccount.is_active.is_(True),
+            )
+        )
         for account in result.scalars().all():
             account.last_scan_uid = None
         await db.commit()
@@ -183,9 +188,14 @@ async def list_scan_logs(
     page: int = 1,
     size: int = 20,
 ) -> ScanLogListResponse:
-    total = (await db.execute(select(func.count(ScanLog.id)))).scalar() or 0
+    total = (
+        await db.execute(
+            select(func.count(ScanLog.id)).where(ScanLog.user_id == _current_user.id)
+        )
+    ).scalar() or 0
     result = await db.execute(
         select(ScanLog)
+        .where(ScanLog.user_id == _current_user.id)
         .order_by(ScanLog.started_at.desc(), ScanLog.id.desc())
         .offset(max(page - 1, 0) * size)
         .limit(size)
@@ -205,13 +215,14 @@ async def list_extraction_logs(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> ExtractionLogListResponse:
-    log = await db.get(ScanLog, log_id)
-    if log is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan log not found")
+    assert_owned(await db.get(ScanLog, log_id), _current_user)
 
     result = await db.execute(
         select(ExtractionLog)
-        .where(ExtractionLog.scan_log_id == log_id)
+        .where(
+            ExtractionLog.user_id == _current_user.id,
+            ExtractionLog.scan_log_id == log_id,
+        )
         .order_by(ExtractionLog.created_at.asc(), ExtractionLog.id.asc())
     )
     extractions = list(result.scalars().all())
@@ -224,24 +235,31 @@ async def scan_log_summary(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> ExtractionSummaryResponse:
-    log = await db.get(ScanLog, log_id)
-    if log is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan log not found")
+    assert_owned(await db.get(ScanLog, log_id), _current_user)
 
     outcome_rows = await db.execute(
         select(ExtractionLog.outcome, func.count(ExtractionLog.id))
-        .where(ExtractionLog.scan_log_id == log_id)
+        .where(
+            ExtractionLog.user_id == _current_user.id,
+            ExtractionLog.scan_log_id == log_id,
+        )
         .group_by(ExtractionLog.outcome)
     )
     method_rows = await db.execute(
         select(ExtractionLog.parse_method, func.count(ExtractionLog.id))
-        .where(ExtractionLog.scan_log_id == log_id)
+        .where(
+            ExtractionLog.user_id == _current_user.id,
+            ExtractionLog.scan_log_id == log_id,
+        )
         .where(ExtractionLog.parse_method.is_not(None))
         .group_by(ExtractionLog.parse_method)
     )
     tier_rows = await db.execute(
         select(ExtractionLog.classification_tier, func.count(ExtractionLog.id))
-        .where(ExtractionLog.scan_log_id == log_id)
+        .where(
+            ExtractionLog.user_id == _current_user.id,
+            ExtractionLog.scan_log_id == log_id,
+        )
         .where(ExtractionLog.classification_tier.is_not(None))
         .group_by(ExtractionLog.classification_tier)
     )

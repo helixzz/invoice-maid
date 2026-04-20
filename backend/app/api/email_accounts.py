@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import CurrentUser
-from app.models import EmailAccount
+from app.deps import CurrentUser, assert_owned
+from app.models import EmailAccount, User
 
 logger = logging.getLogger(__name__)
 from app.schemas.email_account import (
@@ -68,11 +68,8 @@ def _oauth_state_response(state: OAuthFlowState) -> OAuthStatusResponse:
     )
 
 
-async def _get_account_or_404(db: AsyncSession, account_id: int) -> EmailAccount:
-    account = await db.get(EmailAccount, account_id)
-    if account is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
-    return account
+async def _get_account_or_404(db: AsyncSession, account_id: int, user: User) -> EmailAccount:
+    return assert_owned(await db.get(EmailAccount, account_id), user)
 
 
 def _ensure_outlook_account(account: EmailAccount) -> None:
@@ -129,7 +126,11 @@ async def list_accounts(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[EmailAccountResponse]:
-    result = await db.execute(select(EmailAccount).order_by(EmailAccount.id.desc()))
+    result = await db.execute(
+        select(EmailAccount)
+        .where(EmailAccount.user_id == _current_user.id)
+        .order_by(EmailAccount.id.desc())
+    )
     accounts = list(result.scalars().all())
     return [_serialize_account(account) for account in accounts]
 
@@ -178,7 +179,7 @@ async def update_account(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> EmailAccountResponse:
-    account = await _get_account_or_404(db, account_id)
+    account = await _get_account_or_404(db, account_id, _current_user)
 
     settings = get_settings()
     if payload.name is not None:
@@ -207,7 +208,7 @@ async def delete_account(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    account = await _get_account_or_404(db, account_id)
+    account = await _get_account_or_404(db, account_id, _current_user)
 
     await db.delete(account)
     await db.commit()
@@ -220,7 +221,7 @@ async def test_account_connection(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> ConnectionTestResponse:
-    account = await _get_account_or_404(db, account_id)
+    account = await _get_account_or_404(db, account_id, _current_user)
 
     scanner = ScannerFactory.get_scanner(account.type)
     try:
@@ -243,7 +244,7 @@ async def initiate_account_oauth(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> OAuthInitiateResponse:
-    account = await _get_account_or_404(db, account_id)
+    account = await _get_account_or_404(db, account_id, _current_user)
     _ensure_outlook_account(account)
 
     if not account.oauth_token_path:
@@ -291,7 +292,7 @@ async def get_account_oauth_status(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> OAuthStatusResponse:
-    account = await _get_account_or_404(db, account_id)
+    account = await _get_account_or_404(db, account_id, _current_user)
     _ensure_outlook_account(account)
 
     state = oauth_registry.get(account.id)

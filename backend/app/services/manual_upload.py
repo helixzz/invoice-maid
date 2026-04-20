@@ -396,7 +396,10 @@ async def process_uploaded_invoice(
         )
 
     existing_row = await db.execute(
-        select(Invoice).where(Invoice.invoice_no == parsed.invoice_no)
+        select(Invoice).where(
+            Invoice.user_id == user_id,
+            Invoice.invoice_no == parsed.invoice_no,
+        )
     )
     existing_invoice = existing_row.scalar_one_or_none()
     if existing_invoice is not None:
@@ -460,7 +463,10 @@ async def process_uploaded_invoice(
         await db.rollback()
         scan_log = await _create_upload_scan_log(db, account.id, user_id, filename)
         dup_row = await db.execute(
-            select(Invoice).where(Invoice.invoice_no == parsed.invoice_no)
+            select(Invoice).where(
+                Invoice.user_id == user_id,
+                Invoice.invoice_no == parsed.invoice_no,
+            )
         )
         dup_invoice = dup_row.scalar_one_or_none()
         _log_extraction(

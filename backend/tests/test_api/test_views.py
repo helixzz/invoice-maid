@@ -33,4 +33,4 @@ async def test_saved_views_require_auth_and_missing_delete_returns_404(client, a
 
     missing_delete = await client.delete("/api/v1/views/999", headers=auth_headers)
     assert missing_delete.status_code == 404
-    assert missing_delete.json() == {"detail": "Saved view not found"}
+    assert missing_delete.json() == {"detail": "Not found"}

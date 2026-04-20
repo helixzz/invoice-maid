@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Protocol
 
 from fastapi import Depends, Header, HTTPException, Query, status
 from jose import ExpiredSignatureError, JWTError
@@ -9,6 +9,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import User, UserSession
 from app.services.auth_service import decode_access_token, resolve_active_session
+
+
+class _OwnedResource(Protocol):
+    user_id: int
+
+
+def assert_owned(resource: _OwnedResource | None, user: User) -> _OwnedResource:
+    """Guard every ``db.get(...)``-returned tenant-scoped row.
+
+    Raises 404 — not 403 — when the row is missing or belongs to a
+    different user. 403 would leak the existence of another user's
+    resource through a distinguishable status code; 404 is the correct
+    tenant-isolation response and mirrors what the caller would see if
+    the row genuinely did not exist."""
+    if resource is None or getattr(resource, "user_id", None) != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found",
+        )
+    return resource
 
 
 async def get_current_user_and_session(

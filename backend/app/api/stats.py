@@ -72,15 +72,25 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
 ) -> StatsResponse:
     month_start, next_month_start = _month_bounds(date.today())
+    user_id = _current_user.id
 
-    total_invoices = (await db.execute(select(func.count(Invoice.id)))).scalar() or 0
+    total_invoices = (
+        await db.execute(
+            select(func.count(Invoice.id)).where(Invoice.user_id == user_id)
+        )
+    ).scalar() or 0
     total_amount = (
-        await db.execute(select(func.coalesce(func.sum(Invoice.amount), 0)))
+        await db.execute(
+            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.user_id == user_id
+            )
+        )
     ).scalar()
 
     invoices_this_month = (
         await db.execute(
             select(func.count(Invoice.id)).where(
+                Invoice.user_id == user_id,
                 Invoice.invoice_date >= month_start,
                 Invoice.invoice_date < next_month_start,
             )
@@ -89,6 +99,7 @@ async def get_stats(
     amount_this_month = (
         await db.execute(
             select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.user_id == user_id,
                 Invoice.invoice_date >= month_start,
                 Invoice.invoice_date < next_month_start,
             )
@@ -96,11 +107,21 @@ async def get_stats(
     ).scalar()
 
     active_accounts = (
-        await db.execute(select(func.count(EmailAccount.id)).where(EmailAccount.is_active.is_(True)))
+        await db.execute(
+            select(func.count(EmailAccount.id)).where(
+                EmailAccount.user_id == user_id,
+                EmailAccount.is_active.is_(True),
+            )
+        )
     ).scalar() or 0
 
     last_scan = (
-        await db.execute(select(ScanLog).order_by(ScanLog.started_at.desc(), ScanLog.id.desc()).limit(1))
+        await db.execute(
+            select(ScanLog)
+            .where(ScanLog.user_id == user_id)
+            .order_by(ScanLog.started_at.desc(), ScanLog.id.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
 
     monthly_spend_rows = (
@@ -110,6 +131,7 @@ async def get_stats(
                 func.coalesce(func.sum(Invoice.amount), 0).label("total"),
                 func.count(Invoice.id).label("count"),
             )
+            .where(Invoice.user_id == user_id)
             .group_by("month")
             .order_by("month")
         )
@@ -121,6 +143,7 @@ async def get_stats(
                 func.coalesce(func.sum(Invoice.amount), 0).label("total"),
                 func.count(Invoice.id).label("count"),
             )
+            .where(Invoice.user_id == user_id)
             .group_by(Invoice.seller)
             .order_by(func.sum(Invoice.amount).desc(), func.count(Invoice.id).desc(), Invoice.seller.asc())
             .limit(10)
@@ -129,6 +152,7 @@ async def get_stats(
     type_rows = (
         await db.execute(
             select(Invoice.invoice_type.label("type"), func.count(Invoice.id).label("count"))
+            .where(Invoice.user_id == user_id)
             .group_by(Invoice.invoice_type)
             .order_by(func.count(Invoice.id).desc())
         )
@@ -136,11 +160,16 @@ async def get_stats(
     method_rows = (
         await db.execute(
             select(Invoice.extraction_method.label("method"), func.count(Invoice.id).label("count"))
+            .where(Invoice.user_id == user_id)
             .group_by(Invoice.extraction_method)
             .order_by(func.count(Invoice.id).desc(), Invoice.extraction_method.asc())
         )
     ).all()
-    avg_confidence = (await db.execute(select(func.avg(Invoice.confidence)))).scalar()
+    avg_confidence = (
+        await db.execute(
+            select(func.avg(Invoice.confidence)).where(Invoice.user_id == user_id)
+        )
+    ).scalar()
 
     return StatsResponse(
         total_invoices=total_invoices,

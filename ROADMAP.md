@@ -163,6 +163,28 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.0-alpha.6 — Released
+
+**Phase 4a of multi-user transition:** tenant isolation on every read path.
+
+Every API endpoint now filters by `user_id`. Every `db.get(...)` for a tenant-scoped row is wrapped in a new `assert_owned(resource, user)` helper that returns 404 — not 403 — for rows belonging to other users. The 404 response body is now the generic `{"detail": "Not found"}` instead of resource-specific strings like `"Invoice not found"`, so a second user can't distinguish between "no such ID" and "exists but not yours."
+
+`SearchService` takes `user_id` on every entry point. The FTS5 MATCH branch still queries the shared FTS index for candidate rowids — FTS5 has no user concept — then hydrates through a tenant-scoped `WHERE invoices.user_id = ? AND invoices.id IN (...)` SELECT. The ORM filter, not the FTS index, is the security boundary. Documented inline so a future optimization can't accidentally bypass it.
+
+Every endpoint family updated: invoices (list/get/update/delete/download/similar/export/semantic/batch-delete/batch-download), accounts (list/update/delete/test-connection/oauth), scan (logs/extractions/summary/trigger), stats, saved views. Service-layer duplicate checks (`manual_upload.py`, `tasks/scheduler.py`) also scope by `user_id` — two users may legitimately receive invoices with the same `invoice_no`.
+
+22-test tenant-isolation suite covering every endpoint family, asserting 404/empty/silent-noop responses to cross-tenant access attempts and that admin's resources are untouched after second-user attempts.
+
+Dry-run against a production database copy: inserted a synthetic user 2, ran tenant-scoped SELECTs across all seven tenant tables, confirmed user 2 sees zero rows while user 1 retains all 239 invoices / 3 accounts / 85 scan logs / 273,580 extraction logs / 1 correction log.
+
+Zero-touch upgrade — no schema changes, no migration, no config changes. Existing single-user deployment unaffected.
+
+556 tests, 100% coverage (+22).
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0-alpha.5 — Released
 
 **Phase 3 of multi-user transition:** `NOT NULL` + FK constraints on every tenant `user_id` column, plus composite `UNIQUE(user_id, invoice_no)` on `invoices`.

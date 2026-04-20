@@ -570,7 +570,10 @@ async def _process_single_email(
                             continue
 
                         existing = await db.execute(
-                            select(Invoice).where(Invoice.invoice_no == parsed.invoice_no)
+                            select(Invoice).where(
+                                Invoice.user_id == user_id,
+                                Invoice.invoice_no == parsed.invoice_no,
+                            )
                         )
                         if existing.scalar_one_or_none():
                             db.add(

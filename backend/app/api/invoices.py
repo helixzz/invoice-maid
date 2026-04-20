@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import CurrentUser
+from app.deps import CurrentUser, assert_owned
 from app.models import CorrectionLog, Invoice
 from app.rate_limiter import limiter
 from app.schemas.invoice import InvoiceListResponse, InvoiceResponse
@@ -282,6 +282,7 @@ async def list_invoices(
     invoices, total = await search_service.search_fts(
         db=db,
         query=q,
+        user_id=_current_user.id,
         date_from=date_from,
         date_to=date_to,
         page=page,
@@ -309,6 +310,7 @@ async def export_invoices(
     _, total = await search_service.search_fts(
         db=db,
         query=q,
+        user_id=_current_user.id,
         date_from=date_from,
         date_to=date_to,
         page=1,
@@ -317,6 +319,7 @@ async def export_invoices(
     invoices, _ = await search_service.search_fts(
         db=db,
         query=q,
+        user_id=_current_user.id,
         date_from=date_from,
         date_to=date_to,
         page=1,
@@ -340,9 +343,7 @@ async def get_invoice(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceResponse:
-    invoice = await db.get(Invoice, invoice_id)
-    if invoice is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    invoice = assert_owned(await db.get(Invoice, invoice_id), _current_user)
     return _serialize_invoice(invoice)
 
 
@@ -352,13 +353,13 @@ async def get_similar_invoices(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[InvoiceResponse]:
-    invoice = await db.get(Invoice, invoice_id)
-    if invoice is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    invoice = assert_owned(await db.get(Invoice, invoice_id), _current_user)
 
     search_service = SearchService(get_settings())
     similar_ids = await search_service.similar_invoice_ids(db=db, invoice=invoice, limit=5)
-    similar_invoices = await search_service.fetch_invoices_by_ids(db=db, invoice_ids=similar_ids)
+    similar_invoices = await search_service.fetch_invoices_by_ids(
+        db=db, invoice_ids=similar_ids, user_id=_current_user.id
+    )
     return [_serialize_invoice(similar_invoice) for similar_invoice in similar_invoices]
 
 
@@ -369,14 +370,16 @@ async def update_invoice(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceResponse:
-    invoice = await db.get(Invoice, invoice_id)
-    if invoice is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    invoice = assert_owned(await db.get(Invoice, invoice_id), _current_user)
 
     update_data = payload.model_dump(exclude_unset=True)
     if "invoice_no" in update_data:
         duplicate = await db.execute(
-            select(Invoice.id).where(Invoice.invoice_no == update_data["invoice_no"], Invoice.id != invoice_id)
+            select(Invoice.id).where(
+                Invoice.user_id == _current_user.id,
+                Invoice.invoice_no == update_data["invoice_no"],
+                Invoice.id != invoice_id,
+            )
         )
         if duplicate.scalar_one_or_none() is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice number already exists")
@@ -412,9 +415,7 @@ async def delete_invoice(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    invoice = await db.get(Invoice, invoice_id)
-    if invoice is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+    invoice = assert_owned(await db.get(Invoice, invoice_id), _current_user)
 
     file_path = invoice.file_path
     await db.delete(invoice)
@@ -438,6 +439,7 @@ async def semantic_search_invoices(
     invoices, total = await search_service.search(
         db=db,
         query=payload.query,
+        user_id=_current_user.id,
         query_embedding=embedding,
         page=payload.page,
         size=payload.size,
@@ -460,11 +462,15 @@ async def batch_delete_invoices(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     file_manager = FileManager(get_settings().STORAGE_PATH)
-    invoices = [await db.get(Invoice, invoice_id) for invoice_id in payload.ids]
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.user_id == _current_user.id,
+            Invoice.id.in_(payload.ids),
+        )
+    )
+    invoices = list(result.scalars().all())
 
     for invoice in invoices:
-        if invoice is None:
-            continue
         file_path = invoice.file_path
         await db.delete(invoice)
         await file_manager.delete_invoice_file(file_path)

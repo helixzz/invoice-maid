@@ -225,6 +225,37 @@ def auth_headers(auth_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {auth_token}"}
 
 
+@pytest_asyncio.fixture
+async def second_user(db: AsyncSession) -> "User":
+    """Second test user used exclusively by tenant-isolation tests.
+    The tests seed resources under ``admin_user`` (user 1) and call the
+    API with the ``second_user``'s (user 2) auth headers to assert
+    endpoints don't leak cross-tenant data."""
+    from app.models import User as _User
+
+    user = _User(
+        email="other@example.com",
+        hashed_password="hashed:otherpass",
+        is_active=True,
+        is_admin=False,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
+async def second_auth_headers(
+    second_user: "User", db: AsyncSession, settings: Settings
+) -> dict[str, str]:
+    from app.services.auth_service import create_access_token, create_user_session
+
+    token = create_access_token({"sub": str(second_user.id)})
+    await create_user_session(db, second_user, token, settings=settings)
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture
 def mock_ai_service() -> SimpleNamespace:
     return SimpleNamespace(

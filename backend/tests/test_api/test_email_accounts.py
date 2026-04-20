@@ -125,7 +125,7 @@ async def test_email_account_test_connection_missing_account(client, auth_header
     response = await client.post("/api/v1/accounts/999/test-connection", headers=auth_headers)
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Account not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_outlook_account_creation_auto_assigns_oauth_token_path(client, auth_headers, db, settings) -> None:
@@ -245,7 +245,7 @@ async def test_oauth_initiate_missing_account(client, auth_headers) -> None:
     response = await client.post("/api/v1/accounts/999/oauth/initiate", headers=auth_headers)
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Account not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_oauth_initiate_returns_authorized_when_cached_token_exists(client, auth_headers, create_email_account, monkeypatch) -> None:
@@ -378,7 +378,7 @@ async def test_oauth_status_missing_account(client, auth_headers) -> None:
     response = await client.get("/api/v1/accounts/999/oauth/status", headers=auth_headers)
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Account not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_oauth_initiate_with_expired_existing_state_restarts_flow(client, auth_headers, create_email_account, monkeypatch) -> None:

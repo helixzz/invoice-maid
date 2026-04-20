@@ -235,7 +235,7 @@ async def test_list_extraction_logs_missing_scan_log_returns_404(client, auth_he
     response = await client.get("/api/v1/scan/logs/999/extractions", headers=auth_headers)
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Scan log not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_list_extraction_logs_returns_new_parse_metadata_fields(client, auth_headers, create_scan_log, create_extraction_log) -> None:
@@ -280,7 +280,7 @@ async def test_scan_log_summary_aggregates_outcomes_methods_and_tiers(client, au
 async def test_scan_log_summary_missing_scan_returns_404(client, auth_headers) -> None:
     response = await client.get("/api/v1/scan/logs/999/summary", headers=auth_headers)
     assert response.status_code == 404
-    assert response.json() == {"detail": "Scan log not found"}
+    assert response.json() == {"detail": "Not found"}
 
 
 async def test_scan_log_summary_empty_scan_has_zero_total(client, auth_headers, create_scan_log) -> None:
