@@ -4,6 +4,72 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.8] - 2026-04-20
+
+### Why this release matters
+
+Manual batch uploads of image-based railway e-ticket PDFs (铁路电子客票) via the v0.8.7 multi-file flow could fail pipeline-wide — 5 with `not_vat_invoice`, 3 lost entirely to `sqlite3.OperationalError: database is locked` under concurrent writer contention. Investigation surfaced three compounding issues:
+
+1. **The LLM prompt was factually out of date.** It treated anything with 行程单 / 出行记录 as a "ride itinerary" receipt. That was correct pre-2024 — but since **国家税务总局 财政部 中国国家铁路集团有限公司公告 2024年第8号** (effective 2024-11-01), 铁路电子客票 is a full 全面数字化的电子发票 with VAT deduction rights. Likewise **2024年第9号公告** (effective 2024-12-01) reclassified 航空运输电子客票行程单 as legal VAT invoices. The LLM correctly identified these documents by their titles and correctly applied the prompt's "ride itinerary" rule — which was the wrong rule.
+
+2. **Image-based PDFs yield sparse text.** Railway ticket PDFs from 12306 are often rasterized rather than text-layered; pdfplumber + PyMuPDF extract enough for the 20-digit invoice_no to surface but not the 票价, buyer, or seller. Even after fixing the prompt, the existing confidence gate (`amount < 0.10` sentinel) would have kept rejecting them.
+
+3. **Concurrent uploads hit a DB writer lock wall.** v0.8.7's 3-worker upload pool had each worker hold the SQLite writer lock through a 10–30 second LLM round-trip. The other two workers would time out at SQLite's default 5-second busy_timeout and raise `database is locked`. Silent data loss (failed uploads surface to the user as a generic 500).
+
+v0.8.8 fixes all three. The LLM prompt now cites the 2024 regulations by number, the manual-upload confidence gate relaxes for detected transport e-tickets (saving with amount=0 so the user can fill in the 票价 via inline edit), the 20-digit strong-parse check ensures scam documents can't abuse the relaxed gate, and the SQLite engine gets a 30-second busy_timeout plus an immediate ScanLog commit so the writer lock is held only during the actual DB writes — not during the LLM call.
+
+### Added
+
+- **`TRANSPORT_E_TICKET_TYPES`** new frozenset in `app/schemas/invoice.py` listing the two STA-designated transport e-ticket type names: `电子发票（铁路电子客票）` and `电子发票（航空运输电子客票行程单）`. Both added to `VALID_INVOICE_TYPES`.
+- **`_is_transport_e_ticket(parsed)`** helper in `app/services/manual_upload.py` — detects transport e-tickets via official type match OR raw-text marker match (铁路电子客票 / 铁路客运 / 航空运输电子客票行程单 / 电子行程单) AND 20-digit invoice_no. The 20-digit check prevents scam documents from abusing the relaxed gate.
+- **LLM prompt PATH B** in `app/prompts/extract_invoice.txt` — new validity path for railway/airline e-tickets. Matches when invoice_no is 20-digit AND at least one transport marker is present (车次 / 发站 / 到站 / 乘车日期 for railway; 航班号 / 乘机日期 / 燃油附加费 for airline). Accepts the document as a valid VAT invoice even without 价税合计 / 税率.
+- **LLM prompt field extraction guidance** for transport tickets: buyer = 乘车人/乘客, seller = 铁路运输企业 / 航空公司, amount = 票价 (railway) or 票价+燃油附加费+民航发展基金 (airline), item_summary = "铁路客运 [起]→[止] [车次]" or "航空客运 [起]→[止] [航班号]".
+- **5 new manual-upload tests** covering the transport-ticket code paths:
+  - `test_is_transport_e_ticket_by_official_type_name` — direct type-name match
+  - `test_is_transport_e_ticket_by_raw_text_marker_when_type_absent` — image-PDF marker fallback
+  - `test_is_transport_e_ticket_rejects_without_20_digit_invoice_no` — scam-document resistance
+  - `test_is_transport_e_ticket_rejects_non_transport_document` — generic-invoice sanity
+  - `test_valid_invoice_types_includes_railway_and_airline_e_tickets` — schema freeze
+- **4 integration tests** exercising the full `process_uploaded_invoice` pipeline:
+  - `test_process_uploaded_invoice_accepts_railway_eticket_with_image_pdf` — the exact production regression (image PDF with amount=0.01 sentinel now saves)
+  - `test_process_uploaded_invoice_accepts_airline_eitinerary` — airline path
+  - `test_process_uploaded_invoice_railway_eticket_with_readable_amount` — railway tickets with real amounts still flow through normal merge
+  - `test_process_uploaded_invoice_still_rejects_didi_ride_itinerary` — Didi-style ride itineraries stay rejected (they are NOT in the 2024 regulations)
+- **1 new merge-semantics test**: `test_process_uploaded_invoice_merge_skips_zero_amount_from_llm` — LLM returning amount < 0.10 sentinel must not overwrite parser's None amount.
+
+### Fixed
+
+- **LLM prompt**: 行程单 removed from the reject list; 用车凭证 / 滴滴 / 出行记录 stay. Reject list now has an explicit NOTE clarifying that railway and airline e-tickets are NOT ride-itinerary receipts. Scam-detection step 0 is unchanged.
+- **`InvoiceExtract.amount`** schema relaxed from `gt=0` to `ge=0`. Image-based transport tickets legitimately have no readable amount; forcing the LLM to return > 0 previously caused it to either fabricate or raise a pydantic validation error. The manual-upload sentinel check (`amount_is_sentinel if amount < 0.10`) still catches this at the gate, so no downstream regression.
+- **`InvoiceExtract.is_valid_tax_invoice`** description rewritten to explicitly list railway/airline e-tickets as valid, citing the 2024 regulations. instructor feeds this description to the LLM as schema metadata, so the description change directly moves the LLM's classification behavior.
+- **Confidence gate in `manual_upload.process_uploaded_invoice`**: for detected transport e-tickets, `amount_is_sentinel` is ignored and the confidence floor drops from 0.6 to 0.5. Invoice saves with `amount=0` (from `parsed.amount or 0`) so the user can correct via inline edit. This is explicit, narrow, audit-trailed behavior — not a blanket relaxation.
+- **`_merge_llm_into_parsed`**: the merge of `extracted.amount` into `parsed.amount` now requires `extracted.amount >= 0.10`. Prevents LLM's 0.01 sentinel from leaking into the parser result and fooling later gates.
+
+### Fixed (SQLite concurrency)
+
+- **`database.py`**: added `timeout=30.0` to aiosqlite `connect_args`. Default SQLite busy_timeout is 5 seconds, which is too short when one writer holds the lock through a 10–30 second LLM round-trip. 30s accommodates the LLM p99 latency with margin and matches the pattern used by mature FastAPI + SQLite projects (Datasette, Litestream).
+- **`manual_upload._create_upload_scan_log`**: now commits immediately after `db.add(ScanLog) + db.flush()` (previously only flushed, leaving the transaction open). Releases the SQLite writer lock before the LLM enrichment call downstream. Other concurrent requests can now write their own ScanLog rows without blocking on each other.
+
+### Tests
+
+- **486 passing, 100% coverage** (+10 from v0.8.7).
+- Backward-compatibility verified: the v0.8.6 manual-upload test suite (22 tests) and the v0.8.7 multi-file upload flow (all e2e paths) both pass unchanged.
+- CI-simulated run (no `.env`, env vars injected inline) clean.
+
+### Expected impact
+
+A batch of image-based train-ticket PDFs, re-uploaded after deploying v0.8.8:
+- 5 of them that previously returned `not_vat_invoice` should now return `saved` with `invoice_type="电子发票（铁路电子客票）"`, `amount=0` (pending user correction), and a proper 20-digit `invoice_no`.
+- 3 of them that previously returned 500 from `database is locked` will process cleanly because the 30-second busy_timeout + early-commit pattern eliminates the contention window.
+
+Under sustained concurrent load (the v0.8.7 browser batch of up to 3 parallel uploads), the lock contention is now bounded by the LLM round-trip latency alone — no request should fail due to DB locking.
+
+### Citation
+
+- 国家税务总局 财政部 中国国家铁路集团有限公司公告 2024年第8号《关于铁路客运推广使用全面数字化的电子发票的公告》 — effective 2024-11-01
+- 国家税务总局 财政部 中国民用航空局公告 2024年第9号《关于民航旅客运输服务推广使用全面数字化的电子发票的公告》 — effective 2024-12-01
+- Retail ticket retroactive guidance: STA 货物和劳务税司 answered on 2025-09-17 confirming 退票费 electronic tickets retain full deduction rights.
+
 ## [0.8.7] - 2026-04-20
 
 ### Why this release matters

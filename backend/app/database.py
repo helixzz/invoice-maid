@@ -70,7 +70,17 @@ def create_engine_and_session(
 ) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(
         database_url,
-        connect_args={"check_same_thread": False},
+        connect_args={
+            "check_same_thread": False,
+            # SQLite busy_timeout in seconds. Controls how long a waiting
+            # writer will block before raising `sqlite3.OperationalError:
+            # database is locked`. Default (5s) is too short when multiple
+            # concurrent upload requests each need to write ScanLog +
+            # ExtractionLog + Invoice rows while one of them is waiting on
+            # an LLM round-trip. 30s accommodates the LLM p99 latency with
+            # margin; observed under load during v0.8.7 multi-file uploads.
+            "timeout": 30.0,
+        },
     )
     _install_sqlite_hooks(engine)
 

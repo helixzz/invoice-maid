@@ -163,6 +163,24 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.8.8 — Released
+
+**Theme:** Railway + airline e-ticket support (per 2024年第8号/9号公告) and SQLite concurrent-writer fix.
+
+Production incident: a user manually uploaded 8 铁路电子客票 PDFs via the v0.8.7 multi-file flow — 5 rejected as `not_vat_invoice`, 3 lost to `sqlite3.OperationalError: database is locked`. Triangulated diagnosis showed three stacked issues:
+
+1. **LLM prompt was pre-2024.** It treated 行程单 / 出行记录 as ride-itinerary receipts. Correct pre-2024, wrong since 国家税务总局 2024年第8号公告 (effective 2024-11-01) reclassified 铁路电子客票 as legal 全面数字化的电子发票, and 2024年第9号公告 (effective 2024-12-01) did the same for 航空电子行程单.
+2. **Image-based PDFs yield sparse text.** 12306-issued railway tickets are often rasterized, so pdfplumber/PyMuPDF extract only the 20-digit invoice_no — not the 票价 or buyer/seller. Existing confidence gate (`amount_is_sentinel`) would still reject even with a fixed prompt.
+3. **SQLite writer-lock contention.** v0.8.7's 3-worker pool had each worker hold the lock through a 10–30s LLM round-trip, exceeding the default 5s busy_timeout.
+
+v0.8.8 ships coordinated fixes: LLM prompt adds **PATH B** validity rule for transport e-tickets (matches on 20-digit invoice_no + transport markers, bypasses the 价税合计 requirement for image PDFs); `VALID_INVOICE_TYPES` adds `电子发票（铁路电子客票）` + `电子发票（航空运输电子客票行程单）`; manual-upload confidence gate relaxes for detected transport e-tickets (saves with `amount=0` for user correction). SQLite engine gets `timeout=30.0` in connect_args, and `_create_upload_scan_log` commits immediately so the writer lock is released before the LLM call.
+
+486 tests, 100% coverage (+10 from v0.8.7). The 5 real 铁路电子客票 PDFs that failed in v0.8.7 should now save cleanly with proper `invoice_type`; the 3 lost to DB lock should process without contention.
+
+See [CHANGELOG.md](CHANGELOG.md#088---2026-04-20).
+
+---
+
 ## v0.8.7 — Released
 
 **Theme:** Multi-file invoice upload — drag in up to 25 PDF / XML / OFD files at once, processed 3 in parallel with per-file progress and retry.

@@ -471,3 +471,299 @@ async def test_process_uploaded_invoice_llm_merge_skips_unknown_fields(
     assert result.invoice.invoice_no == "12345678"
     assert result.invoice.amount == Decimal("50.00")
     assert result.invoice.invoice_date == date(2026, 4, 20)
+
+
+# ══ Transport e-ticket acceptance tests (v0.8.8) ════════════════════════════
+#
+# Per 国家税务总局 2024年第8号公告 (railway, 2024-11-01 effective) and 2024年
+# 第9号公告 (airline, 2024-12-01 effective), railway/airline e-tickets are
+# legal VAT invoices. These tests regress against the failure mode reported
+# in production: 8 real 铁路电子客票 PDFs all rejected as "not_vat_invoice"
+# because the pre-2024 prompt+gate treated them as ride-itinerary receipts.
+
+
+def _railway_eticket_parsed(**overrides) -> ParsedInvoice:
+    """A realistic image-based railway e-ticket: 20-digit invoice_no +
+    铁路电子客票 item summary, but NO readable buyer/seller/amount (the PDF
+    is rendered as a raster image so pdfplumber can't extract fields)."""
+    base = dict(
+        invoice_no="26369125322000221831",
+        buyer=None,
+        seller=None,
+        amount=None,
+        invoice_date=date(2026, 4, 17),
+        invoice_type=None,
+        item_summary="铁路电子客票",
+        raw_text="铁路电子客票 发票号码 26369125322000221831 ",
+        source_format="pdf",
+        extraction_method="llm",
+        confidence=0.3,
+        is_vat_document=False,
+    )
+    base.update(overrides)
+    return ParsedInvoice(**base)
+
+
+def _railway_llm_extract(**overrides) -> InvoiceExtract:
+    """What the 2024-updated LLM prompt should return for a railway
+    e-ticket: is_valid_tax_invoice=True, amount=0.01 when unreadable,
+    invoice_type set to the official STA-designated name."""
+    base = dict(
+        buyer="未知",
+        seller="未知",
+        invoice_no="26369125322000221831",
+        invoice_date=date(2026, 4, 17),
+        amount=Decimal("0.01"),
+        item_summary="铁路电子客票",
+        invoice_type="电子发票（铁路电子客票）",
+        confidence=0.6,
+        is_valid_tax_invoice=True,
+    )
+    base.update(overrides)
+    return InvoiceExtract(**base)
+
+
+def test_is_transport_e_ticket_by_official_type_name() -> None:
+    """Direct match on VALID_INVOICE_TYPES subset."""
+    parsed = _railway_eticket_parsed(invoice_type="电子发票（铁路电子客票）")
+    assert mu._is_transport_e_ticket(parsed) is True
+
+    parsed_airline = _railway_eticket_parsed(
+        invoice_type="电子发票（航空运输电子客票行程单）",
+        item_summary="航空客运 PVG→PEK MU5101",
+        raw_text="航空运输电子客票行程单",
+    )
+    assert mu._is_transport_e_ticket(parsed_airline) is True
+
+
+def test_is_transport_e_ticket_by_raw_text_marker_when_type_absent() -> None:
+    """Image-based PDF where type label didn't survive parsing but the
+    raw OCR'd text still contains 铁路电子客票. Must also match."""
+    parsed = _railway_eticket_parsed(
+        invoice_type=None,
+        item_summary="铁路电子客票",
+        raw_text="铁路电子客票 26369125322000221831 中国铁路上海局集团有限公司",
+    )
+    assert mu._is_transport_e_ticket(parsed) is True
+
+
+def test_is_transport_e_ticket_rejects_without_20_digit_invoice_no() -> None:
+    """Marker presence alone is insufficient — must pair with a 20-digit
+    invoice_no (数电票 format). This prevents scam/fake documents that
+    mention 铁路 in boilerplate from getting the relaxed amount gate."""
+    parsed = _railway_eticket_parsed(
+        invoice_no="12345678",
+        invoice_type=None,
+        raw_text="铁路电子客票",
+    )
+    assert mu._is_transport_e_ticket(parsed) is False
+
+
+def test_is_transport_e_ticket_rejects_non_transport_document() -> None:
+    """Regular VAT invoice should never match — no ambiguity."""
+    parsed = _parsed()
+    assert mu._is_transport_e_ticket(parsed) is False
+
+
+async def test_process_uploaded_invoice_accepts_railway_eticket_with_image_pdf(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    """The v0.8.7 regression: image-based 铁路电子客票 PDF with no readable
+    amount, LLM correctly identifies type as 电子发票（铁路电子客票） and
+    says is_valid_tax_invoice=True. Service must SAVE with amount=0
+    (user corrects later via inline edit) instead of rejecting as
+    low_confidence. Per 国家税务总局 2024年第8号公告."""
+    del seeded_manual_account
+    parsed = _railway_eticket_parsed()
+    monkeypatch.setattr(mu, "parse_invoice", lambda f, p: parsed)
+
+    ai = SimpleNamespace(
+        extract_invoice_fields=AsyncMock(return_value=_railway_llm_extract()),
+        embed_text=AsyncMock(return_value=[0.0]),
+    )
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    result = await mu.process_uploaded_invoice(
+        db=db, ai=ai, file_mgr=file_mgr,
+        settings=settings, filename="railway.pdf", payload=b"x",
+    )
+    assert result.outcome == "saved", (
+        f"Railway e-ticket should save despite unreadable amount; got {result.outcome} / {result.detail}"
+    )
+    assert result.invoice is not None
+    assert result.invoice.invoice_no == "26369125322000221831"
+    assert result.invoice.invoice_type == "电子发票（铁路电子客票）"
+    # Amount falls through as 0 because LLM sentinel 0.01 < 0.10 threshold
+    # and the transport-ticket branch allows saving without it.
+    assert result.invoice.amount in (Decimal("0"), Decimal("0.01"))
+
+
+async def test_process_uploaded_invoice_accepts_airline_eitinerary(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    """Airline 电子行程单 — same relaxed gate per 2024年第9号公告."""
+    del seeded_manual_account
+    parsed = _railway_eticket_parsed(
+        invoice_no="24111019987100876543",
+        invoice_type=None,
+        item_summary="航空运输电子客票行程单",
+        raw_text="航空运输电子客票行程单 MU5101 PVG PEK 航班号",
+    )
+    monkeypatch.setattr(mu, "parse_invoice", lambda f, p: parsed)
+
+    ai = SimpleNamespace(
+        extract_invoice_fields=AsyncMock(return_value=_railway_llm_extract(
+            invoice_no="24111019987100876543",
+            invoice_type="电子发票（航空运输电子客票行程单）",
+            item_summary="航空客运 PVG→PEK MU5101",
+            amount=Decimal("0.01"),
+        )),
+        embed_text=AsyncMock(return_value=[0.0]),
+    )
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    result = await mu.process_uploaded_invoice(
+        db=db, ai=ai, file_mgr=file_mgr,
+        settings=settings, filename="flight.pdf", payload=b"x",
+    )
+    assert result.outcome == "saved", f"{result.outcome} / {result.detail}"
+    assert result.invoice is not None
+    assert result.invoice.invoice_type == "电子发票（航空运输电子客票行程单）"
+
+
+async def test_process_uploaded_invoice_still_rejects_didi_ride_itinerary(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    """Sanity check: the v0.8.8 prompt change must NOT start accepting
+    ride-itinerary (滴滴/用车凭证) as VAT invoices — only railway and
+    airline e-tickets per the 2024 regulations. Didi rides are still
+    NOT 增值税发票 (user can get a separate 增值税电子普通发票 via Didi's
+    reimbursement flow, but the 行程单 itself is not one).
+
+    Uses a non-digital invoice_no to ensure parser_invoice_no_looks_valid
+    is False, so strong_parse is False, so the LLM's veto
+    (is_valid_tax_invoice=False) correctly activates the llm_rejected
+    branch."""
+    del seeded_manual_account
+    parsed = _parsed(
+        invoice_no="DIDI-REF-123",
+        invoice_type=None,
+        item_summary="滴滴出行行程单",
+        raw_text="滴滴出行行程单 出行记录 用车凭证",
+        confidence=0.3,
+        extraction_method="regex",
+        is_vat_document=False,
+        buyer=None,
+        seller=None,
+        amount=None,
+    )
+    monkeypatch.setattr(mu, "parse_invoice", lambda f, p: parsed)
+
+    ai = SimpleNamespace(
+        extract_invoice_fields=AsyncMock(return_value=InvoiceExtract(
+            buyer="未知",
+            seller="未知",
+            invoice_no="DIDI-REF-123",
+            invoice_date=date(2026, 4, 20),
+            amount=Decimal("0.01"),
+            item_summary="滴滴出行",
+            invoice_type="出行记录",
+            confidence=0.3,
+            is_valid_tax_invoice=False,
+        )),
+        embed_text=AsyncMock(return_value=[0.0]),
+    )
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    result = await mu.process_uploaded_invoice(
+        db=db, ai=ai, file_mgr=file_mgr,
+        settings=settings, filename="didi.pdf", payload=b"x",
+    )
+    assert result.outcome == "not_vat_invoice", (
+        f"Didi ride-itinerary must still be rejected; got {result.outcome}"
+    )
+
+
+async def test_process_uploaded_invoice_railway_eticket_with_readable_amount(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    """Non-image railway e-ticket where LLM extracts a real 票价. Normal
+    happy path — amount goes through the regular merge without hitting
+    the relaxed transport-ticket gate (which only activates when amount
+    would otherwise be sentinel)."""
+    del seeded_manual_account
+    parsed = _railway_eticket_parsed(
+        amount=None,
+        confidence=0.4,
+    )
+    monkeypatch.setattr(mu, "parse_invoice", lambda f, p: parsed)
+
+    ai = SimpleNamespace(
+        extract_invoice_fields=AsyncMock(return_value=_railway_llm_extract(
+            amount=Decimal("553.50"),
+            buyer="上海米宗网络科技有限公司",
+            seller="中国铁路上海局集团有限公司",
+            confidence=0.85,
+        )),
+        embed_text=AsyncMock(return_value=[0.0]),
+    )
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    result = await mu.process_uploaded_invoice(
+        db=db, ai=ai, file_mgr=file_mgr,
+        settings=settings, filename="railway-hires.pdf", payload=b"x",
+    )
+    assert result.outcome == "saved"
+    assert result.invoice is not None
+    assert result.invoice.amount == Decimal("553.50")
+    assert result.invoice.buyer == "上海米宗网络科技有限公司"
+    assert result.invoice.seller == "中国铁路上海局集团有限公司"
+
+
+def test_valid_invoice_types_includes_railway_and_airline_e_tickets() -> None:
+    """Frozen-in-schema assertion: the two STA-designated e-ticket type
+    names must be in VALID_INVOICE_TYPES or the type_is_valid gate in
+    manual_upload will reject them via the 'not_vat_invoice' branch."""
+    from app.schemas.invoice import TRANSPORT_E_TICKET_TYPES, VALID_INVOICE_TYPES
+
+    assert "电子发票（铁路电子客票）" in VALID_INVOICE_TYPES
+    assert "电子发票（航空运输电子客票行程单）" in VALID_INVOICE_TYPES
+    assert TRANSPORT_E_TICKET_TYPES.issubset(VALID_INVOICE_TYPES)
+
+
+async def test_process_uploaded_invoice_merge_skips_zero_amount_from_llm(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    """Covers the new `if extracted.amount and extracted.amount >= Decimal('0.10'):`
+    branch in _merge_llm_into_parsed. When the LLM returns amount below
+    the 0.10 sentinel (including 0), the parser's None amount must NOT be
+    overwritten with a nonsensical value — the zero survives into the save
+    and the user can correct it later via inline edit."""
+    del seeded_manual_account
+    parsed = _parsed(
+        invoice_no=None,
+        amount=None,
+        invoice_type=None,
+        confidence=0.55,
+        extraction_method="regex",
+        is_vat_document=True,
+    )
+    monkeypatch.setattr(mu, "parse_invoice", lambda f, p: parsed)
+
+    ai = SimpleNamespace(
+        extract_invoice_fields=AsyncMock(return_value=_strong_llm_extract(
+            invoice_no="88888888",
+            amount=Decimal("0.05"),
+            is_valid_tax_invoice=True,
+            confidence=0.7,
+        )),
+        embed_text=AsyncMock(return_value=[0.0]),
+    )
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    result = await mu.process_uploaded_invoice(
+        db=db, ai=ai, file_mgr=file_mgr,
+        settings=settings, filename="x.pdf", payload=b"x",
+    )
+    # The crucial assertion: amount=0.05 from LLM did NOT get merged in,
+    # because it's below the 0.10 sentinel. Invoice was saved (not
+    # rejected) with amount=0 (parsed.amount was None, fallback to 0).
+    assert result.outcome == "saved"
+    assert result.invoice is not None
+    assert result.invoice.amount == Decimal("0")
+

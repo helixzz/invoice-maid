@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.models import EmailAccount, ExtractionLog, Invoice, ScanLog
-from app.schemas.invoice import VALID_INVOICE_TYPES
+from app.schemas.invoice import TRANSPORT_E_TICKET_TYPES, VALID_INVOICE_TYPES
 from app.services.ai_service import AIService
 from app.services.email_classifier import is_scam_text
 from app.services.file_manager import FileManager
@@ -86,6 +86,7 @@ async def _get_or_fail_manual_account(db: AsyncSession) -> EmailAccount:
 async def _create_upload_scan_log(
     db: AsyncSession, account_id: int, filename: str
 ) -> ScanLog:
+    del filename
     scan_log = ScanLog(
         email_account_id=account_id,
         started_at=datetime.now(timezone.utc),
@@ -94,7 +95,15 @@ async def _create_upload_scan_log(
         error_message=None,
     )
     db.add(scan_log)
-    await db.flush()
+    # Commit immediately so the SQLite writer lock is released before we
+    # make the (potentially 10-30 second) LLM enrichment call downstream.
+    # Without this commit, three concurrent uploads each hold the writer
+    # lock through their LLM round-trip, blocking each other until one
+    # hits the 30s busy_timeout — observed as `database is locked` errors
+    # in v0.8.7 production logs. See also connect_args timeout=30 in
+    # database.py, which is the second half of the fix.
+    await db.commit()
+    await db.refresh(scan_log)
     return scan_log
 
 
@@ -102,6 +111,33 @@ def _truncate(text: str | None, limit: int = 500) -> str | None:
     if text is None:
         return None
     return text[:limit]
+
+
+def _is_transport_e_ticket(parsed: ParsedInvoice) -> bool:
+    """True when the parsed invoice is a 2024-era railway or airline
+    e-ticket — either by official type name match, or by raw-text markers
+    that indicate the document is a 铁路电子客票 / 电子行程单 even when the
+    PDF is image-based and type label didn't survive parsing.
+
+    Enables the relaxed amount gate in ``process_uploaded_invoice`` per
+    国家税务总局 2024年第8号公告 (railway, 2024-11-01 effective) and
+    2024年第9号公告 (airline, 2024-12-01 effective), which classified
+    these tickets as full 全面数字化的电子发票 despite often lacking a
+    parseable 价税合计 when the PDF is rendered as an image."""
+    invoice_type = parsed.invoice_type or ""
+    if invoice_type in TRANSPORT_E_TICKET_TYPES:
+        return True
+    item_summary = parsed.item_summary or ""
+    raw_text = parsed.raw_text or ""
+    transport_markers = ("铁路电子客票", "铁路客运", "航空运输电子客票行程单", "电子行程单")
+    invoice_no = parsed.invoice_no or ""
+    has_digital_invoice_no = len(invoice_no) == 20 and invoice_no.isdigit()
+    if not has_digital_invoice_no:
+        return False
+    for marker in transport_markers:
+        if marker in invoice_type or marker in item_summary or marker in raw_text:
+            return True
+    return False
 
 
 def _should_enrich(parsed: ParsedInvoice) -> tuple[bool, bool]:
@@ -149,7 +185,7 @@ def _merge_llm_into_parsed(parsed: ParsedInvoice, extracted: Any) -> bool:
     if parsed.invoice_date is None and extracted.invoice_date:
         parsed.invoice_date = extracted.invoice_date
     if parsed.amount is None or (parsed.amount is not None and parsed.amount < Decimal("0.10")):
-        if extracted.amount:  # pragma: no branch
+        if extracted.amount and extracted.amount >= Decimal("0.10"):
             parsed.amount = extracted.amount
     parsed.extraction_method = "llm"
     parsed.confidence = max(extracted.confidence, parsed.confidence)
@@ -284,13 +320,18 @@ async def process_uploaded_invoice(
     type_is_valid = final_type in VALID_INVOICE_TYPES or any(
         vt in final_type for vt in VALID_INVOICE_TYPES if len(vt) > 3
     )
+    is_transport_eticket = _is_transport_e_ticket(parsed)
     llm_rejected = (
         extracted is not None
         and not extracted.is_valid_tax_invoice
         and not strong_parse
+        and not is_transport_eticket
     )
     heuristic_rejected = (
-        extracted is None and not parsed.is_vat_document and not type_is_valid
+        extracted is None
+        and not parsed.is_vat_document
+        and not type_is_valid
+        and not is_transport_eticket
     )
     if llm_rejected or (not type_is_valid and heuristic_rejected):
         _log_extraction(
@@ -313,10 +354,22 @@ async def process_uploaded_invoice(
             parse_format=parsed.source_format,
         )
 
-    if parsed.confidence < 0.6 or not parsed.invoice_no or amount_is_sentinel:
+    # Confidence + completeness gate. Transport e-tickets get a relaxed
+    # amount check: image-based railway/airline ticket PDFs legitimately
+    # cannot yield a readable 票价 from pdfplumber/PyMuPDF alone, but their
+    # 20-digit invoice_no + invoice_type + 2024年第8号公告 still make them
+    # valid VAT invoices. Save with amount=0 so the user can correct later
+    # via the inline-edit UI, rather than silently rejecting.
+    effective_amount_is_sentinel = amount_is_sentinel and not is_transport_eticket
+    effective_confidence_floor = 0.5 if is_transport_eticket else 0.6
+    if (
+        parsed.confidence < effective_confidence_floor
+        or not parsed.invoice_no
+        or effective_amount_is_sentinel
+    ):
         reason = (
             "amount below sentinel"
-            if amount_is_sentinel
+            if effective_amount_is_sentinel
             else ("missing invoice_no" if not parsed.invoice_no else "low confidence")
         )
         _log_extraction(

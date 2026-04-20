@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.8.7-blue" alt="v0.8.7">
+  <img src="https://img.shields.io/badge/version-0.8.8-blue" alt="v0.8.8">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-476%20passing-brightgreen" alt="476 tests">
+  <img src="https://img.shields.io/badge/Tests-486%20passing-brightgreen" alt="486 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -92,6 +92,7 @@ Two invoice sources feed the **same** five-stage pipeline. The email scanner run
 - **AI classification & extraction** — OpenAI-compatible LLMs classify emails and extract structured invoice data via the Instructor library
 - **Tier-3 body-link analysis** — when an email contains download links, the LLM picks the **single best direct invoice link** instead of blindly following every URL, with a pre-download URL blocklist that rejects tracking pixels and unsubscribe links before spending any HTTP round-trip
 - **Multi-format parsing** — PDF (pdfplumber + PyMuPDF), XML (lxml), OFD (easyofd) with QR code decoding via pyzbar
+- **Railway + airline e-ticket support** — 铁路电子客票 (2024年第8号公告) and 航空运输电子客票行程单 (2024年第9号公告) are recognized as valid VAT invoices, including image-based PDFs where only the 20-digit invoice_no survives parsing
 - **Manual correction** — edit any extracted field inline with a full audit trail (`CorrectionLog`)
 - **Confidence scoring** — extraction confidence and method displayed per invoice as coloured badges
 - **Duplicate detection** — composite deduplication on invoice number + email UID + attachment filename

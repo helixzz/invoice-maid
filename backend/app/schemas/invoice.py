@@ -11,9 +11,16 @@ VALID_INVOICE_TYPES: frozenset[str] = frozenset({
     "增值税专用发票", "增值税普通发票", "增值税电子专用发票", "增值税电子普通发票",
     "增值税普通发票（卷票）", "通行费发票",
     "电子发票（增值税专用发票）", "电子发票（普通发票）", "全面数字化的电子发票",
+    "电子发票（铁路电子客票）", "电子发票（航空运输电子客票行程单）",
     "数电专票", "数电普票", "电子专票", "电子普票",
     "机动车销售统一发票", "二手车销售统一发票",
     "01", "03", "04", "08", "10", "11", "14", "15", "0910", "0920",
+})
+
+
+TRANSPORT_E_TICKET_TYPES: frozenset[str] = frozenset({
+    "电子发票（铁路电子客票）",
+    "电子发票（航空运输电子客票行程单）",
 })
 
 
@@ -24,13 +31,22 @@ class InvoiceExtract(BaseModel):
     seller: str = Field(description="销售方名称")
     invoice_no: str = Field(description="发票号码")
     invoice_date: date = Field(description="开票日期, YYYY-MM-DD")
-    amount: Decimal = Field(gt=0, description="价税合计金额，纯数字")
+    amount: Decimal = Field(ge=0, description="价税合计金额，纯数字。对于图片型铁路/航空电子客票若无法读取可填 0.01 标记占位")
     item_summary: str = Field(description="商品/服务一句话中文概括")
-    invoice_type: str = Field(description="发票类型，如增值税电子普通发票、数电专票")
+    invoice_type: str = Field(description="发票类型，如增值税电子普通发票、数电专票、电子发票（铁路电子客票）")
     confidence: float = Field(ge=0, le=1, default=0.9)
     is_valid_tax_invoice: bool = Field(
         default=False,
-        description="True ONLY when the document is an actual Chinese VAT tax invoice (增值税发票). False for hotel receipts, ride itineraries, payment receipts, or any non-invoice document.",
+        description=(
+            "True when the document is any legally-recognised Chinese VAT tax "
+            "invoice, INCLUDING:\n"
+            "• Traditional 增值税发票 (专票/普票/电子发票)\n"
+            "• 数电票 / 全面数字化的电子发票\n"
+            "• 电子发票（铁路电子客票）— per 2024年第8号公告 (2024-11-01起)\n"
+            "• 电子发票（航空运输电子客票行程单）— per 2024年第9号公告 (2024-12-01起)\n"
+            "False for hotel receipts, ride itineraries (滴滴/曹操出行), payment "
+            "receipts, foreign-currency receipts, or any non-invoice document."
+        ),
     )
 
 

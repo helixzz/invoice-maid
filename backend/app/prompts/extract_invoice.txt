@@ -20,39 +20,71 @@ for all other fields. Do NOT extract fields from scam documents.
 
 ══ STEP 1 — VALIDITY CHECK (decide before extracting anything) ══════════════
 
-Set is_valid_tax_invoice=true when BOTH rules below are satisfied:
+Set is_valid_tax_invoice=true when EITHER of the following holds:
 
-  RULE A (mandatory): 发票号码 is present — 8 digits (legacy) or 20 digits (数电票).
-  RULE B (at least 2 of the following 4 signals, with AT LEAST ONE of ① or ②
-         — the VAT-specific signals — present):
-    ① A recognised invoice type title from the VALID TYPES list below
-    ② 税率 or 税额 (tax rate or tax amount) explicitly stated
-    ③ 价税合计 (grand total including tax)
-    ④ 销售方名称 (seller name) or 销方纳税人识别号 (seller tax ID)
+  PATH A — Generic VAT invoice (developed industries):
+    RULE A1 (mandatory): 发票号码 is present — 8 digits (legacy) or 20 digits (数电票).
+    RULE A2 (at least 2 of the following 4 signals, with AT LEAST ONE of ① or ②
+             — the VAT-specific signals — present):
+      ① A recognised invoice type title from the VALID TYPES list below
+      ② 税率 or 税额 (tax rate or tax amount) explicitly stated
+      ③ 价税合计 (grand total including tax)
+      ④ 销售方名称 (seller name) or 销方纳税人识别号 (seller tax ID)
 
-Rationale: rule A pins identity; the VAT-specific guard in rule B prevents
-ordinary receipts whose numeric serial happens to be 8/20 digits from being
-accepted on generic "total + seller" evidence alone.
+  PATH B — Transport e-tickets (railway + airline, effective 2024-11-01 onward):
+    Railway e-ticket 电子发票（铁路电子客票）— per 国家税务总局 财政部 中国国家铁路
+    集团有限公司公告 2024年第8号 — is a full 全面数字化的电子发票 and has VAT
+    deduction rights. Airline e-itinerary 电子发票（航空运输电子客票行程单）— per
+    2024年第9号公告 (effective 2024-12-01) — likewise. Both remain valid even
+    when the PDF is image-based and seller / price fields are not readable.
+
+    RULE B1 (mandatory): 发票号码 is 20 digits (数电票 format).
+    RULE B2 (at least ONE of the following transport markers is present):
+      • 铁路电子客票 / 铁路客运 / 车次 / 发站 / 到站 / 乘车日期 / 乘车人 / 席别
+      • 航空运输电子客票行程单 / 电子行程单 / 航班号 / 乘机日期 / 出发地 / 目的地
+        / 承运人 / 燃油附加费 / 民航发展基金
+
+    When PATH B matches, set is_valid_tax_invoice=true even if 销售方 / 价税合计
+    / 税率 are not readable from the PDF. Image-based transport tickets commonly
+    have only invoice_no + title extractable, and that is sufficient evidence.
+
+Rationale: Path A pins generic VAT invoices via the VAT-specific signals that
+prevent ordinary receipts from slipping through. Path B handles the 2024 reform
+in which railway and airline e-tickets became their own subtypes of 数电票 with
+legal VAT deduction rights, but whose PDFs are frequently image-heavy and print
+prices as 票价 rather than 价税合计.
 
 Set is_valid_tax_invoice=false and use schema defaults for ALL other fields if
 the document is any of the following — do NOT attempt field extraction:
   • Title contains: 入住凭证 / 住宿凭证 / 结账单 / 消费清单  (hotel checkout)
-  • Title contains: 行程单 / 出行记录 / 用车凭证 / 滴滴      (ride itinerary)
+  • Title contains: 用车凭证 / 滴滴 / 出行记录               (ride itinerary;
+    NOTE: railway 铁路电子客票 and airline 电子行程单 are NOT included here —
+    they are valid VAT invoices per PATH B above)
   • Title contains: 收款收据 / 付款凭证 / 收据               (payment receipt)
   • Foreign-currency receipt (GitHub, Stripe, PayPal, $ £ €)
   • Bank statement or transaction record
   • No 发票号码 anywhere in the text
-  • All monetary amounts are zero
+  • All monetary amounts are zero AND document is not a railway/airline e-ticket
 
 ══ STEP 2 — FIELD EXTRACTION (only when is_valid_tax_invoice=true) ══════════
 
   buyer        购买方名称 — exact text, no inference
+                For railway/airline e-tickets: the 购买方 is the ticket
+                purchaser (企业名称 if reimbursing, otherwise 乘车人/乘客 name).
   seller       销售方名称 — exact text, no inference
+                For railway e-tickets: the 铁路运输企业 (e.g. "中国铁路XX局
+                集团有限公司"). For airline: the 承运人/航空公司.
   invoice_no   发票号码 — digits only, 8 or 20 digits
   invoice_date 开票日期 — YYYY-MM-DD
-  amount       价税合计 (grand total incl. tax) — decimal, no symbols
-  item_summary single-line Chinese summary of all goods/services, ≤30 chars
-  invoice_type exact type name from VALID TYPES; closest match if abbreviated
+  amount       价税合计 (grand total incl. tax) — decimal, no symbols.
+                For railway tickets, use 票价 (ticket price). For airline,
+                use 票价 + 燃油附加费 + 民航发展基金 as the total.
+  item_summary single-line Chinese summary of all goods/services, ≤30 chars.
+                For railway: "铁路客运 [起点]→[终点] [车次] [席别]".
+                For airline: "航空客运 [起点]→[终点] [航班号]".
+  invoice_type exact type name from VALID TYPES; closest match if abbreviated.
+                For railway: "电子发票（铁路电子客票）".
+                For airline: "电子发票（航空运输电子客票行程单）".
   confidence   your confidence that extracted fields are correct (0.0–1.0)
 
 If a field is genuinely absent: strings → "未知"  |  amount → 0.01
@@ -68,6 +100,8 @@ is_valid_tax_invoice=false instead of returning the suspicious name.
   机动车销售统一发票        二手车销售统一发票
   电子发票（增值税专用发票）
   电子发票（普通发票）
+  电子发票（铁路电子客票）              ← 2024年第8号公告，2024-11-01起
+  电子发票（航空运输电子客票行程单）    ← 2024年第9号公告，2024-12-01起
   全面数字化的电子发票
   数电专票  数电普票  电子专票  电子普票
 
