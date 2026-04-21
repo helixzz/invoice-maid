@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
 
 const backendBaseURL = 'http://127.0.0.1:8010';
+const smokeEmail = 'admin@local';
 const smokePassword = 'smoke-admin-password';
 
 test.describe('Invoice Maid Smoke Tests', () => {
   test.beforeEach(async ({ request }) => {
     const loginResponse = await request.post(`${backendBaseURL}/api/v1/auth/login`, {
-      data: { password: smokePassword },
+      data: { email: smokeEmail, password: smokePassword },
     });
     expect(loginResponse.ok()).toBeTruthy();
     const { access_token } = await loginResponse.json();
@@ -24,6 +25,7 @@ test.describe('Invoice Maid Smoke Tests', () => {
   test('loads login screen', async ({ page }) => {
     await page.goto('/login');
     await expect(page.locator('h2', { hasText: 'Invoice Maid' })).toBeVisible();
+    await expect(page.getByLabel('Email')).toBeVisible();
     await expect(page.getByLabel('Password')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
   });
@@ -31,6 +33,7 @@ test.describe('Invoice Maid Smoke Tests', () => {
   test('runs a real backend-backed post-login smoke workflow', async ({ page }) => {
     await page.goto('/login');
 
+    await page.getByLabel('Email').fill(smokeEmail);
     await page.getByLabel('Password').fill(smokePassword);
     await page.getByRole('button', { name: 'Sign in' }).click();
 
@@ -80,6 +83,10 @@ test.describe('Invoice Maid Smoke Tests', () => {
     expect(triggerResponse.ok()).toBeTruthy();
     await expect.poll(async () => await page.getByRole('row').filter({ hasText: 'Smoke Mailbox' }).count()).toBeGreaterThan(1);
 
-    await expect(page.getByRole('button', { name: 'Logout' })).toBeVisible();
+    // v0.9.0-alpha.8: the bare Logout button was replaced with a user-
+    // profile dropdown. Open the dropdown (button label is the user's
+    // email via AppLayout.vue), then assert the Logout menuitem shows.
+    await page.getByRole('button', { name: new RegExp(smokeEmail, 'i') }).click();
+    await expect(page.getByRole('menuitem', { name: 'Logout' })).toBeVisible();
   });
 });
