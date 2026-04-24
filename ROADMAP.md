@@ -163,6 +163,32 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v1.0.0 — Released
+
+**Stable multi-user release.** Caps the v0.9.x arc with a single user-visible UX improvement — per-email scan summary aggregation — and docs polish.
+
+**What changed**:
+- Scan-log expanded panel now aggregates `extraction_logs` by `email_uid`, showing one card per email instead of one row per attachment. A 2-email / 6-row Sam's Club invoice scan (two emails × three attachments each) now summarizes as "2 封邮件 · 保存 1 张新发票 · 去重 1 封" instead of the confusing "6 duplicate rows".
+- Per-email card shows the highest-priority outcome as the primary badge (saved > duplicate > skipped_seen > low_confidence > parse_failed > error > not_invoice) with attachment-level chips below for low-level audit.
+- `duplicate` badge has an explicit tooltip: "Same invoice_no already exists — correctly deduped, no action needed" — directly addressing the user confusion from the 2026-04-20 investigation.
+- Parse-method and classification-tier chips from v0.9.1 retained as secondary forensic view.
+
+**What did NOT change**:
+- No backend changes
+- No schema changes
+- No API contract changes
+- No migration
+- No classifier behavior change
+- No scanner behavior change
+
+Zero-touch upgrade from v0.9.1. 619 tests, 100% coverage (unchanged).
+
+**Deferred to v1.1.0**: Microsoft Graph Delta Query scanner rewrite — per Oracle review, needs state versioning, legacy bridge, operator kill-switch. Too high blast radius for first 1.0 cut.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full cumulative journey from v0.8 → v1.0.
+
+---
+
 ## v0.9.1 — Released
 
 **Email scanner + classifier hardening.** Investigation into a 2026-04-20 "missed invoice" report concluded the system worked correctly (Sam's Club sent the same e-invoice number twice 247 seconds apart; correctly deduped) but surfaced 8 real defects. This release bundles the low/medium-risk fixes per Oracle review; Microsoft Graph Delta Query is deferred to v1.1.0.

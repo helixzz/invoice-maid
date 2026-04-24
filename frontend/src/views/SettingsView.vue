@@ -207,6 +207,99 @@ const extractionLogs = ref<Record<number, ExtractionLog[]>>({})
 const extractionSummaries = ref<Record<number, ExtractionSummary>>({})
 const loadingExtractionLogs = ref<Record<number, boolean>>({})
 
+interface EmailAggregate {
+  email_uid: string | null
+  email_subject: string
+  extractions: ExtractionLog[]
+  best_outcome: string
+  invoice_no: string | null
+  highest_tier: number | null
+}
+
+/**
+ * Aggregate a flat list of extraction_logs by email_uid so each email
+ * renders as ONE card even if it produced 3+ extraction rows (one per
+ * attachment format: PDF / OFD / XML). Prevents users from misreading
+ * "6 log rows" as "6 different invoices" when it's really 2 emails ×
+ * 3 attachments → 1 invoice saved + 5 dedupe/low-confidence rows.
+ *
+ * best_outcome precedence (highest to lowest): saved > duplicate >
+ * skipped_seen > low_confidence > parse_failed > error > not_invoice.
+ * This picks the most-meaningful per-email label for the collapsed
+ * card header; the expanded card still shows every individual
+ * extraction row for audit.
+ */
+const OUTCOME_PRIORITY: Record<string, number> = {
+  saved: 100,
+  success: 100,
+  duplicate: 80,
+  skipped_seen: 70,
+  low_confidence: 60,
+  not_vat_invoice: 55,
+  scam_detected: 55,
+  parse_failed: 40,
+  error: 30,
+  failed: 30,
+  not_invoice: 10,
+}
+
+const aggregateByEmail = (logs: ExtractionLog[]): EmailAggregate[] => {
+  const buckets = new Map<string, EmailAggregate>()
+  for (const log of logs) {
+    const key = log.email_uid || `__no_uid_${log.id}`
+    let bucket = buckets.get(key)
+    if (!bucket) {
+      bucket = {
+        email_uid: log.email_uid,
+        email_subject: log.email_subject,
+        extractions: [],
+        best_outcome: log.outcome,
+        invoice_no: null,
+        highest_tier: null,
+      }
+      buckets.set(key, bucket)
+    }
+    bucket.extractions.push(log)
+    const currentRank = OUTCOME_PRIORITY[bucket.best_outcome] ?? 0
+    const newRank = OUTCOME_PRIORITY[log.outcome] ?? 0
+    if (newRank > currentRank) bucket.best_outcome = log.outcome
+    if (log.invoice_no && !bucket.invoice_no) bucket.invoice_no = log.invoice_no
+    if (log.classification_tier != null) {
+      bucket.highest_tier = Math.max(bucket.highest_tier ?? 0, log.classification_tier)
+    }
+  }
+  return Array.from(buckets.values())
+}
+
+interface EmailCountBreakdown {
+  saved: number
+  duplicates: number
+  skipped: number
+  not_invoice: number
+  errors: number
+  total_emails: number
+}
+
+const summarizeEmails = (aggregates: EmailAggregate[]): EmailCountBreakdown => {
+  const result: EmailCountBreakdown = {
+    saved: 0,
+    duplicates: 0,
+    skipped: 0,
+    not_invoice: 0,
+    errors: 0,
+    total_emails: aggregates.length,
+  }
+  for (const agg of aggregates) {
+    const o = agg.best_outcome
+    if (o === 'saved' || o === 'success') result.saved += 1
+    else if (o === 'duplicate') result.duplicates += 1
+    else if (o === 'skipped_seen') result.skipped += 1
+    else if (o === 'error' || o === 'failed' || o === 'parse_failed') result.errors += 1
+    else result.not_invoice += 1
+  }
+  return result
+}
+
 const toggleLogExpansion = async (logId: number) => {
   if (expandedLogId.value === logId) {
     expandedLogId.value = null
@@ -872,16 +965,40 @@ onMounted(() => {
                       No emails processed in this scan.
                     </div>
                     <div v-else class="space-y-3">
-                      <div v-if="extractionSummaries[log.id]" class="mb-3">
-                        <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Summary</div>
-                        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
-                          <div v-for="(count, outcome) in extractionSummaries[log.id].outcomes" :key="outcome"
-                               class="bg-white border border-slate-200 rounded-lg p-2 text-center shadow-sm">
-                            <div class="text-xs text-slate-500 uppercase tracking-wide">{{ outcome }}</div>
-                            <div class="text-lg font-semibold text-slate-800">{{ count }}</div>
-                          </div>
+                      <!-- Per-email plain-language banner. Counts EMAILS, not
+                           extraction log rows. Three-attachment invoices (PDF +
+                           OFD + XML from Chinese 数电票) previously read as "6
+                           duplicates" from the raw logs; aggregating by email
+                           makes the "only 1 new invoice was added, the rest was
+                           correctly deduped" story visible at a glance. -->
+                      <div class="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
+                        <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Summary (by email)</div>
+                        <div class="flex flex-wrap items-center gap-2 text-sm">
+                          <span class="font-medium text-slate-700">
+                            {{ summarizeEmails(aggregateByEmail(extractionLogs[log.id])).total_emails }} 封邮件
+                          </span>
+                          <span class="text-slate-400">·</span>
+                          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border bg-green-50 text-green-700 border-green-200">
+                            保存 {{ summarizeEmails(aggregateByEmail(extractionLogs[log.id])).saved }} 张新发票
+                          </span>
+                          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border bg-blue-50 text-blue-700 border-blue-200"
+                                title="Same invoice_no already exists — correctly deduped, no action needed">
+                            去重 {{ summarizeEmails(aggregateByEmail(extractionLogs[log.id])).duplicates }} 封
+                          </span>
+                          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border bg-slate-100 text-slate-600 border-slate-200"
+                                title="Attachments previously processed in an earlier scan — no work done">
+                            已见 {{ summarizeEmails(aggregateByEmail(extractionLogs[log.id])).skipped }} 封
+                          </span>
+                          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border bg-slate-100 text-slate-600 border-slate-200">
+                            非发票 {{ summarizeEmails(aggregateByEmail(extractionLogs[log.id])).not_invoice }} 封
+                          </span>
+                          <span v-if="summarizeEmails(aggregateByEmail(extractionLogs[log.id])).errors > 0"
+                                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border bg-red-50 text-red-700 border-red-200">
+                            错误 {{ summarizeEmails(aggregateByEmail(extractionLogs[log.id])).errors }} 封
+                          </span>
                         </div>
-                        <div v-if="Object.keys(extractionSummaries[log.id].parse_methods).length > 0"
+                        <!-- Secondary parse-method / tier chips kept from v0.9.1 so operators still have the low-level forensic view. -->
+                        <div v-if="extractionSummaries[log.id] && Object.keys(extractionSummaries[log.id].parse_methods).length > 0"
                              class="flex flex-wrap gap-2 mt-2 text-xs text-slate-600">
                           <span class="font-medium text-slate-500 uppercase tracking-wide">Parse methods:</span>
                           <span v-for="(count, method) in extractionSummaries[log.id].parse_methods" :key="method"
@@ -889,7 +1006,7 @@ onMounted(() => {
                             <span class="font-mono">{{ method }}</span><span class="text-purple-500">·</span><span>{{ count }}</span>
                           </span>
                         </div>
-                        <div v-if="Object.keys(extractionSummaries[log.id].classification_tiers).length > 0"
+                        <div v-if="extractionSummaries[log.id] && Object.keys(extractionSummaries[log.id].classification_tiers).length > 0"
                              class="flex flex-wrap gap-2 mt-1 text-xs text-slate-600">
                           <span class="font-medium text-slate-500 uppercase tracking-wide">Classification:</span>
                           <span v-for="(count, tier) in extractionSummaries[log.id].classification_tiers" :key="tier"
@@ -898,51 +1015,68 @@ onMounted(() => {
                           </span>
                         </div>
                       </div>
-                      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Extraction Details</div>
-                      <div v-for="ext in extractionLogs[log.id]" :key="ext.id" class="bg-white border border-slate-200 rounded-lg p-3 text-sm flex flex-col gap-2 shadow-sm">
+
+                      <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Emails processed</div>
+                      <!-- Each email card shows ONE best-outcome badge (the
+                           highest-priority outcome across its attachments) and
+                           a per-attachment chip row. A "山姆会员商店购物发票"
+                           duplicate that previously rendered as 3 separate rows
+                           (pdf:duplicate / ofd:low_confidence / xml:duplicate)
+                           now renders as 1 card with "duplicate" as the primary
+                           badge and three smaller chips for the audit trail. -->
+                      <div v-for="agg in aggregateByEmail(extractionLogs[log.id])" :key="agg.email_uid || agg.extractions[0].id"
+                           class="bg-white border border-slate-200 rounded-lg p-3 text-sm flex flex-col gap-2 shadow-sm">
                         <div class="flex items-center justify-between gap-4">
-                          <div class="flex-1 font-medium text-slate-800 truncate" :title="ext.email_subject">{{ ext.email_subject || 'No Subject' }}</div>
+                          <div class="flex-1 font-medium text-slate-800 truncate" :title="agg.email_subject">{{ agg.email_subject || 'No Subject' }}</div>
                           <div class="flex items-center gap-2 flex-wrap">
-                            <span v-if="ext.classification_tier"
+                            <span v-if="agg.highest_tier != null"
                                   class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200"
-                                  :title="'Classification tier ' + ext.classification_tier">
-                              T{{ ext.classification_tier }}
+                                  :title="'Classification tier ' + agg.highest_tier">
+                              T{{ agg.highest_tier }}
                             </span>
-                            <span v-if="ext.parse_method"
-                                  class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200"
-                                  :title="'Parse method: ' + ext.parse_method">
-                              {{ ext.parse_method }}<span v-if="ext.parse_format" class="ml-1 text-purple-500">· {{ ext.parse_format }}</span>
-                            </span>
-                            <span 
+                            <span
                               class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border"
                               :class="{
-                                'bg-green-50 text-green-700 border-green-200': ext.outcome === 'saved' || ext.outcome === 'success',
-                                'bg-slate-100 text-slate-700 border-slate-200': ext.outcome === 'skipped_seen' || ext.outcome === 'not_invoice' || ext.outcome === 'duplicate',
-                                'bg-amber-50 text-amber-700 border-amber-200': ext.outcome === 'low_confidence' || ext.outcome === 'not_vat_invoice',
-                                'bg-red-50 text-red-700 border-red-200': ext.outcome === 'error' || ext.outcome === 'failed'
+                                'bg-green-50 text-green-700 border-green-200': agg.best_outcome === 'saved' || agg.best_outcome === 'success',
+                                'bg-blue-50 text-blue-700 border-blue-200': agg.best_outcome === 'duplicate',
+                                'bg-slate-100 text-slate-700 border-slate-200': agg.best_outcome === 'skipped_seen' || agg.best_outcome === 'not_invoice',
+                                'bg-amber-50 text-amber-700 border-amber-200': agg.best_outcome === 'low_confidence' || agg.best_outcome === 'not_vat_invoice' || agg.best_outcome === 'scam_detected',
+                                'bg-red-50 text-red-700 border-red-200': agg.best_outcome === 'error' || agg.best_outcome === 'failed' || agg.best_outcome === 'parse_failed'
                               }"
                             >
-                              {{ ext.outcome }}
-                            </span>
-                            <span v-if="ext.confidence" class="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200" title="Confidence Score">
-                              {{ (ext.confidence * 100).toFixed(0) }}%
+                              {{ agg.best_outcome }}
                             </span>
                           </div>
                         </div>
-                        
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-600 mt-1">
-                          <div v-if="ext.attachment_filename" class="flex items-center gap-1 truncate" :title="ext.attachment_filename">
-                            <svg class="w-3.5 h-3.5 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
-                            {{ ext.attachment_filename }}
-                          </div>
-                          <div v-if="ext.invoice_no" class="flex items-center gap-1">
-                            <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                            {{ ext.invoice_no }}
-                          </div>
+
+                        <div v-if="agg.invoice_no" class="flex items-center gap-1 text-xs text-slate-600">
+                          <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                          <span class="font-mono">{{ agg.invoice_no }}</span>
                         </div>
-                        
-                        <div v-if="ext.error_detail" class="mt-1 text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100">
-                          {{ ext.error_detail }}
+
+                        <div v-if="agg.extractions.length > 1 || agg.extractions[0].attachment_filename" class="flex flex-wrap gap-1.5 text-xs">
+                          <span v-for="ext in agg.extractions" :key="ext.id"
+                                class="inline-flex items-center gap-1 px-2 py-0.5 rounded border"
+                                :class="{
+                                  'bg-green-50 text-green-700 border-green-200': ext.outcome === 'saved' || ext.outcome === 'success',
+                                  'bg-blue-50 text-blue-700 border-blue-200': ext.outcome === 'duplicate',
+                                  'bg-slate-100 text-slate-600 border-slate-200': ext.outcome === 'skipped_seen' || ext.outcome === 'not_invoice',
+                                  'bg-amber-50 text-amber-700 border-amber-200': ext.outcome === 'low_confidence' || ext.outcome === 'not_vat_invoice' || ext.outcome === 'scam_detected',
+                                  'bg-red-50 text-red-700 border-red-200': ext.outcome === 'error' || ext.outcome === 'failed' || ext.outcome === 'parse_failed'
+                                }"
+                                :title="(ext.parse_method || '') + (ext.parse_format ? ' · ' + ext.parse_format : '') + (ext.error_detail ? ' — ' + ext.error_detail : '')">
+                            <span v-if="ext.parse_format" class="font-mono uppercase">{{ ext.parse_format }}</span>
+                            <span v-else-if="ext.attachment_filename" class="truncate max-w-[18ch]">{{ ext.attachment_filename }}</span>
+                            <span v-else>{{ ext.outcome }}</span>
+                            <span class="text-slate-400">·</span>
+                            <span>{{ ext.outcome }}</span>
+                            <span v-if="ext.confidence" class="text-slate-400">· {{ (ext.confidence * 100).toFixed(0) }}%</span>
+                          </span>
+                        </div>
+
+                        <div v-for="ext in agg.extractions.filter(e => e.error_detail)" :key="`err-${ext.id}`"
+                             class="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100">
+                          <span v-if="ext.parse_format" class="font-mono uppercase mr-1">{{ ext.parse_format }}:</span>{{ ext.error_detail }}
                         </div>
                       </div>
                     </div>

@@ -4,6 +4,77 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.0.0] - 2026-04-25
+
+### Theme
+
+**Stable multi-user release.** Fifteen alpha + one minor release took Invoice Maid from single-operator-only (v0.8.x) to a safely multi-tenant self-hosted product with hardened email scanning (v0.9.1). v1.0.0 caps that arc with a single user-visible UX fix — aggregating per-email scan results — and docs polish. No schema changes, no migration, no breaking API changes.
+
+### Added — Fix 8: Per-email scan summary
+
+The 2026-04-20 "missed invoice" investigation surfaced a UX pain point that was independent of the actual scanner defects fixed in v0.9.1: **when a scan log row is expanded, the extraction_logs were listed one-per-attachment, making a 2-email / 3-attachment-each retransmit look like "6 duplicates" instead of "1 invoice saved, 1 correctly deduped email"**. That's what prompted the user's confusion.
+
+- **`aggregateByEmail()`** in `frontend/src/views/SettingsView.vue` groups `ExtractionLog` rows by `email_uid`. Each email becomes **one card**. The card's primary outcome badge is the highest-priority outcome across all attachments (precedence: `saved > duplicate > skipped_seen > low_confidence > parse_failed > error > not_invoice`).
+
+- **`summarizeEmails()`** produces plain-language counts: `saved`, `duplicates`, `skipped`, `not_invoice`, `errors`, `total_emails` — counts **emails**, not extraction rows. A 2-email / 6-row scan now summarizes as "2 封邮件 · 保存 1 张新发票 · 去重 1 封", matching the user's mental model.
+
+- **Per-email expanded panel** now shows:
+  - A "Summary (by email)" banner with the plain-language counts at the top.
+  - One card per email with the email's subject, primary outcome badge, extracted `invoice_no` (when present), and a chip row showing the individual attachment outcomes (pdf/xml/ofd × saved/duplicate/low_confidence).
+  - The chip row's `title` tooltip includes `parse_method`, `parse_format`, and `error_detail` for low-level audit.
+  - Explicit UI hint on the `duplicate` badge: "Same invoice_no already exists — correctly deduped, no action needed".
+
+- **Kept from v0.9.1**: parse-method and classification-tier chips remain below the summary banner as a secondary forensic view. Operators who need the raw extraction-log-per-row view still have it via the chip tooltips.
+
+### Changed
+
+- **No backend changes in v1.0.0.** The aggregation is purely client-side over the existing `/api/v1/scan/logs/{id}/extractions` response.
+
+### Why v1.0.0 now
+
+Per Oracle review of the v1.0.0 release scope, this is the "stable multi-user + hardened scanner" release. The more architecturally risky Microsoft Graph Delta Query rewrite (would replace per-folder `receivedDateTime` watermarks with opaque delta tokens) is deferred to v1.1.0 and will ship with a runtime legacy-state bridge, operator kill-switch, and per-folder versioned state payload.
+
+### Cumulative journey (v0.8 → v1.0)
+
+| Version | Phase | Scope |
+|---|---|---|
+| 0.9.0-alpha.1 | 1 | DB-backed users + session revocation |
+| 0.9.0-alpha.2 | — | Login form email-field fix |
+| 0.9.0-alpha.3 | — | Email accepts unqualified hostname |
+| 0.9.0-alpha.4 | 2 | Nullable `user_id` on 7 tenant tables |
+| 0.9.0-alpha.5 | 3 | `NOT NULL` + FK + composite unique |
+| 0.9.0-alpha.6 | 4a | Tenant isolation on every read path |
+| 0.9.0-alpha.7 | 4b.1 | Per-user file storage layout |
+| 0.9.0-alpha.7.post1 | — | Alembic `env.py` auto-loads `.env` (production recovery) |
+| 0.9.0-alpha.8 | 5a | Self-service registration + change-password |
+| 0.9.0-alpha.9 | 5b | Admin panel + orphan-directory scan |
+| **0.9.0** | — | **Multi-user release cap** |
+| **0.9.1** | — | **Email scanner + classifier hardening (8 defects from investigation)** |
+| **1.0.0** | — | **Per-email scan summary UX + 1.0 cap** |
+
+### Upgrade path
+
+Zero-touch from v0.9.1:
+
+1. `alembic upgrade head` — no new migrations. Confirms existing schema.
+2. Service restart picks up the new aggregated-scan-view template.
+3. First page load after upgrade shows the new "Summary (by email)" banner when an operator expands a scan-log row.
+4. **No schema changes.** **No file-system changes.** **No API contract changes.** **No behavior change in the scanner or classifier.**
+
+### Tests
+
+- 619 passing, 100% coverage (unchanged from v0.9.1). The Fix 8 aggregation helpers are small pure TypeScript functions; no Vitest infrastructure exists in this project, and the existing Playwright smoke test exercises the login → invoice list → settings flow end-to-end.
+- Frontend build clean (111 modules, 93 KB gzipped JS, 6 KB gzipped CSS — +3 KB JS for the aggregation + template).
+
+### Deferred
+
+- **v1.1.0 — Microsoft Graph Delta Query**: replace `receivedDateTime` watermarking with `/me/mailFolders/{id}/messages/delta`. Handles moved/restored/delayed emails that forward-only watermarks miss. Per Oracle review, needs state versioning, legacy-state bridge, operator kill-switch, and per-folder delta tokens — too much blast radius for the first 1.0 cut.
+
+- **v1.x — Other items explicitly deferred from 0.9.1**:
+  - Per-user AI/classifier settings (instance-wide default remains)
+  - Per-user webhooks (single instance-wide `WEBHOOK_URL` remains)
+  - Repository-pattern refactor (internal code organization, no user-visible change)
+
 ## [0.9.1] - 2026-04-25
 
 ### Theme
