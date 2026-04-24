@@ -4,6 +4,75 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.1] - 2026-04-25
+
+### Theme
+
+**Email scanner + classifier hardening.** Born out of a user investigation into a "missed invoice" report on 2026-04-20. The investigation concluded no invoice was actually missed (Sam's Club sent the same e-invoice number via two emails 247 seconds apart; the system correctly deduped), but surfaced **eight real defects** ranging from a frontend display bug to silent classifier false-negatives. This release bundles low/medium-risk fixes; a Delta-Query architectural rewrite of the Outlook scanner is deferred to v1.1.0 per Oracle review.
+
+### Added
+
+- **Alembic migration `0014_seed_default_trusted_senders`** — seeds seven well-known Chinese invoice-delivery domains into `classifier_trusted_senders` so tier-1 classification recognizes them out of the box: `qcloudmail.com` (Tencent Cloud Mail / Sam's Club / Walmart), `fapiao.jd.com` (JD.com), `shuidi.com` (水滴), `noreply@invoice.alipay.com` (Alipay), `inv.nuonuo.com` (诺诺网), `piaoyi.baiwang.com` (百望云), `eeds.chinatax.gov.cn` (国家税务总局). **Additive-only**: never overwrites an operator-configured value. Defensive against the `app_settings`-created-by-`create_all`-not-alembic schema-lifecycle wart — silently skips if the table doesn't yet exist on a fresh install. Downgrade is intentionally a no-op (we cannot distinguish "migration seeded this" from "operator configured this").
+
+- **7 new Chinese keywords** in `INVOICE_KEYWORDS`: `购物凭证`, `消费凭证`, `购物发票`, `订单完成`, `交易成功`, `支付凭证`, `發票` (traditional). Before this, an email like "山姆会员商店购物发票" from a non-trusted sender with no attachments (only body-link invoices) would fail tier-1 keyword match → fall through to "no content or keywords" → `not_invoice` without ever hitting the LLM.
+
+- **Domain-aware trusted-sender matching** in `EmailClassifier._sender_trusted`. Three pattern shapes now supported:
+  - `user@domain.com` — exact-email match (prevents `notbilling@company.com` spoofing an `billing@company.com` trusted sender via substring)
+  - `@domain.com` / `domain.com` — domain-suffix match (trusts every mailbox on the domain, with dotted-suffix support so `domain.com` matches `sub.domain.com`)
+  - Other strings — legacy substring fallback (unchanged for pre-v0.9.1 instance settings, so no silent breakage after upgrade)
+
+- **7 new classifier tests** (`tests/test_services/test_email_classifier.py`): new-keyword detection for all 7 additions, expanded body-scan window (verifies keyword at position 500 passes tier-1 and position 5000 does not), exact-email spoofing rejection, domain-pattern trusts all mailboxes on domain, display-name bracket handling, legacy substring compat, empty-pattern-ignored, malformed-bracket fallback.
+
+- **5 new migration 0014 tests** covering every deployment path: row-missing seed, empty-string seed, operator-configured preserve, fresh-install-without-table skip, no-op downgrade.
+
+### Changed
+
+- **Outlook scanner now includes hidden folders**: `_iter_mail_folders()` in `backend/app/services/email_scanner.py` now passes `includeHiddenFolders=true` at both the root `/mailFolders` call and every `/childFolders` call. Without this, Microsoft Graph omits Clutter and some Archive configurations — invoice emails auto-sorted there by Outlook rules were silently dropped. Per Microsoft Graph docs: "By default, this operation does not return hidden folders. Use `includeHiddenFolders`."
+
+- **Outlook scanner boundary filter `gt` → `ge`**: `receivedDateTime gt {watermark}` was strict-greater-than, which silently excluded any email whose `receivedDateTime` equaled the watermark (common when messages land in the same second or when server precision truncates to whole seconds). Now uses `ge`. The re-fetched boundary email is cheaply deduped by the existing `_was_attachment_seen` check in the scheduler (DB-backed per-attachment-filename seen-set) and the composite `UNIQUE(user_id, invoice_no)` constraint.
+
+- **Classifier tier-1 body-scan window 200 → 2000 chars** (`email_classifier.py:140`). A keyword buried at body position 201+ now triggers a pass-to-LLM instead of an instant "no content or keywords" reject. Still bounded at 2000 to prevent performance issues on large emails.
+
+- **LLM classify-cache TTL 30 days → 7 days** in `AIService._cache_expiry`. Previously, a single LLM false-negative on a recurring sender (subject+body-hashed cache key) would propagate for a month. Shortened to 7 days so classifier recall recovers within a week. Migration 0009's 30-day backfill for pre-existing rows is intentionally left at its legacy value — those entries age out on their original schedule.
+
+- **Frontend `formatScanState()` is now account-type aware** (`frontend/src/views/SettingsView.vue`). Previously all account types used the IMAP/QQ parser expecting `{folder: {uid, uidvalidity, messages}}` structure, which for Outlook (whose state is `{folder_id: ISO_timestamp}`) produced the misleading "8 folders · 0 messages · UID unknown". Now outlook accounts render as "8 folders · last synced 2026-04-24 14:47:17"; IMAP/QQ path unchanged.
+
+### Security
+
+- **Trusted-sender substring-match vulnerability closed**. An operator-configured `billing@company.com` pattern previously matched `notbilling@company.com` via `in` substring check — allowing trivial spoofing by an attacker who registered a similar mailbox. The new exact-email mode blocks this while domain-suffix patterns (`@domain.com`) remain a concise way to trust an entire domain. Legacy non-email-shaped patterns fall through to substring for backwards compat with existing operator configs.
+
+### Operational
+
+- **Production investigation** of 2026-04-20 "missed invoice" confirmed **NO invoice was missed**. Sam's Club sent two emails 4 minutes apart containing the **same** e-invoice number `26317000001400210344` (¥409.20, buyer "上海米宗网络科技有限公司"). The first email's PDF was saved as invoice #232. The second email's PDF was correctly marked `duplicate` (invoice_no already claimed), its OFD was `low_confidence` (invoice_no missing in OFD parse), its XML was `duplicate` (LLM re-extracted the same invoice_no). The system worked as designed. This release improves the UX around such events (v1.0.0 will add a scan-summary banner) and hardens the scanner against the real bugs the investigation surfaced.
+
+### Upgrade path
+
+Zero-downtime from v0.9.0:
+
+1. `alembic upgrade head` applies migration 0014 — seeds trusted senders if empty. Single UPDATE, sub-second.
+2. Service restart picks up the new scanner filter (`ge`), new keyword list, new LLM cache TTL, new trusted-sender match logic.
+3. Frontend scan-state display updates on next page load.
+4. **No schema changes.** **No file-system changes.** **No API contract changes.**
+
+### Dry-run validation
+
+- Full 0001→0014 migration run against a copy of production DB: `classifier_trusted_senders` went from empty → seeded 7 values in under a second. `classifier_extra_keywords` left untouched. `alembic_version` advanced to `0014_seed_default_trusted_senders`.
+- 619 tests pass at 100% coverage.
+- CI-simulated run clean.
+- Frontend build clean (111 modules, 92 KB gzipped JS).
+
+### Tests
+
+- 619 passing, 100% coverage (+14 from v0.9.0): 7 classifier + 5 migration 0014 + 1 malformed-bracket + 1 body-scan-upper-bound.
+
+### Deferred to v1.0.0
+
+- **Fix 8 — Scan summary UX**: aggregate `extraction_logs` by `email_uid`, show "N invoices saved, M duplicates" banner after each scan. Frontend-only; will clarify the "looks like something was missed" perception for users.
+
+### Deferred to v1.1.0
+
+- **Fix 9 — Microsoft Graph Delta Query**: replace `receivedDateTime` watermarking with `/me/mailFolders/{id}/messages/delta`. Per Oracle review, this is an internal scanner-engine rewrite with high blast radius ("all Outlook email scanning"); not appropriate for a 1.0 cut. Will ship with runtime legacy-state bridge migration, operator kill-switch, and per-folder delta token persistence.
+
 ## [0.9.0] - 2026-04-21
 
 ### Theme

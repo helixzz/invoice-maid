@@ -1283,7 +1283,7 @@ async def test_outlook_scan_first_pass_respects_configured_limit(monkeypatch: py
     emails = await scanner.scan(account, last_uid=None)
     assert len(emails) == 2
     assert urls == [
-        f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders?$top=100",
+        f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders?$top=100&includeHiddenFolders=true",
         f"{email_scanner.GRAPH_BASE_URL}/me/mailFolders/f-inbox/messages",
     ]
 
@@ -2183,7 +2183,7 @@ async def test_outlook_iter_folders_seen_url_guard(monkeypatch: pytest.MonkeyPat
             return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: {"value": [folder], "@odata.nextLink": child_url}})()
 
     folders = [f async for f in scanner._iter_mail_folders(FakeClient(), {})]
-    assert urls_seen.count(f"{GRAPH_BASE_URL}/me/mailFolders?$top=100") == 1
+    assert urls_seen.count(f"{GRAPH_BASE_URL}/me/mailFolders?$top=100&includeHiddenFolders=true") == 1
 
 
 @pytest.mark.asyncio
@@ -2748,7 +2748,7 @@ async def test_outlook_scan_options_combined_with_incremental_state(monkeypatch:
     await scanner.scan(account, last_uid=prior_state, options=ScanOptions(unread_only=True, since=since))
     assert captured_params and captured_params[0] is not None
     flt = captured_params[0].get("$filter", "")
-    assert "receivedDateTime gt 2024-01-01T00:00:00Z" in flt
+    assert "receivedDateTime ge 2024-01-01T00:00:00Z" in flt
     assert "isRead eq false" in flt
     assert "receivedDateTime ge 2024-06-01" in flt
 

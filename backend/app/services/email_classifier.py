@@ -22,6 +22,13 @@ INVOICE_KEYWORDS = frozenset(
         "增值税",
         "电子发票",
         "数电票",
+        "购物凭证",
+        "消费凭证",
+        "购物发票",
+        "订单完成",
+        "交易成功",
+        "支付凭证",
+        "發票",
     ]
 )
 
@@ -102,8 +109,45 @@ class EmailClassifier:
         self._all_keywords = INVOICE_KEYWORDS | self._extra_keywords
 
     def _sender_trusted(self, from_addr: str) -> bool:
+        """Match trusted-sender patterns against the full from_addr.
+
+        Three accepted pattern shapes:
+
+        * ``full.email@domain.com`` — exact-email match against the parsed
+          mailbox part, so ``notbilling@domain.com`` cannot impersonate a
+          configured ``billing@domain.com`` trusted sender via substring.
+        * ``@domain.com`` / ``domain.com`` — domain-suffix match against
+          the mailbox's domain part; trusts every mailbox on that domain.
+        * Other strings — legacy substring fallback (unchanged behaviour
+          for trusted-sender entries that predate v0.9.1); kept so existing
+          instance settings don't silently stop matching after upgrade.
+        """
         lowered = from_addr.lower()
-        return any(sender in lowered for sender in self._trusted_senders)
+        mailbox = lowered
+        if "<" in lowered and ">" in lowered:
+            start = lowered.rfind("<") + 1
+            end = lowered.rfind(">")
+            if end > start:
+                mailbox = lowered[start:end]
+        domain = mailbox.rsplit("@", 1)[-1] if "@" in mailbox else ""
+
+        for raw_pattern in self._trusted_senders:
+            pattern = raw_pattern.strip().lower()
+            if not pattern:
+                continue
+            if "@" in pattern and not pattern.startswith("@"):
+                if pattern == mailbox:
+                    return True
+                continue
+            if pattern.startswith("@"):
+                if domain == pattern[1:] or domain.endswith("." + pattern[1:]):
+                    return True
+                continue
+            if domain and (domain == pattern or domain.endswith("." + pattern)):
+                return True
+            if pattern in lowered:
+                return True
+        return False
 
     def _has_keyword(self, text: str) -> bool:
         lowered = text.lower()
@@ -130,7 +174,7 @@ class EmailClassifier:
             return ClassificationResult(True, 1, 0.98, "trusted sender")
 
         has_content = bool(email.attachments) or bool(email.body_links)
-        has_keyword = self._has_keyword(email.subject + " " + email.body_text[:200])
+        has_keyword = self._has_keyword(email.subject + " " + email.body_text[:2000])
         if not has_content and not has_keyword:
             return ClassificationResult(False, 1, 0.90, "no content or keywords")
 

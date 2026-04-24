@@ -163,6 +163,29 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v0.9.1 — Released
+
+**Email scanner + classifier hardening.** Investigation into a 2026-04-20 "missed invoice" report concluded the system worked correctly (Sam's Club sent the same e-invoice number twice 247 seconds apart; correctly deduped) but surfaced 8 real defects. This release bundles the low/medium-risk fixes per Oracle review; Microsoft Graph Delta Query is deferred to v1.1.0.
+
+**Shipped**:
+- Migration 0014 seeds 7 default trusted senders (qcloudmail.com / fapiao.jd.com / shuidi.com / noreply@invoice.alipay.com / inv.nuonuo.com / piaoyi.baiwang.com / eeds.chinatax.gov.cn) — additive-only, defensive against fresh-install schema-lifecycle, no-op downgrade
+- 7 new Chinese keywords: 购物凭证 / 消费凭证 / 购物发票 / 订单完成 / 交易成功 / 支付凭证 / 發票
+- Domain-aware trusted-sender match (exact-email + @domain + legacy substring) — closes `notbilling@company.com` spoofing vulnerability against a configured `billing@company.com`
+- Outlook `includeHiddenFolders=true` — was missing Clutter / some Archive configurations
+- Outlook watermark `gt` → `ge` — was silently excluding boundary emails
+- Tier-1 body scan window 200 → 2000 chars
+- LLM classify cache TTL 30d → 7d — limits false-negative propagation
+- Frontend `formatScanState()` account-type-aware — Outlook now shows "8 folders · last synced [timestamp]" instead of "0 messages · UID unknown"
+
+Zero schema/API/filesystem changes. 619 tests, 100% coverage (+14).
+
+**Deferred to v1.0.0**: Fix 8 (scan-summary UX) + docs polish.  
+**Deferred to v1.1.0**: Fix 9 (Delta Query rewrite) — per Oracle, needs state-versioning, bridge migration, operator kill-switch.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v0.9.0 — Released
 
 **Multi-user is done.** Nine alphas (alpha.1 → alpha.9) incrementally transformed Invoice Maid from single-operator-only to a safely multi-tenant self-hosted product. Every release shipped to production sequentially. v0.9.0 final is a docs-and-version-bump cap — all behavior already landed in earlier alphas.

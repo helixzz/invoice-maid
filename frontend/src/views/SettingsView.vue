@@ -555,15 +555,29 @@ const formatDate = (dateStr: string | null) => {
   return new Date(dateStr).toLocaleString()
 }
 
-const parseScanState = (raw: string | null) => {
-  if (!raw) {
-    return { folders: 0, totalMessages: 0, maxUid: 0 }
-  }
+const formatScanState = (raw: string | null, accountType: string = 'imap') => {
+  if (!raw) return 'Never scanned'
   try {
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') {
-      return { folders: 0, totalMessages: 0, maxUid: 0 }
+    if (!parsed || typeof parsed !== 'object') return 'Scan state unavailable'
+
+    // Outlook state is {folder_id: "ISO_timestamp"} — values are strings,
+    // not the {uid, messages} objects IMAP/QQ use. Format as "N folders ·
+    // last synced {most_recent_timestamp}" instead of falsely reporting
+    // "0 messages · UID unknown".
+    if (accountType === 'outlook') {
+      const timestamps = Object.values(parsed)
+        .filter((v): v is string => typeof v === 'string')
+        .map((v) => new Date(v).getTime())
+        .filter((t) => !Number.isNaN(t))
+      const folderCount = Object.keys(parsed).length
+      if (!folderCount) return 'Scan state unavailable'
+      if (timestamps.length === 0) return `${folderCount} folders · not yet synced`
+      const latest = new Date(Math.max(...timestamps))
+      return `${folderCount} folders · last synced ${latest.toLocaleString()}`
     }
+
+    // IMAP / QQ: {folder: {uid, uidvalidity, messages}}
     const entries = Object.values(parsed as Record<string, any>)
     let totalMessages = 0
     let maxUid = 0
@@ -573,23 +587,14 @@ const parseScanState = (raw: string | null) => {
         maxUid = Math.max(maxUid, Number(value.uid || 0))
       }
     }
-    return {
-      folders: Object.keys(parsed as Record<string, any>).length,
-      totalMessages,
-      maxUid,
-    }
+    const folders = Object.keys(parsed).length
+    if (!folders) return 'Scan state unavailable'
+    const messagePart = totalMessages > 0 ? `${totalMessages.toLocaleString()} messages` : '0 messages'
+    const uidPart = maxUid > 0 ? `UID ${maxUid}` : 'UID unknown'
+    return `${folders} folders · ${messagePart} · ${uidPart}`
   } catch {
-    return { folders: 0, totalMessages: 0, maxUid: 0 }
+    return 'Scan state unavailable'
   }
-}
-
-const formatScanState = (raw: string | null) => {
-  if (!raw) return 'Never scanned'
-  const summary = parseScanState(raw)
-  if (!summary.folders) return 'Scan state unavailable'
-  const messagePart = summary.totalMessages > 0 ? `${summary.totalMessages.toLocaleString()} messages` : '0 messages'
-  const uidPart = summary.maxUid > 0 ? `UID ${summary.maxUid}` : 'UID unknown'
-  return `${summary.folders} folders · ${messagePart} · ${uidPart}`
 }
 
 onMounted(() => {
@@ -710,7 +715,7 @@ onMounted(() => {
                     {{ account.username }}
                   </div>
                   <div class="text-xs text-slate-400 mt-2" :title="account.last_scan_uid || 'Never scanned'">
-                    Scan state: {{ formatScanState(account.last_scan_uid) }}
+                    Scan state: {{ formatScanState(account.last_scan_uid, account.type) }}
                   </div>
                 </div>
                 <div class="flex items-center space-x-4">

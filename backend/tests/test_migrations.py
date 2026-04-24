@@ -966,3 +966,154 @@ def test_0013_storage_path_fallback_to_data_invoices_for_non_sqlite_url(
         resolved = migration_module._derive_storage_path()
 
     assert resolved == (tmp_path / "data" / "invoices").resolve()
+
+
+EXPECTED_SEEDED_SENDERS = (
+    "qcloudmail.com,"
+    "fapiao.jd.com,"
+    "shuidi.com,"
+    "noreply@invoice.alipay.com,"
+    "inv.nuonuo.com,"
+    "piaoyi.baiwang.com,"
+    "eeds.chinatax.gov.cn"
+)
+
+
+def _ensure_app_settings_table(db_path: Path) -> None:
+    """``app_settings`` is created by ``Base.metadata.create_all`` on
+    first app start, not by any alembic migration. Tests that exercise
+    migration 0014 (which seeds a row into this table) must create it
+    explicitly first — the defensive-skip branch in 0014 itself is
+    tested separately."""
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "CREATE TABLE IF NOT EXISTS app_settings ("
+                "key VARCHAR(128) PRIMARY KEY, "
+                "value TEXT NOT NULL, "
+                "updated_at DATETIME NOT NULL)"
+            )
+        )
+    engine.dispose()
+
+
+def _read_classifier_trusted_senders(db_path: Path) -> str | None:
+    sync_url = f"sqlite:///{db_path}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        row = conn.execute(
+            sa.text(
+                "SELECT value FROM app_settings "
+                "WHERE key = 'classifier_trusted_senders'"
+            )
+        ).first()
+    engine.dispose()
+    return None if row is None else row[0]
+
+
+def test_0014_seeds_default_trusted_senders_when_row_missing(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    _ensure_app_settings_table(migration_db)
+
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+
+    assert _read_classifier_trusted_senders(migration_db) == EXPECTED_SEEDED_SENDERS
+
+
+def test_0014_seeds_when_row_is_empty_string(
+    migration_db: Path,
+) -> None:
+    """Production default (from DB bootstrap) is an empty string for
+    classifier_trusted_senders. Migration must seed the defaults in
+    that case too, not just when the row is entirely missing."""
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    _ensure_app_settings_table(migration_db)
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES ('classifier_trusted_senders', '', CURRENT_TIMESTAMP)"
+            )
+        )
+    engine.dispose()
+
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+
+    assert _read_classifier_trusted_senders(migration_db) == EXPECTED_SEEDED_SENDERS
+
+
+def test_0014_is_additive_only_preserves_operator_value(
+    migration_db: Path,
+) -> None:
+    """If the operator has already configured trusted_senders (e.g.
+    set something via /settings/classifier), the migration must NOT
+    clobber it. This is the core 'additive-only' invariant Oracle
+    flagged as essential for seed migrations."""
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    _ensure_app_settings_table(migration_db)
+
+    operator_value = "my-custom-billing.example.com,@partner.example"
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES ('classifier_trusted_senders', :val, CURRENT_TIMESTAMP)"
+            ),
+            {"val": operator_value},
+        )
+    engine.dispose()
+
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+
+    assert _read_classifier_trusted_senders(migration_db) == operator_value
+
+
+def test_0014_fresh_install_without_app_settings_table_is_noop(
+    migration_db: Path,
+) -> None:
+    """Fresh-install path: alembic runs BEFORE first app boot, so
+    ``app_settings`` doesn't exist yet. Migration 0014 must detect
+    this and silently skip; the table will be created by create_all
+    on first app start, and the default empty-string value will be
+    seeded by ``database.init_db`` — no clash."""
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                sa.text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).all()
+        }
+    engine.dispose()
+    assert "app_settings" not in tables
+
+
+def test_0014_downgrade_is_noop(
+    migration_db: Path,
+) -> None:
+    """Downgrade intentionally does nothing — we can't distinguish
+    'the migration seeded these' from 'the operator happened to
+    configure these', so we preserve the value regardless."""
+    _upgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+    _ensure_app_settings_table(migration_db)
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+    before = _read_classifier_trusted_senders(migration_db)
+
+    _downgrade_to(migration_db, "0013_migrate_files_to_user_subdirs")
+
+    after = _read_classifier_trusted_senders(migration_db)
+    assert before == after

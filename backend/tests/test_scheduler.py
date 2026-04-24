@@ -2550,10 +2550,16 @@ async def test_cleanup_extraction_logs_respects_batch_size(
 
 
 def test_ai_service_cache_expiry_windows_match_migration_contract(settings) -> None:
-    """The per-prompt-type TTL values in ``AIService._cache_expiry`` must
-    match the backfill windows in alembic migration 0009. Drifting them
-    creates an asymmetry where new entries expire on a different schedule
-    than legacy backfilled entries."""
+    """Per-prompt-type TTL contract in ``AIService._cache_expiry``.
+
+    classify / analyze_email_v3 → 7 days (shortened in v0.9.1 from 30 days
+    to limit false-negative propagation). Migration 0009's 30-day backfill
+    for pre-existing rows is intentionally left at the legacy value so old
+    entries age out on their original schedule — new entries are written
+    with the shorter 7-day window going forward.
+
+    extract → 365 days (unchanged; invoice PDF content is effectively
+    immutable once captured, so re-paying for OCR is waste)."""
     from app.services.ai_service import AIService
 
     service = AIService(settings)
@@ -2567,8 +2573,8 @@ def test_ai_service_cache_expiry_windows_match_migration_contract(settings) -> N
     analyze_days = (analyze_exp - now).total_seconds() / 86400
     extract_days = (extract_exp - now).total_seconds() / 86400
 
-    assert 29.99 < classify_days < 30.01
-    assert 29.99 < analyze_days < 30.01
+    assert 6.99 < classify_days < 7.01
+    assert 6.99 < analyze_days < 7.01
     assert 364.99 < extract_days < 365.01
 
 
@@ -2626,5 +2632,5 @@ async def test_set_cache_stamps_appropriate_expires_at(db, settings) -> None:
 
     classify_days = (_to_aware(rows["new-classify"].expires_at) - now).total_seconds() / 86400
     extract_days = (_to_aware(rows["new-extract"].expires_at) - now).total_seconds() / 86400
-    assert 29.9 < classify_days < 30.1
+    assert 6.9 < classify_days < 7.1
     assert 364.9 < extract_days < 365.1

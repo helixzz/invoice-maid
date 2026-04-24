@@ -79,12 +79,20 @@ class AIService:
 
     def _cache_expiry(self, prompt_type: str) -> datetime:
         now = datetime.now(timezone.utc)
-        # Matches the TTL windows chosen in alembic migration 0009_llm_cache_expires_at:
-        #   classify / analyze_email_v3 -> 30 days (heuristics drift, subjects age out)
-        #   extract                     -> 365 days (invoice PDF content is effectively
-        #                                           immutable once captured)
+        # Per-prompt-type TTL:
+        #   classify / analyze_email_v3 -> 7 days (v0.9.1; was 30 days in
+        #     v0.8-v0.9.0). Shortened so a single LLM false-negative on a
+        #     recurring sender stops propagating after a week instead of
+        #     a month. Subject+body-hashed cache keys mean identical
+        #     subsequent emails from the same sender otherwise reuse the
+        #     same verdict — hurting recall if the LLM got it wrong once.
+        #     Migration 0009's 30-day backfill for pre-existing rows is
+        #     an untouched legacy value; it drains naturally as those
+        #     old entries age out.
+        #   extract -> 365 days. Invoice PDF content is effectively
+        #     immutable once captured, so re-paying for OCR is waste.
         if prompt_type in ("classify", "analyze_email_v3"):
-            return now + timedelta(days=30)
+            return now + timedelta(days=7)
         return now + timedelta(days=365)
 
     async def _get_cache(self, db: AsyncSession, content_hash: str) -> str | None:

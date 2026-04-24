@@ -1178,7 +1178,14 @@ class OutlookScanner(BaseEmailScanner):
                 }
                 filter_clauses: list[str] = []
                 if prev_dt:
-                    filter_clauses.append(f"receivedDateTime gt {prev_dt}")
+                    # ge (not gt): a strict > boundary permanently excludes any
+                    # email whose receivedDateTime equals the watermark, which
+                    # happens when two messages land in the same second or when
+                    # the server's precision truncates to whole seconds. Using
+                    # ge re-fetches the boundary email; the per-attachment
+                    # seen-check in scheduler._was_attachment_seen and the
+                    # composite UNIQUE(user_id, invoice_no) dedupe it cheaply.
+                    filter_clauses.append(f"receivedDateTime ge {prev_dt}")
                 if options is not None:
                     if options.unread_only:
                         filter_clauses.append("isRead eq false")
@@ -1244,8 +1251,16 @@ class OutlookScanner(BaseEmailScanner):
         return emails
 
     async def _iter_mail_folders(self, client: Any, headers: dict[str, str]):
+        # includeHiddenFolders=true: without it, Microsoft Graph omits
+        # Clutter, some Archive configurations, and any user-created
+        # hidden folders. Invoice emails sometimes get auto-sorted into
+        # these by Outlook rules, so skipping hidden folders silently
+        # drops valid invoice candidates. Must be applied at BOTH the
+        # root and every child-folder listing.
         seen_urls: set[str] = set()
-        stack: list[str] = [f"{GRAPH_BASE_URL}/me/mailFolders?$top=100"]
+        stack: list[str] = [
+            f"{GRAPH_BASE_URL}/me/mailFolders?$top=100&includeHiddenFolders=true"
+        ]
         while stack:
             url = stack.pop()
             while url:
@@ -1259,7 +1274,10 @@ class OutlookScanner(BaseEmailScanner):
                     yield folder
                     folder_id = cast(str, folder.get("id") or "")
                     if folder_id and int(folder.get("childFolderCount") or 0) > 0:
-                        child_url = f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/childFolders?$top=100"
+                        child_url = (
+                            f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/childFolders"
+                            f"?$top=100&includeHiddenFolders=true"
+                        )
                         if child_url not in seen_urls:  # pragma: no branch
                             stack.append(child_url)
                 url = cast(str | None, payload.get("@odata.nextLink"))
