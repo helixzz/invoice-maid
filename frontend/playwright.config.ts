@@ -55,6 +55,7 @@ export default defineConfig({
         SCAN_INTERVAL_MINUTES: '1440',
         SQLITE_VEC_ENABLED: 'false',
         ENABLE_TEST_HELPERS: 'true',
+        ALLOW_REGISTRATION: 'true',
       },
     },
     {

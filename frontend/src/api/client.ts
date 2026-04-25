@@ -248,7 +248,7 @@ export const api = {
 
   async getExtractionLogs(scanLogId: number): Promise<ExtractionLog[]> {
     const res = await apiClient.get(`/scan/logs/${scanLogId}/extractions`)
-    return res.data
+    return res.data.items ?? []
   },
 
   async getScanLogSummary(scanLogId: number): Promise<ExtractionSummary> {

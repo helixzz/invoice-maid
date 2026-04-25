@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.0.2] - 2026-04-25
+
+### Theme
+
+**Playwright E2E coverage expansion + one ship-blocking frontend bug caught.** Four new spec files cover the multi-user UX (self-registration, change-password with session revocation, admin panel) and the Fix 8 scan-log panel. The admin panel and Fix 8 tests surfaced a real production bug in `api/client.ts` that would have broken Fix 8 rendering for any scan with attached extraction logs — caught before reaching production.
+
+### Fixed
+
+- **`api.getExtractionLogs` frontend shape mismatch.** The `/scan/logs/{id}/extractions` endpoint returns `{items: ExtractionLog[]}` but the frontend treated `res.data` as the array directly, making `extractionLogs[log.id]` an envelope object instead of an array. `aggregateByEmail({items: [...]})` threw "not iterable" at render time. Fixed by returning `res.data.items ?? []`. This bug was silent in production because the v1.0.0 release (which introduced Fix 8 aggregation) had no production scan-log rows with multiple attached extraction_logs to trigger it — Playwright's seeded 2-email/6-row fixture was the first real render test.
+
+### Added
+
+- **Four new Playwright E2E spec files** (17 specs total, 21s runtime):
+  - `e2e/fix8-scan-log.spec.ts` (3 tests): renders 2 email cards for the canonical Sam's Club retransmit, validates the Chinese summary banner counts, confirms the duplicate-badge "correctly deduped" tooltip, verifies the saved `invoice_no` appears on the saved-email card.
+  - `e2e/register.spec.ts` (2 tests): new-user self-registration with `ALLOW_REGISTRATION=true` → lands on `/invoices` without Admin nav; password mismatch surfaces inline error without hitting the backend.
+  - `e2e/change-password.spec.ts` (4 tests): profile dropdown opens, password rotation succeeds, success banner mentions session revocation, old password returns 401 after rotation, mismatched/reused-password rejected client-side.
+  - `e2e/admin-panel.spec.ts` (6 tests): admin sees Admin nav link + non-admin doesn't + non-admin /admin visit redirects, role badges render correctly, anti-lockout (Delete button disabled on own row), deactivate toggles Status, promote↔demote round-trip, delete confirms via modal and removes row.
+
+- **Four new `/api/v1/test-helpers/*` endpoints** for Playwright fixture composition:
+  - `/reset-smoke` — **now auth-less** (still gated by `ENABLE_TEST_HELPERS=true`), lets specs that rotate the admin password mid-test restore the bootstrap admin without valid credentials.
+  - `/seed-fix8-scenario` — seeds the 2-email/6-row canonical regression scenario (1 saved + 3 duplicate + 2 low_confidence extractions across `invoice.pdf`/`.ofd`/`.xml` from Sam's Club).
+  - `/reset-users-to-admin-only` — deletes all non-admin users (cascades their data) so register.spec.ts can assume a clean slate.
+  - `/seed-second-user` — idempotently seeds `second-user@smoke.invalid` with a pre-computed bcrypt hash (avoids ~300ms per spec run).
+
+- **Admin restoration in `/reset-smoke`.** New `_restore_admin_from_bootstrap()` helper reinstates the bootstrap `ADMIN_PASSWORD_HASH`, `is_admin=True`, and `is_active=True` on every smoke reset, so change-password.spec.ts can rotate the admin password without needing a fragile per-spec afterEach rollback.
+
+### Changed
+
+- **`app/rate_limiter.py` now disables the slowapi limiter when `ENABLE_TEST_HELPERS=true`.** Every Playwright request routes from the same loopback IP, so the 10/min login + 5/min register caps would 429 mid-suite. The production safety guarantee (no deployment sets `ENABLE_TEST_HELPERS=true`) is documented inline.
+- **Playwright webServer env:** `ALLOW_REGISTRATION: 'true'` added so register.spec.ts can exercise the real `/auth/register` path.
+- **`vite.config.ts`:** unchanged from v1.0.1 (Vitest still wired).
+
+### Verification
+
+- `pytest --cov=app --cov-fail-under=100` → **631 passed, 100% coverage** (up from 619 tests in v1.0.0).
+- `npx playwright test` → **17 passed (21s)**.
+- `npm run build` → clean (303 KB / 93 KB gzipped, unchanged size class).
+- `npm run test:run` (Vitest) → 23 passed, unchanged from v1.0.1.
+
+### Upgrade path
+
+Zero-touch from v1.0.1. One user-visible fix (the `getExtractionLogs` shape bug) means scans that *should* have rendered the Fix 8 panel will now actually render it; no schema, migration, or API contract changes.
+
+---
+
 ## [1.0.1] - 2026-04-25
 
 ### Theme

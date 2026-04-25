@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from passlib.hash import bcrypt
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.deps import CurrentUser
-from app.models import EmailAccount, Invoice, LLMCache, ScanLog, User
+from app.models import EmailAccount, ExtractionLog, Invoice, LLMCache, ScanLog, User
 from app.services.email_scanner import encrypt_password
 from app.services.file_manager import FileManager
 
@@ -60,8 +61,22 @@ async def _reset_database(db: AsyncSession, settings: Settings) -> None:
     await db.commit()
 
 
+async def _restore_admin_from_bootstrap(db: AsyncSession, settings: Settings) -> None:
+    admin = (await db.execute(select(User).order_by(User.id).limit(1))).scalar_one_or_none()
+    if admin is None:
+        return
+    if admin.hashed_password != settings.ADMIN_PASSWORD_HASH:
+        admin.hashed_password = settings.ADMIN_PASSWORD_HASH
+    if not admin.is_admin:
+        admin.is_admin = True
+    if not admin.is_active:
+        admin.is_active = True
+    await db.commit()
+
+
 async def seed_smoke_data(db: AsyncSession, settings: Settings) -> SmokeSeedResponse:
     await _reset_database(db, settings)
+    await _restore_admin_from_bootstrap(db, settings)
 
     admin = (
         await db.execute(select(User).order_by(User.id).limit(1))
@@ -169,9 +184,200 @@ async def run_smoke_scan() -> None:
 
 @router.post("/reset-smoke", response_model=SmokeSeedResponse)
 async def reset_smoke_data(
-    _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> SmokeSeedResponse:
-    del _current_user
+    # Intentionally NOT gated on CurrentUser — specs that rotate the
+    # admin password mid-test (e.g. change-password.spec.ts) need a way
+    # to restore the bootstrap admin WITHOUT valid credentials. The
+    # _require_test_helpers() gate below + ENABLE_TEST_HELPERS=true
+    # env flag is already the "this is not production" contract.
     settings = _require_test_helpers()
     return await seed_smoke_data(db, settings)
+
+
+# Canonical Fix 8 regression shape from the 2026-04-20 Sam's Club
+# investigation: 1 saved + 5 duplicate/low_confidence rows across 2
+# emails = 2 cards (not 6 rows) after aggregation. If the future
+# "simplifies" this fixture, the Fix 8 regression test dies silently.
+FIX8_SAMS_CLUB_INVOICE_NO = "FIX8-SAMS-CLUB-001"
+
+
+class Fix8SeedResponse(BaseModel):
+    scan_log_id: int
+    extraction_log_ids: list[int]
+
+
+class MultiUserSeedResponse(BaseModel):
+    admin_id: int
+    second_user_email: str
+    second_user_id: int
+    second_user_password: str
+
+
+# Pre-computed bcrypt hash avoids ~300ms per spec run. If you rotate the
+# password literal, regenerate the hash or tests will silently fail auth.
+_SECOND_USER_EMAIL = "second-user@smoke.invalid"
+_SECOND_USER_PASSWORD = "smoke-second-user-password"
+_SECOND_USER_PASSWORD_HASH = bcrypt.hash(_SECOND_USER_PASSWORD)
+
+
+async def _reset_users_to_admin_only(db: AsyncSession) -> None:
+    admin_row = (await db.execute(select(User).order_by(User.id).limit(1))).scalar_one_or_none()
+    if admin_row is None:
+        return
+    await db.execute(delete(User).where(User.id != admin_row.id))
+    await db.commit()
+
+
+@router.post("/seed-fix8-scenario", response_model=Fix8SeedResponse)
+async def seed_fix8_scenario(
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> Fix8SeedResponse:
+    del _current_user
+    _require_test_helpers()
+
+    scan_log = (
+        await db.execute(select(ScanLog).order_by(ScanLog.id.desc()).limit(1))
+    ).scalar_one_or_none()
+    if scan_log is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No scan_log exists; call /reset-smoke first",
+        )
+
+    rows: list[ExtractionLog] = [
+        ExtractionLog(
+            user_id=scan_log.user_id,
+            scan_log_id=scan_log.id,
+            email_uid="fix8-email-first",
+            email_subject="山姆会员店 发票",
+            attachment_filename="invoice.pdf",
+            outcome="saved",
+            classification_tier=1,
+            parse_method="pdf_pdfplumber",
+            parse_format="pdf",
+            invoice_no=FIX8_SAMS_CLUB_INVOICE_NO,
+            confidence=0.95,
+        ),
+        ExtractionLog(
+            user_id=scan_log.user_id,
+            scan_log_id=scan_log.id,
+            email_uid="fix8-email-first",
+            email_subject="山姆会员店 发票",
+            attachment_filename="invoice.ofd",
+            outcome="low_confidence",
+            classification_tier=1,
+            parse_method="ofd_struct",
+            parse_format="ofd",
+            confidence=0.42,
+        ),
+        ExtractionLog(
+            user_id=scan_log.user_id,
+            scan_log_id=scan_log.id,
+            email_uid="fix8-email-first",
+            email_subject="山姆会员店 发票",
+            attachment_filename="invoice.xml",
+            outcome="low_confidence",
+            classification_tier=1,
+            parse_method="xml_xpath",
+            parse_format="xml",
+            confidence=0.38,
+        ),
+        ExtractionLog(
+            user_id=scan_log.user_id,
+            scan_log_id=scan_log.id,
+            email_uid="fix8-email-second",
+            email_subject="山姆会员店 发票 (重发)",
+            attachment_filename="invoice.pdf",
+            outcome="duplicate",
+            classification_tier=1,
+            parse_method="pdf_pdfplumber",
+            parse_format="pdf",
+            invoice_no=FIX8_SAMS_CLUB_INVOICE_NO,
+            confidence=0.95,
+        ),
+        ExtractionLog(
+            user_id=scan_log.user_id,
+            scan_log_id=scan_log.id,
+            email_uid="fix8-email-second",
+            email_subject="山姆会员店 发票 (重发)",
+            attachment_filename="invoice.ofd",
+            outcome="duplicate",
+            classification_tier=1,
+            parse_method="ofd_struct",
+            parse_format="ofd",
+            invoice_no=FIX8_SAMS_CLUB_INVOICE_NO,
+            confidence=0.91,
+        ),
+        ExtractionLog(
+            user_id=scan_log.user_id,
+            scan_log_id=scan_log.id,
+            email_uid="fix8-email-second",
+            email_subject="山姆会员店 发票 (重发)",
+            attachment_filename="invoice.xml",
+            outcome="duplicate",
+            classification_tier=1,
+            parse_method="xml_xpath",
+            parse_format="xml",
+            invoice_no=FIX8_SAMS_CLUB_INVOICE_NO,
+            confidence=0.89,
+        ),
+    ]
+    for r in rows:
+        db.add(r)
+    await db.flush()
+    await db.commit()
+    for r in rows:
+        await db.refresh(r)
+    return Fix8SeedResponse(
+        scan_log_id=scan_log.id,
+        extraction_log_ids=[r.id for r in rows],
+    )
+
+
+@router.post("/reset-users-to-admin-only", response_model=dict[str, int])
+async def reset_users_to_admin_only(
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    del _current_user
+    _require_test_helpers()
+    await _reset_users_to_admin_only(db)
+    admin = (await db.execute(select(User).order_by(User.id).limit(1))).scalar_one()
+    return {"admin_id": admin.id}
+
+
+@router.post("/seed-second-user", response_model=MultiUserSeedResponse)
+async def seed_second_user(
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> MultiUserSeedResponse:
+    del _current_user
+    _require_test_helpers()
+
+    existing = (
+        await db.execute(select(User).where(User.email == _SECOND_USER_EMAIL))
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = User(
+            email=_SECOND_USER_EMAIL,
+            hashed_password=_SECOND_USER_PASSWORD_HASH,
+            is_admin=False,
+            is_active=True,
+        )
+        db.add(existing)
+    else:
+        existing.hashed_password = _SECOND_USER_PASSWORD_HASH
+        existing.is_admin = False
+        existing.is_active = True
+    await db.commit()
+    await db.refresh(existing)
+
+    admin = (await db.execute(select(User).order_by(User.id).limit(1))).scalar_one()
+    return MultiUserSeedResponse(
+        admin_id=admin.id,
+        second_user_email=_SECOND_USER_EMAIL,
+        second_user_id=existing.id,
+        second_user_password=_SECOND_USER_PASSWORD,
+    )

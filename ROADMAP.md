@@ -163,6 +163,27 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v1.0.2 — Released
+
+**E2E coverage expansion + one ship-blocking frontend bug caught.** Four new Playwright spec files cover multi-user UX (registration, change-password with session revocation, admin panel) and the Fix 8 scan-log panel. The new Fix 8 spec surfaced a real production bug — the frontend `api.getExtractionLogs` was returning an envelope object instead of an array, silently breaking Fix 8 rendering for any scan with attached extraction logs.
+
+**What changed**:
+- 17 Playwright E2E specs (up from 2): fix8-scan-log, register, change-password, admin-panel + expanded smoke.
+- Four new `/test-helpers/*` endpoints for fixture composition (`seed-fix8-scenario`, `reset-users-to-admin-only`, `seed-second-user`, and `reset-smoke` is now auth-less).
+- `app/rate_limiter.py` disables enforcement when `ENABLE_TEST_HELPERS=true`.
+- **Fixed**: `api.getExtractionLogs` now returns `res.data.items ?? []` (was `res.data` — shape mismatch).
+
+**Verification**:
+- 631 backend tests / 100% coverage (unchanged gate, +8 tests).
+- 17 Playwright specs / 21s total.
+- 23 Vitest specs / unchanged from v1.0.1.
+
+Zero-touch upgrade from v1.0.1. Restores full Fix 8 panel rendering for scan logs with multi-attachment extractions.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v1.0.1 — Released
 
 **Frontend test infrastructure.** Backfills unit coverage for the Fix 8 per-email aggregation helpers introduced in v1.0.0. Ships during the v0.9.1 soak window — zero production risk, pure refactor + test scaffolding.
