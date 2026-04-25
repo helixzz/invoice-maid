@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.0.1] - 2026-04-25
+
+### Theme
+
+**Frontend test infrastructure.** First Vitest suite lands — backfills unit coverage for the Fix 8 per-email aggregation helpers introduced in v1.0.0. No runtime behavior change; pure refactor + test scaffolding.
+
+### Added
+
+- **Vitest runner** (`vitest` ^1.6.1) wired into `vite.config.ts` with a `test` block scoped to `src/**/__tests__/**/*.test.ts`. New `npm test` (watch) and `npm run test:run` (single pass) scripts.
+- **`frontend/src/views/scanAggregation.ts`** — extracted `aggregateByEmail`, `summarizeEmails`, `OUTCOME_PRIORITY`, and the `EmailAggregate` / `EmailCountBreakdown` interfaces out of `SettingsView.vue`'s `<script setup>` block into a standalone importable module. Pure TypeScript, zero Vue / DOM / I/O dependencies — testable in isolation.
+- **`frontend/src/views/__tests__/scanAggregation.test.ts`** — 23 test cases across 3 `describe` blocks:
+  - `aggregateByEmail` (12 tests): empty input, single email × 1 extraction, single email × 3 attachments (pdf/ofd/xml), **2-email duplicate-invoice_no scenario matching the 2026-04-20 Sam's Club incident**, missing-`email_uid` manual uploads, mixed valid/empty `email_uid`, outcome precedence regardless of iteration order, first-non-null `invoice_no` capture, `highest_tier` max aggregation with null-safety, unknown-outcome fallthrough guard, first-seen-wins for tied unknown outcomes.
+  - `summarizeEmails` (4 tests): empty input, every known outcome bucketed correctly (12 distinct outcomes → correct bucket), **bucket-sum invariant** (`saved + duplicates + skipped + errors + not_invoice === total_emails`), and the canonical Sam's Club 6-row regression test.
+  - `OUTCOME_PRIORITY` (6 tests): saved=success tie at 100, duplicate>skipped_seen (the 2026-04-20 investigation constraint), parse_failed>error (specificity), error=failed tie, not_vat_invoice=scam_detected tie, full precedence chain.
+
+### Changed
+
+- **`SettingsView.vue`** now imports `aggregateByEmail` and `summarizeEmails` from `./scanAggregation` instead of defining them inline. The ~90 lines of helper + type code moved out of the 1452-line component verbatim; template references unchanged. No visual, behavioral, or type-contract change.
+
+### Why now
+
+Handoff-v1.0.0 line 245 called out exactly these three functions as needing Vitest coverage. Shipping this during the v0.9.1 soak window (Oracle-mandated 3-7 day observation before shipping v1.1.0 Delta Query) means zero production risk and preserves test infrastructure maintenance velocity for the v1.1.0 implementation window ahead.
+
+### Verification
+
+- `npm run test:run` → 23/23 passing (692ms total)
+- `npm run build` → clean (`vue-tsc -b` type-check + `vite build`, 303 kB / 93 kB gzipped, same size class as v1.0.0)
+- Backend: untouched. 619 tests / 100% coverage unchanged.
+- Production: still serving v1.0.0 at commit time of this entry.
+
+### Upgrade path
+
+Zero-touch from v1.0.0. No schema, no migration, no API contract change, no config change, no behavioral change. Backend restart optional but recommended to sync the version string reported by `/api/v1/health`.
+
+---
+
 ## [1.0.0] - 2026-04-25
 
 ### Theme

@@ -20,6 +20,7 @@ import type {
   OAuthInitiateResponse,
   OAuthStatusResponse
 } from '@/types'
+import { aggregateByEmail, summarizeEmails } from './scanAggregation'
 
 const activeTab = ref('accounts')
 
@@ -206,99 +207,6 @@ const expandedLogId = ref<number | null>(null)
 const extractionLogs = ref<Record<number, ExtractionLog[]>>({})
 const extractionSummaries = ref<Record<number, ExtractionSummary>>({})
 const loadingExtractionLogs = ref<Record<number, boolean>>({})
-
-interface EmailAggregate {
-  email_uid: string | null
-  email_subject: string
-  extractions: ExtractionLog[]
-  best_outcome: string
-  invoice_no: string | null
-  highest_tier: number | null
-}
-
-/**
- * Aggregate a flat list of extraction_logs by email_uid so each email
- * renders as ONE card even if it produced 3+ extraction rows (one per
- * attachment format: PDF / OFD / XML). Prevents users from misreading
- * "6 log rows" as "6 different invoices" when it's really 2 emails ×
- * 3 attachments → 1 invoice saved + 5 dedupe/low-confidence rows.
- *
- * best_outcome precedence (highest to lowest): saved > duplicate >
- * skipped_seen > low_confidence > parse_failed > error > not_invoice.
- * This picks the most-meaningful per-email label for the collapsed
- * card header; the expanded card still shows every individual
- * extraction row for audit.
- */
-const OUTCOME_PRIORITY: Record<string, number> = {
-  saved: 100,
-  success: 100,
-  duplicate: 80,
-  skipped_seen: 70,
-  low_confidence: 60,
-  not_vat_invoice: 55,
-  scam_detected: 55,
-  parse_failed: 40,
-  error: 30,
-  failed: 30,
-  not_invoice: 10,
-}
-
-const aggregateByEmail = (logs: ExtractionLog[]): EmailAggregate[] => {
-  const buckets = new Map<string, EmailAggregate>()
-  for (const log of logs) {
-    const key = log.email_uid || `__no_uid_${log.id}`
-    let bucket = buckets.get(key)
-    if (!bucket) {
-      bucket = {
-        email_uid: log.email_uid,
-        email_subject: log.email_subject,
-        extractions: [],
-        best_outcome: log.outcome,
-        invoice_no: null,
-        highest_tier: null,
-      }
-      buckets.set(key, bucket)
-    }
-    bucket.extractions.push(log)
-    const currentRank = OUTCOME_PRIORITY[bucket.best_outcome] ?? 0
-    const newRank = OUTCOME_PRIORITY[log.outcome] ?? 0
-    if (newRank > currentRank) bucket.best_outcome = log.outcome
-    if (log.invoice_no && !bucket.invoice_no) bucket.invoice_no = log.invoice_no
-    if (log.classification_tier != null) {
-      bucket.highest_tier = Math.max(bucket.highest_tier ?? 0, log.classification_tier)
-    }
-  }
-  return Array.from(buckets.values())
-}
-
-interface EmailCountBreakdown {
-  saved: number
-  duplicates: number
-  skipped: number
-  not_invoice: number
-  errors: number
-  total_emails: number
-}
-
-const summarizeEmails = (aggregates: EmailAggregate[]): EmailCountBreakdown => {
-  const result: EmailCountBreakdown = {
-    saved: 0,
-    duplicates: 0,
-    skipped: 0,
-    not_invoice: 0,
-    errors: 0,
-    total_emails: aggregates.length,
-  }
-  for (const agg of aggregates) {
-    const o = agg.best_outcome
-    if (o === 'saved' || o === 'success') result.saved += 1
-    else if (o === 'duplicate') result.duplicates += 1
-    else if (o === 'skipped_seen') result.skipped += 1
-    else if (o === 'error' || o === 'failed' || o === 'parse_failed') result.errors += 1
-    else result.not_invoice += 1
-  }
-  return result
-}
 
 const toggleLogExpansion = async (logId: number) => {
   if (expandedLogId.value === logId) {

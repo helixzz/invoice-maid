@@ -163,6 +163,28 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v1.0.1 — Released
+
+**Frontend test infrastructure.** Backfills unit coverage for the Fix 8 per-email aggregation helpers introduced in v1.0.0. Ships during the v0.9.1 soak window — zero production risk, pure refactor + test scaffolding.
+
+**What changed**:
+- Extracted `aggregateByEmail`, `summarizeEmails`, `OUTCOME_PRIORITY` and their TypeScript interfaces out of the 1452-line `SettingsView.vue` into a standalone `scanAggregation.ts` module.
+- Added Vitest (^1.6.1) as the frontend unit-test runner, wired via `vite.config.ts`.
+- Wrote 23 tests covering every branch of the aggregator: single-email / multi-attachment / 2-email duplicate-invoice (the canonical Sam's Club 2026-04-20 regression), missing `email_uid` manual uploads, outcome precedence, unknown-outcome fallthrough, `highest_tier` max aggregation, `invoice_no` first-wins, summary-bucket invariants.
+
+**What did NOT change**:
+- No backend changes
+- No schema / API / behavioral changes
+- No user-visible UI change
+- No config change
+- Template in `SettingsView.vue` untouched
+
+Zero-touch upgrade from v1.0.0. 619 backend tests / 100% coverage unchanged. New: 23 frontend unit tests passing.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v1.0.0 — Released
 
 **Stable multi-user release.** Caps the v0.9.x arc with a single user-visible UX improvement — per-email scan summary aggregation — and docs polish.
