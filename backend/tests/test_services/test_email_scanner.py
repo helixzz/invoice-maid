@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import poplib
 import ssl
 from datetime import datetime, timezone
@@ -34,6 +35,26 @@ from app.services.email_scanner import (
     decrypt_password,
     encrypt_password,
 )
+
+
+@pytest.fixture
+def outlook_legacy_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force OutlookScanner.scan() down the preserved v0.9.x legacy code
+    path (_scan_v09_legacy) by flipping OUTLOOK_DELTA_ENABLED=False.
+
+    The full Outlook scan suite pre-dates v1.1.0 delta query and asserts
+    legacy behavior: $filter=receivedDateTime ge polling, flat
+    {folder_id: ISO} state shape, FIRST_SCAN_LIMIT gating on _emails_
+    (not paginate-past-limit). Those invariants are v1.0.x semantics
+    and must keep working when the operator flips the kill-switch;
+    these tests exercise that contract. New delta-path behavior is
+    covered by the `# --- Delta fetch helpers ---` and
+    `# --- OutlookScanner v1.1.0 delta integration ---` groups below."""
+    fake = SimpleNamespace(
+        OUTLOOK_DELTA_ENABLED=False,
+        OUTLOOK_DELTA_FALLBACK_ON_RESYNC=True,
+    )
+    monkeypatch.setattr(email_scanner, "get_settings", lambda: fake)
 
 
 def test_helpers_cover_password_url_html_datetime_and_uid_logic(settings) -> None:
@@ -830,7 +851,7 @@ def test_pop3_message_id_for_handles_key_error_headers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outlook_scanner_scan_connection_and_helpers(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scanner_scan_connection_and_helpers(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     token_path = tmp_path / "tokens" / "cache.json"
     account = EmailAccount(
         id=3,
@@ -1043,7 +1064,7 @@ def test_pop3_message_id_for_handles_specific_header_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_multi_folder_and_pagination(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_multi_folder_and_pagination(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=4, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -1105,7 +1126,7 @@ async def test_outlook_scan_multi_folder_and_pagination(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_incremental_uses_per_folder_watermark(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_incremental_uses_per_folder_watermark(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=5, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -1149,7 +1170,7 @@ async def test_outlook_scan_incremental_uses_per_folder_watermark(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_cross_folder_dedup_by_message_id(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_cross_folder_dedup_by_message_id(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=6, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
 
@@ -1190,7 +1211,7 @@ async def test_outlook_scan_cross_folder_dedup_by_message_id(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_first_pass_fetches_all_available_pages(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_first_pass_fetches_all_available_pages(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     scanner = OutlookScanner()
     account = EmailAccount(id=11, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
     folder = {"id": "f-inbox", "displayName": "Inbox", "wellKnownName": "inbox", "totalItemCount": 6, "childFolderCount": 0}
@@ -1241,7 +1262,7 @@ async def test_outlook_scan_first_pass_fetches_all_available_pages(monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_first_pass_respects_configured_limit(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_first_pass_respects_configured_limit(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(email_scanner, "FIRST_SCAN_LIMIT", 2)
     scanner = OutlookScanner()
     account = EmailAccount(id=12, name="outlook", type="outlook", username="client-id", oauth_token_path=str(tmp_path / "cache.json"))
@@ -2126,7 +2147,7 @@ def test_imap_scan_uidvalidity_resets_effective_uid(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_empty_folder_skipped_and_email_limit_and_highest_dt(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_empty_folder_skipped_and_email_limit_and_highest_dt(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner, GRAPH_BASE_URL
     import json as _json
     scanner = OutlookScanner()
@@ -2257,7 +2278,7 @@ def test_imap_scan_empty_uid_msg_skips_uid_update(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_folder_with_no_id_skipped(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_folder_with_no_id_skipped(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner
     scanner = OutlookScanner()
     account = EmailAccount(id=8, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
@@ -2292,7 +2313,7 @@ async def test_outlook_scan_folder_with_no_id_skipped(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_cross_folder_dedup_message_uid_in_seen(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_cross_folder_dedup_message_uid_in_seen(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner
     scanner = OutlookScanner()
     account = EmailAccount(id=9, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
@@ -2324,7 +2345,7 @@ async def test_outlook_scan_cross_folder_dedup_message_uid_in_seen(monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_outlook_highest_dt_not_updated_for_older_messages(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_highest_dt_not_updated_for_older_messages(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner
     import json as _json
     scanner = OutlookScanner()
@@ -2433,7 +2454,7 @@ async def test_outlook_iter_folders_child_url_dedup_guard(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_dedup_with_empty_message_uid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_dedup_with_empty_message_uid(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner
     scanner = OutlookScanner()
     account = EmailAccount(id=20, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
@@ -2653,7 +2674,7 @@ def test_imap_scan_options_reset_state_discards_existing_state(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_options_unread_only_adds_filter(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_options_unread_only_adds_filter(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner, ScanOptions
     scanner = OutlookScanner()
     account = EmailAccount(id=50, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
@@ -2684,7 +2705,7 @@ async def test_outlook_scan_options_unread_only_adds_filter(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_options_since_adds_filter(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_options_since_adds_filter(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner, ScanOptions
     scanner = OutlookScanner()
     account = EmailAccount(id=51, name="o", type="outlook", username="c-id", oauth_token_path=str(tmp_path / "c.json"))
@@ -2717,7 +2738,7 @@ async def test_outlook_scan_options_since_adds_filter(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_options_combined_with_incremental_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_options_combined_with_incremental_state(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner, ScanOptions
     import json as _json
     scanner = OutlookScanner()
@@ -2754,7 +2775,7 @@ async def test_outlook_scan_options_combined_with_incremental_state(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_outlook_scan_options_reset_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_outlook_scan_options_reset_state(outlook_legacy_mode, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.email_scanner import OutlookScanner, ScanOptions
     import json as _json
     scanner = OutlookScanner()
@@ -4335,3 +4356,1249 @@ def test_qq_scan_noop_failure_is_logged_and_loop_continues(
     assert len(emails) == msg_count, (
         "a failed NOOP must not truncate the fetch iterator; messages already iterated must be kept"
     )
+
+
+# --- Delta state parsing (v1.1.0) ---
+
+
+def test_parse_outlook_delta_state_new_format() -> None:
+    raw = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {
+                "f1": {"delta_link": "x", "last_sync_at": "2026-04-28T00:00:00Z"},
+            },
+        }
+    )
+    state, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert state == {"f1": {"delta_link": "x", "last_sync_at": "2026-04-28T00:00:00Z"}}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_v09_legacy_bridged() -> None:
+    raw = json.dumps({"f1": "2024-06-01T00:00:00Z", "f2": "2024-07-01T00:00:00Z"})
+    state, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert is_legacy is True
+    assert state["f1"]["_legacy_received_dt"] == "2024-06-01T00:00:00Z"
+    assert state["f1"]["delta_link"] == ""
+    assert state["f1"]["last_sync_at"] == ""
+    assert state["f2"]["_legacy_received_dt"] == "2024-07-01T00:00:00Z"
+
+
+def test_parse_outlook_delta_state_pre_v090_legacy() -> None:
+    raw = json.dumps({"__legacy_uid__": "some-old-uid"})
+    state, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_malformed_json() -> None:
+    state, is_legacy = email_scanner._parse_outlook_delta_state("not valid json {")
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_none() -> None:
+    state, is_legacy = email_scanner._parse_outlook_delta_state(None)
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_empty_string() -> None:
+    state, is_legacy = email_scanner._parse_outlook_delta_state("")
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_non_dict_json() -> None:
+    state, is_legacy = email_scanner._parse_outlook_delta_state(json.dumps([1, 2, 3]))
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_v110_with_non_dict_folders() -> None:
+    raw = json.dumps({"_format": "outlook_delta_v1", "folders": "oops not a dict"})
+    state, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_v110_skips_non_dict_folder_values() -> None:
+    raw = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {
+                "f1": {"delta_link": "ok"},
+                "f2": "not-a-dict",
+            },
+        }
+    )
+    state, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert state == {"f1": {"delta_link": "ok"}}
+    assert is_legacy is False
+
+
+def test_parse_outlook_delta_state_mixed_value_types_returns_empty() -> None:
+    raw = json.dumps({"f1": "ok-string", "f2": 42})
+    state, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert state == {}
+    assert is_legacy is False
+
+
+def test_serialize_outlook_delta_state_roundtrip() -> None:
+    state = {"f1": {"delta_link": "x", "last_sync_at": "2026-04-28T00:00:00Z"}}
+    raw = email_scanner._serialize_outlook_delta_state(
+        {"_format": "outlook_delta_v1", "folders": state}
+    )
+    parsed, is_legacy = email_scanner._parse_outlook_delta_state(raw)
+    assert parsed == state
+    assert is_legacy is False
+
+
+def test_input_was_v110_format_detection() -> None:
+    v110 = json.dumps({"_format": "outlook_delta_v1", "folders": {}})
+    v09 = json.dumps({"f1": "2024-06-01T00:00:00Z"})
+    assert email_scanner._input_was_v110_format(v110) is True
+    assert email_scanner._input_was_v110_format(v09) is False
+    assert email_scanner._input_was_v110_format(None) is False
+    assert email_scanner._input_was_v110_format("") is False
+    assert email_scanner._input_was_v110_format("not valid json {") is False
+    assert email_scanner._input_was_v110_format(json.dumps([1, 2, 3])) is False
+
+
+def test_v09_shape_from_parsed_prefers_legacy_bridged_dt() -> None:
+    parsed_v110 = {
+        "f1": {"_legacy_received_dt": "2024-06-01T00:00:00Z", "delta_link": "", "last_sync_at": ""},
+        "f2": {"delta_link": "x", "last_sync_at": "2026-04-28T00:00:00Z"},
+    }
+    parsed_v09: dict[str, str] = {}
+    out = email_scanner._v09_shape_from_parsed(parsed_v110, parsed_v09)
+    assert out["f1"] == "2024-06-01T00:00:00Z"
+    assert out["f2"] == "2026-04-28T00:00:00Z"
+
+
+def test_v09_shape_from_parsed_falls_back_to_v09_when_v110_empty() -> None:
+    parsed_v110: dict[str, dict[str, str]] = {}
+    parsed_v09 = {"f1": "2024-06-01T00:00:00Z"}
+    out = email_scanner._v09_shape_from_parsed(parsed_v110, parsed_v09)
+    assert out == {"f1": "2024-06-01T00:00:00Z"}
+
+
+def test_v09_shape_from_parsed_falls_back_when_v110_has_no_usable_timestamps() -> None:
+    parsed_v110 = {"f1": {"delta_link": "x"}}
+    parsed_v09 = {"f1": "2024-06-01T00:00:00Z"}
+    out = email_scanner._v09_shape_from_parsed(parsed_v110, parsed_v09)
+    assert out == {"f1": "2024-06-01T00:00:00Z"}
+
+
+def test_v09_shape_from_parsed_both_empty_returns_empty() -> None:
+    out = email_scanner._v09_shape_from_parsed({}, {})
+    assert out == {}
+
+
+def test_delta_constants_documented_values() -> None:
+    assert email_scanner.DELTA_PAGE_SIZE == 100
+    assert email_scanner.MAX_BRIDGE_PAGES == 30
+    assert email_scanner.DELTA_PAGE_SIZE * email_scanner.MAX_BRIDGE_PAGES < 5000, (
+        "30 pages × 100 msgs = 3000 must stay below the documented Microsoft Graph "
+        "5,000-msg cap on $filter-with-delta. Don't bump these without re-reading "
+        "the v1.1.0 design §4.3.3."
+    )
+
+
+# --- Delta fetch helpers (v1.1.0) ---
+
+
+class _FakeDeltaResponse:
+    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if 400 <= self.status_code < 600:
+            raise httpx.HTTPStatusError("status", request=None, response=None)  # type: ignore[arg-type]
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _FakeDeltaClient:
+    """Records every GET URL + headers so tests can assert what was called.
+    Pops responses in FIFO order from the seeded queue."""
+
+    def __init__(self, responses: list[_FakeDeltaResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    async def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeDeltaResponse:
+        self.calls.append((url, dict(headers or {})))
+        if not self._responses:
+            raise RuntimeError(f"unexpected GET to {url!r}; queue exhausted")
+        return self._responses.pop(0)
+
+
+def _delta_message(uid: str, subject: str = "") -> dict[str, Any]:
+    return {
+        "id": f"graph-{uid}",
+        "internetMessageId": uid,
+        "subject": subject or f"Subject {uid}",
+        "bodyPreview": "preview",
+        "from": {"emailAddress": {"address": f"from-{uid}@example.com"}},
+        "receivedDateTime": "2026-04-28T00:00:00Z",
+        "hasAttachments": True,
+    }
+
+
+def _delta_resync_410_response() -> _FakeDeltaResponse:
+    return _FakeDeltaResponse(
+        {"error": {"code": "resyncRequired", "message": "Resync required."}},
+        status_code=410,
+    )
+
+
+async def test_delta_fetch_incremental_happy_path() -> None:
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-1"), _delta_message("uid-2")],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/.../page2",
+                }
+            ),
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-3")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=NEW",
+                }
+            ),
+        ]
+    )
+    seen: set[str] = set()
+    emails, new_delta_link = await email_scanner._delta_fetch_incremental(
+        client=client,
+        headers={"Authorization": "Bearer X"},
+        delta_link="https://graph.microsoft.com/v1.0/.../delta?$deltatoken=OLD",
+        folder_id="folder-1",
+        folder_name="INBOX",
+        seen_message_ids=seen,
+    )
+    assert [e.uid for e in emails] == ["uid-1", "uid-2", "uid-3"]
+    assert new_delta_link.endswith("$deltatoken=NEW")
+    assert seen == {"uid-1", "uid-2", "uid-3"}
+    assert len(client.calls) == 2
+    assert client.calls[0][0] == "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=OLD"
+    assert "Prefer" in client.calls[0][1]
+    assert "odata.maxpagesize=100" in client.calls[0][1]["Prefer"]
+
+
+async def test_delta_fetch_incremental_raises_on_410_resync_required() -> None:
+    client = _FakeDeltaClient([_delta_resync_410_response()])
+    with pytest.raises(email_scanner.DeltaResyncRequiredError) as excinfo:
+        await email_scanner._delta_fetch_incremental(
+            client=client,
+            headers={"Authorization": "Bearer X"},
+            delta_link="https://graph.microsoft.com/v1.0/.../delta?$deltatoken=STALE",
+            folder_id="folder-bad",
+            folder_name="INBOX",
+            seen_message_ids=set(),
+        )
+    assert excinfo.value.folder_id == "folder-bad"
+    assert excinfo.value.code == "resyncRequired"
+
+
+async def test_delta_fetch_round_410_without_resync_code_does_not_raise() -> None:
+    client = _FakeDeltaClient(
+        [_FakeDeltaResponse({"error": {"code": "Forbidden"}}, status_code=410)]
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await email_scanner._delta_fetch_round(
+            client=client,
+            headers={},
+            initial_url="https://graph.microsoft.com/v1.0/.../delta",
+            folder_id="folder-x",
+            folder_name="INBOX",
+            seen_message_ids=set(),
+            emit_limit=None,
+            max_pages=None,
+        )
+
+
+async def test_delta_fetch_round_410_with_unparseable_body_does_not_raise_resync() -> None:
+    class _UnparseableResponse(_FakeDeltaResponse):
+        def json(self) -> dict[str, Any]:
+            raise ValueError("malformed JSON")
+
+    client = _FakeDeltaClient([_UnparseableResponse({}, status_code=410)])
+    with pytest.raises(httpx.HTTPStatusError):
+        await email_scanner._delta_fetch_round(
+            client=client,
+            headers={},
+            initial_url="https://graph.microsoft.com/v1.0/.../delta",
+            folder_id="folder-x",
+            folder_name="INBOX",
+            seen_message_ids=set(),
+            emit_limit=None,
+            max_pages=None,
+        )
+
+
+async def test_delta_fetch_bridge_happy_path() -> None:
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-A")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=BRIDGE_DONE",
+                }
+            ),
+        ]
+    )
+    seen: set[str] = set()
+    emails, new_delta_link, overflow = await email_scanner._delta_fetch_bridge(
+        client=client,
+        headers={"Authorization": "Bearer X"},
+        folder_id="folder-1",
+        folder_name="INBOX",
+        legacy_received_dt="2024-06-01T00:00:00Z",
+        seen_message_ids=seen,
+    )
+    assert overflow is False
+    assert [e.uid for e in emails] == ["uid-A"]
+    assert new_delta_link.endswith("$deltatoken=BRIDGE_DONE")
+    initial_url = client.calls[0][0]
+    assert "/messages/delta" in initial_url
+    assert "$filter=receivedDateTime ge 2024-06-01T00:00:00Z" in initial_url
+    assert "$select=id,internetMessageId" in initial_url
+
+
+async def test_delta_fetch_bridge_overflow_returns_true_when_max_pages_exceeded() -> None:
+    page_with_next = _FakeDeltaResponse(
+        {
+            "value": [_delta_message("page-msg")],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/.../next-page",
+        }
+    )
+    responses = [page_with_next for _ in range(email_scanner.MAX_BRIDGE_PAGES + 5)]
+    client = _FakeDeltaClient(responses)
+    seen: set[str] = set()
+    emails, new_delta_link, overflow = await email_scanner._delta_fetch_bridge(
+        client=client,
+        headers={},
+        folder_id="folder-overflowing",
+        folder_name="INBOX",
+        legacy_received_dt="2020-01-01T00:00:00Z",
+        seen_message_ids=seen,
+    )
+    assert overflow is True
+    assert new_delta_link == ""
+    assert len(client.calls) == email_scanner.MAX_BRIDGE_PAGES, (
+        f"bridge must stop at MAX_BRIDGE_PAGES; saw {len(client.calls)} calls"
+    )
+
+
+async def test_delta_fetch_initial_happy_path_no_filter() -> None:
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-1"), _delta_message("uid-2")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=INIT_DONE",
+                }
+            ),
+        ]
+    )
+    seen: set[str] = set()
+    emails, new_delta_link = await email_scanner._delta_fetch_initial(
+        client=client,
+        headers={},
+        folder_id="folder-fresh",
+        folder_name="INBOX",
+        seen_message_ids=seen,
+        emit_limit=None,
+    )
+    assert [e.uid for e in emails] == ["uid-1", "uid-2"]
+    assert new_delta_link.endswith("$deltatoken=INIT_DONE")
+    initial_url = client.calls[0][0]
+    assert "$filter=" not in initial_url
+    assert "$orderby=" not in initial_url
+    assert "$select=id,internetMessageId" in initial_url
+
+
+async def test_delta_fetch_initial_emit_limit_keeps_paginating_to_claim_delta_link() -> None:
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message(f"uid-page1-{i}") for i in range(3)],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/.../page2",
+                }
+            ),
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message(f"uid-page2-{i}") for i in range(3)],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=POST_LIMIT",
+                }
+            ),
+        ]
+    )
+    seen: set[str] = set()
+    emails, new_delta_link = await email_scanner._delta_fetch_initial(
+        client=client,
+        headers={},
+        folder_id="folder-with-limit",
+        folder_name="INBOX",
+        seen_message_ids=seen,
+        emit_limit=2,
+    )
+    assert len(emails) == 2, (
+        "emit_limit must cap returned emails at exactly the limit, even if "
+        "more arrive in the same page"
+    )
+    assert new_delta_link.endswith("$deltatoken=POST_LIMIT"), (
+        "must keep paginating past emit_limit to claim the deltaLink"
+    )
+    assert len(client.calls) == 2
+
+
+async def test_delta_fetch_round_skips_at_removed_messages() -> None:
+    removed = {"id": "graph-x", "@removed": {"reason": "deleted"}}
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-keep"), removed],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=DONE",
+                }
+            )
+        ]
+    )
+    emails, new_delta_link, overflow = await email_scanner._delta_fetch_round(
+        client=client,
+        headers={},
+        initial_url="https://graph.microsoft.com/v1.0/.../delta",
+        folder_id="folder-1",
+        folder_name="INBOX",
+        seen_message_ids=set(),
+        emit_limit=None,
+        max_pages=None,
+    )
+    assert overflow is False
+    assert [e.uid for e in emails] == ["uid-keep"]
+    assert new_delta_link.endswith("$deltatoken=DONE")
+
+
+async def test_delta_fetch_round_dedupes_cross_folder_via_seen_set() -> None:
+    msg = _delta_message("uid-shared")
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [msg],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=DONE",
+                }
+            )
+        ]
+    )
+    seen: set[str] = {"uid-shared"}
+    emails, _new_delta_link, _overflow = await email_scanner._delta_fetch_round(
+        client=client,
+        headers={},
+        initial_url="https://graph.microsoft.com/v1.0/.../delta",
+        folder_id="folder-2",
+        folder_name="Archive",
+        seen_message_ids=seen,
+        emit_limit=None,
+        max_pages=None,
+    )
+    assert emails == [], "messages already in seen_set must be skipped"
+
+
+async def test_delta_fetch_round_logs_error_when_response_lacks_both_links(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _FakeDeltaClient(
+        [_FakeDeltaResponse({"value": [_delta_message("uid-orphan")]})]
+    )
+    with caplog.at_level(logging.ERROR, logger="app.services.email_scanner"):
+        emails, new_delta_link, overflow = await email_scanner._delta_fetch_round(
+            client=client,
+            headers={},
+            initial_url="https://graph.microsoft.com/v1.0/.../delta",
+            folder_id="malformed-folder",
+            folder_name="INBOX",
+            seen_message_ids=set(),
+            emit_limit=None,
+            max_pages=None,
+        )
+    assert overflow is False
+    assert new_delta_link == ""
+    assert [e.uid for e in emails] == ["uid-orphan"]
+    assert any(
+        "neither nextLink nor deltaLink" in r.message for r in caplog.records
+    ), "must log an error when Graph returns a malformed page"
+
+
+async def test_delta_fetch_round_logs_at_info_for_removed_messages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    removed = {"id": "graph-bye", "@removed": {"reason": "deleted"}}
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [removed],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=DONE",
+                }
+            )
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="app.services.email_scanner"):
+        await email_scanner._delta_fetch_round(
+            client=client,
+            headers={},
+            initial_url="https://graph.microsoft.com/v1.0/.../delta",
+            folder_id="folder-rm",
+            folder_name="INBOX",
+            seen_message_ids=set(),
+            emit_limit=None,
+            max_pages=None,
+        )
+    assert any("removed from folder folder-rm" in r.message for r in caplog.records)
+
+
+def test_build_raw_email_from_graph_item_pure_function() -> None:
+    item = {
+        "id": "graph-1",
+        "internetMessageId": "uid-1",
+        "subject": "Hi",
+        "bodyPreview": "Body",
+        "from": {"emailAddress": {"address": "alice@example.com"}},
+        "receivedDateTime": "2026-04-28T00:00:00Z",
+        "hasAttachments": True,
+    }
+    raw = email_scanner._build_raw_email_from_graph_item(item, "folder-1", "INBOX")
+    assert raw.uid == "uid-1"
+    assert raw.subject == "Hi"
+    assert raw.from_addr == "alice@example.com"
+    assert raw.is_hydrated is False
+    assert raw.folder == "INBOX"
+    assert raw.headers["_graph_id"] == "graph-1"
+    assert raw.headers["_graph_folder_id"] == "folder-1"
+    assert raw.headers["_has_attachments"] == "True"
+
+
+def test_build_raw_email_from_graph_item_handles_missing_fields() -> None:
+    raw = email_scanner._build_raw_email_from_graph_item({}, "f", "")
+    assert raw.uid == ""
+    assert raw.subject == ""
+    assert raw.from_addr == ""
+    assert raw.headers["_graph_folder_id"] == "f"
+    assert raw.headers["_has_attachments"] == "False"
+
+
+def test_delta_resync_required_error_carries_metadata() -> None:
+    err = email_scanner.DeltaResyncRequiredError(
+        folder_id="folder-X", code="resyncRequired", message="fresh start"
+    )
+    assert err.folder_id == "folder-X"
+    assert err.code == "resyncRequired"
+    assert "folder-X" in str(err)
+    assert "fresh start" in str(err)
+
+
+# --- OutlookScanner v1.1.0 delta integration ---
+
+
+@pytest.fixture
+def outlook_delta_mode(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Force OutlookScanner.scan() down the v1.1.0 delta-query path with
+    OUTLOOK_DELTA_ENABLED=True. Returns the namespace so tests can mutate
+    flags mid-test (e.g. flip OUTLOOK_DELTA_FALLBACK_ON_RESYNC=False)."""
+    fake = SimpleNamespace(
+        OUTLOOK_DELTA_ENABLED=True,
+        OUTLOOK_DELTA_FALLBACK_ON_RESYNC=True,
+    )
+    monkeypatch.setattr(email_scanner, "get_settings", lambda: fake)
+    return fake
+
+
+def _outlook_account(tmp_path: Any, account_id: int = 1) -> EmailAccount:
+    return EmailAccount(
+        id=account_id,
+        name="outlook",
+        type="outlook",
+        username="client-id",
+        oauth_token_path=str(tmp_path / "cache.json"),
+    )
+
+
+class _DeltaIntegrationClient:
+    """AsyncClient stand-in for OutlookScanner.scan() integration tests.
+    Routes /mailFolders requests to a static list of folders and routes
+    /messages and /messages/delta requests to a per-folder response queue."""
+
+    def __init__(
+        self,
+        folders: list[dict[str, Any]],
+        per_folder_responses: dict[str, list[_FakeDeltaResponse]],
+    ) -> None:
+        self._folders = folders
+        self._queues = {fid: list(rs) for fid, rs in per_folder_responses.items()}
+        self.calls: list[tuple[str, dict[str, str]]] = []
+        self.folder_call_counts: dict[str, int] = {}
+
+    async def __aenter__(self) -> "_DeltaIntegrationClient":
+        return self
+
+    async def __aexit__(self, *_: Any) -> bool:
+        return False
+
+    async def get(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+    ) -> _FakeDeltaResponse:
+        self.calls.append((url, dict(headers or {})))
+        if "/mailFolders" in url and "/messages" not in url:
+            return _FakeDeltaResponse({"value": self._folders, "@odata.nextLink": None})
+        for folder_id, queue in self._queues.items():
+            if folder_id in url:
+                self.folder_call_counts[folder_id] = self.folder_call_counts.get(folder_id, 0) + 1
+                if not queue:
+                    raise RuntimeError(
+                        f"unexpected GET to {url!r}; queue for folder {folder_id} exhausted"
+                    )
+                return queue.pop(0)
+        raise RuntimeError(f"unexpected GET to {url!r}; no folder match")
+
+
+def _bootstrap_scanner_for_delta(
+    monkeypatch: pytest.MonkeyPatch,
+    integration_client: _DeltaIntegrationClient,
+) -> OutlookScanner:
+    scanner = OutlookScanner()
+    monkeypatch.setattr(scanner, "_acquire_access_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(
+        email_scanner.httpx,
+        "AsyncClient",
+        lambda timeout=None: integration_client,
+    )
+    return scanner
+
+
+def _folder(fid: str, name: str = "Inbox") -> dict[str, Any]:
+    return {
+        "id": fid,
+        "displayName": name,
+        "wellKnownName": "inbox" if name.lower() == "inbox" else "",
+        "totalItemCount": 5,
+        "childFolderCount": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_first_scan_initial_path(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message(f"uid-{i}") for i in range(3)],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=NEW",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    emails = await scanner.scan(account, last_uid=None)
+
+    assert len(emails) == 3
+    assert {e.uid for e in emails} == {"uid-0", "uid-1", "uid-2"}
+    state = json.loads(scanner._last_scan_state)
+    assert state["_format"] == "outlook_delta_v1"
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=NEW")
+    assert "last_sync_at" in state["folders"]["f-inbox"]
+    assert scanner._scan_events == []
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_v09_legacy_state_takes_bridge_path(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-bridge")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=BRIDGE",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    legacy_state = json.dumps({"f-inbox": "2024-06-01T00:00:00Z"})
+    emails = await scanner.scan(account, last_uid=legacy_state)
+
+    assert [e.uid for e in emails] == ["uid-bridge"]
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=BRIDGE")
+    bridge_call_url = next(c[0] for c in client.calls if "/messages/delta" in c[0])
+    assert "$filter=receivedDateTime ge 2024-06-01T00:00:00Z" in bridge_call_url
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_v110_state_takes_incremental_path(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-incr")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=NEW2",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    v110_state = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {
+                "f-inbox": {
+                    "delta_link": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=OLD",
+                    "last_sync_at": "2026-04-28T00:00:00Z",
+                }
+            },
+        }
+    )
+    emails = await scanner.scan(account, last_uid=v110_state)
+
+    assert [e.uid for e in emails] == ["uid-incr"]
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=NEW2")
+    assert client.calls[1][0].endswith("$deltatoken=OLD"), (
+        "incremental fetch must use the stored delta_link verbatim, not synthesize a new URL"
+    )
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_410_resync_falls_back_to_initial_with_event(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _delta_resync_410_response(),
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-after-resync")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=FRESH",
+                }
+            ),
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    v110_state = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {
+                "f-inbox": {
+                    "delta_link": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=STALE",
+                    "last_sync_at": "2026-04-28T00:00:00Z",
+                }
+            },
+        }
+    )
+    emails = await scanner.scan(account, last_uid=v110_state)
+
+    assert [e.uid for e in emails] == ["uid-after-resync"]
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=FRESH")
+    assert len(scanner._scan_events) == 1
+    event = scanner._scan_events[0]
+    assert event["kind"] == "delta_resync"
+    assert event["folder_id"] == "f-inbox"
+    assert "DELTA_RESYNC" in event["error_detail"]
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_410_resync_with_fallback_disabled_propagates(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    outlook_delta_mode.OUTLOOK_DELTA_FALLBACK_ON_RESYNC = False
+    folders = [_folder("f-inbox")]
+    responses = {"f-inbox": [_delta_resync_410_response()]}
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    v110_state = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {
+                "f-inbox": {
+                    "delta_link": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=STALE",
+                    "last_sync_at": "",
+                }
+            },
+        }
+    )
+
+    with pytest.raises(email_scanner.DeltaResyncRequiredError):
+        await scanner.scan(account, last_uid=v110_state)
+    assert len(scanner._scan_events) == 1
+    assert scanner._scan_events[0]["kind"] == "delta_resync"
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_bridge_overflow_falls_back_to_initial_with_event(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    overflow_pages = [
+        _FakeDeltaResponse(
+            {
+                "value": [_delta_message(f"uid-bridge-{i}")],
+                "@odata.nextLink": f"https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?page={i + 1}",
+            }
+        )
+        for i in range(email_scanner.MAX_BRIDGE_PAGES)
+    ]
+    initial_response = _FakeDeltaResponse(
+        {
+            "value": [_delta_message("uid-after-overflow")],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=AFTER_OVERFLOW",
+        }
+    )
+    client = _DeltaIntegrationClient(
+        folders, {"f-inbox": overflow_pages + [initial_response]}
+    )
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    legacy_state = json.dumps({"f-inbox": "2020-01-01T00:00:00Z"})
+    emails = await scanner.scan(account, last_uid=legacy_state)
+
+    uids = {e.uid for e in emails}
+    assert "uid-after-overflow" in uids
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=AFTER_OVERFLOW")
+    assert any(ev["kind"] == "delta_bridge_overflow" for ev in scanner._scan_events)
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_pre_v090_legacy_state_treated_as_first_scan(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-fresh")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=FIRST",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    pre_v09_state = json.dumps({"__legacy_uid__": "old-internet-message-id"})
+    emails = await scanner.scan(account, last_uid=pre_v09_state)
+
+    assert [e.uid for e in emails] == ["uid-fresh"]
+    bridge_call_url = next(c[0] for c in client.calls if "/messages/delta" in c[0])
+    assert "$filter=" not in bridge_call_url, (
+        "pre-v0.9.0 state must trigger initial sync (no filter), not bridge"
+    )
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_malformed_state_treated_as_first_scan(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=FIRST",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    emails = await scanner.scan(account, last_uid="not valid json {")
+
+    assert emails == []
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=FIRST")
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_multipage_incremental(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-p1-a"), _delta_message("uid-p1-b")],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?page=2",
+                }
+            ),
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-p2-a")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=P2_END",
+                }
+            ),
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    v110_state = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {"f-inbox": {"delta_link": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=START", "last_sync_at": ""}},
+        }
+    )
+    emails = await scanner.scan(account, last_uid=v110_state)
+
+    assert [e.uid for e in emails] == ["uid-p1-a", "uid-p1-b", "uid-p2-a"]
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=P2_END")
+
+
+@pytest.mark.asyncio
+async def test_outlook_kill_switch_off_with_v110_state_skips_account(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    fake = SimpleNamespace(OUTLOOK_DELTA_ENABLED=False, OUTLOOK_DELTA_FALLBACK_ON_RESYNC=True)
+    monkeypatch.setattr(email_scanner, "get_settings", lambda: fake)
+    folders = [_folder("f-inbox")]
+    responses: dict[str, list[_FakeDeltaResponse]] = {"f-inbox": []}
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    v110_state_in = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {"f-inbox": {"delta_link": "x", "last_sync_at": ""}},
+        }
+    )
+    emails = await scanner.scan(account, last_uid=v110_state_in)
+
+    assert emails == []
+    assert scanner._last_scan_state == v110_state_in, (
+        "flag-off + v1.1.0 state must preserve state byte-identical"
+    )
+    assert client.calls == [], "flag-off + v1.1.0 state must make zero HTTP calls"
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_cross_folder_dedup(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox", "Inbox"), _folder("f-archive", "Archive")]
+    shared_msg = _delta_message("uid-shared")
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [shared_msg],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=A",
+                }
+            )
+        ],
+        "f-archive": [
+            _FakeDeltaResponse(
+                {
+                    "value": [shared_msg],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-archive/messages/delta?$deltatoken=B",
+                }
+            )
+        ],
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    emails = await scanner.scan(account, last_uid=None)
+
+    assert len(emails) == 1, "cross-folder dedup must collapse the same internetMessageId"
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"]["f-inbox"]["delta_link"].endswith("$deltatoken=A")
+    assert state["folders"]["f-archive"]["delta_link"].endswith("$deltatoken=B")
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_reset_state_option_discards_input(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-fresh-after-reset")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=AFTER_RESET",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    v110_state = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {"f-inbox": {"delta_link": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=OLD", "last_sync_at": ""}},
+        }
+    )
+    options = email_scanner.ScanOptions(reset_state=True)
+    emails = await scanner.scan(account, last_uid=v110_state, options=options)
+
+    assert [e.uid for e in emails] == ["uid-fresh-after-reset"]
+    bridge_or_initial_url = next(c[0] for c in client.calls if "/messages/delta" in c[0])
+    assert "$deltatoken=OLD" not in bridge_or_initial_url, (
+        "reset_state must discard stored delta_link and start fresh"
+    )
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_skips_empty_and_skipworthy_folders(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    del outlook_delta_mode
+    folders = [
+        {
+            "id": "f-drafts",
+            "displayName": "Drafts",
+            "wellKnownName": "drafts",
+            "totalItemCount": 3,
+            "childFolderCount": 0,
+        },
+        {
+            "id": "",
+            "displayName": "Orphan",
+            "wellKnownName": "",
+            "totalItemCount": 5,
+            "childFolderCount": 0,
+        },
+        _folder("f-inbox"),
+    ]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-real")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=OK",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    emails = await scanner.scan(account, last_uid=None)
+
+    assert [e.uid for e in emails] == ["uid-real"]
+    state = json.loads(scanner._last_scan_state)
+    assert list(state["folders"].keys()) == ["f-inbox"], (
+        "skipped folders (Drafts well-known name, empty folder_id) must not produce state entries"
+    )
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_v09_only_state_via_direct_parse_path_is_still_bridged(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Belt-and-suspenders: verify parsed_v09 fallback in scan() activates
+    when _parse_outlook_delta_state returns a state but the per-folder
+    sub-dict omits _legacy_received_dt (hypothetically, if a future state
+    migration produces partial entries). Guards against silent loss of
+    the v0.9.x watermark during edge-case state shapes."""
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {
+                    "value": [_delta_message("uid-via-v09-fallback")],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/f-inbox/messages/delta?$deltatoken=V09FB",
+                }
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    hybrid_state = json.dumps(
+        {
+            "_format": "outlook_delta_v1",
+            "folders": {"f-other": {"delta_link": "", "last_sync_at": ""}},
+            "f-inbox": "2024-06-01T00:00:00Z",
+        }
+    )
+    emails = await scanner.scan(account, last_uid=hybrid_state)
+
+    assert [e.uid for e in emails] == ["uid-via-v09-fallback"]
+
+
+@pytest.mark.asyncio
+async def test_outlook_delta_malformed_graph_response_does_not_pollute_state(
+    outlook_delta_mode: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Graph returning a page with neither @odata.nextLink nor deltaLink
+    (defensive branch in _delta_fetch_round). The folder must NOT get a
+    state entry written — no empty/bogus delta_link stored."""
+    del outlook_delta_mode
+    folders = [_folder("f-inbox")]
+    responses = {
+        "f-inbox": [
+            _FakeDeltaResponse(
+                {"value": [_delta_message("uid-orphan")]}
+            )
+        ]
+    }
+    client = _DeltaIntegrationClient(folders, responses)
+    scanner = _bootstrap_scanner_for_delta(monkeypatch, client)
+    account = _outlook_account(tmp_path)
+
+    with caplog.at_level(logging.ERROR, logger="app.services.email_scanner"):
+        emails = await scanner.scan(account, last_uid=None)
+
+    assert [e.uid for e in emails] == ["uid-orphan"]
+    state = json.loads(scanner._last_scan_state)
+    assert state["folders"] == {}, (
+        "a response with no deltaLink must not pollute state with an empty delta_link"
+    )
+
+
+async def test_delta_fetch_round_handles_empty_initial_url() -> None:
+    client = _FakeDeltaClient([])
+    emails, new_delta_link, overflow = await email_scanner._delta_fetch_round(
+        client=client,
+        headers={},
+        initial_url="",
+        folder_id="folder-empty",
+        folder_name="INBOX",
+        seen_message_ids=set(),
+        emit_limit=None,
+        max_pages=None,
+    )
+    assert emails == []
+    assert new_delta_link == ""
+    assert overflow is False
+    assert client.calls == [], "empty initial_url must not produce any HTTP call"
+
+
+async def test_delta_fetch_round_message_with_empty_uid_is_appended_but_not_deduped() -> None:
+    item_no_uid = {
+        "id": "",
+        "internetMessageId": "",
+        "subject": "no-uid",
+        "bodyPreview": "",
+        "from": {"emailAddress": {"address": ""}},
+        "receivedDateTime": "2026-04-28T00:00:00Z",
+        "hasAttachments": False,
+    }
+    client = _FakeDeltaClient(
+        [
+            _FakeDeltaResponse(
+                {
+                    "value": [item_no_uid, item_no_uid],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/.../delta?$deltatoken=DONE",
+                }
+            )
+        ]
+    )
+    seen: set[str] = set()
+    emails, _new_delta_link, _overflow = await email_scanner._delta_fetch_round(
+        client=client,
+        headers={},
+        initial_url="https://graph.microsoft.com/v1.0/.../delta",
+        folder_id="folder-no-uid",
+        folder_name="INBOX",
+        seen_message_ids=seen,
+        emit_limit=None,
+        max_pages=None,
+    )
+    assert len(emails) == 2, (
+        "messages with empty uid skip the dedup-set add but must still be appended; "
+        "Graph never returns truly empty IDs in practice but the helper handles it "
+        "gracefully if it ever does"
+    )
+    assert seen == set(), "empty uid must not be added to the seen-set"

@@ -163,6 +163,38 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v1.1.0 — Released (code-complete, pending Oracle review + deploy)
+
+**Microsoft Graph Delta Query for OutlookScanner.** Replaces v0.9.x `receivedDateTime ge` polling with `/me/mailFolders/{id}/messages/delta`. Opaque per-folder delta tokens eliminate timezone / boundary-equality edge cases; explicit server-side signal for deleted messages. Feature-flagged via `OUTLOOK_DELTA_ENABLED` with byte-identical kill-switch back to v1.0.x polling.
+
+**What changed**:
+- New `DeltaResyncRequiredError`, `_delta_fetch_{round,incremental,bridge,initial}` helpers in `app/services/email_scanner.py`.
+- `OutlookScanner.scan()` rewritten with flag + state-shape dispatch; v1.0.x body preserved as `_scan_v09_legacy` for rollback.
+- `_scan_events` diagnostic buffer + scheduler drain pass produce `ExtractionLog` rows for `delta_resync` / `delta_bridge_overflow` outcomes.
+- Opaque `outlook_delta_v1` JSON state format; polymorphic parser handles v1.1.0, v0.9.x (bridged), and pre-v0.9.0 (discarded).
+- 2 new env vars: `OUTLOOK_DELTA_ENABLED` (default true), `OUTLOOK_DELTA_FALLBACK_ON_RESYNC` (default true).
+- 51 new tests (state parsers, fetch helpers, scan() integration, scheduler drain); 2 tests cover backward-compat for non-Outlook scanners.
+
+**What did NOT change**:
+- Zero schema changes (no Alembic migration)
+- Zero API contract changes
+- Zero frontend changes
+- Zero scheduler architectural change
+
+**Verification**:
+- 682 backend tests / 100% coverage (unchanged gate, +51 tests from v1.0.2).
+- 17 Playwright E2E specs unchanged.
+
+**Soak-window gate**: v0.9.1 scanner hardening ran 13 days with zero anomalies; Phase A gate met ahead of schedule.
+
+**Deferred to separate session**:
+- Oracle re-review resuming `ses_23f60d060ffevhyBG6HQGYnePm`
+- Production deploy + live smoke
+
+See [CHANGELOG.md](CHANGELOG.md) for full details and [`.sisyphus/plans/v1.1.0-delta-query.md`](/.sisyphus/plans/v1.1.0-delta-query.md) for the Momus-approved design (8 review rounds).
+
+---
+
 ## v1.0.2 — Released
 
 **E2E coverage expansion + one ship-blocking frontend bug caught.** Four new Playwright spec files cover multi-user UX (registration, change-password with session revocation, admin panel) and the Fix 8 scan-log panel. The new Fix 8 spec surfaced a real production bug — the frontend `api.getExtractionLogs` was returning an envelope object instead of an array, silently breaking Fix 8 rendering for any scan with attached extraction logs.

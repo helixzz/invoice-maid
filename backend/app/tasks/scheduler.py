@@ -816,6 +816,26 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                                 last_uid = email_result.last_uid
                             await sp.inc_emails_processed()
 
+                        scanner_events = getattr(scanner, "_scan_events", None) or []
+                        for event in scanner_events:
+                            kind = str(event.get("kind") or "")
+                            folder_id = str(event.get("folder_id") or "")
+                            db.add(
+                                _record_extraction_log(
+                                    user_id=account.user_id,
+                                    scan_log_id=log.id,
+                                    email_uid=(
+                                        event.get("email_uid")
+                                        or f"scanner:{kind}:{folder_id}"
+                                    ),
+                                    email_subject=event.get("email_subject")
+                                    or "(scanner diagnostic)",
+                                    attachment_filename=event.get("attachment_filename"),
+                                    outcome=kind,
+                                    error_detail=event.get("error_detail"),
+                                )
+                            )
+
                         scan_state = getattr(scanner, "_last_scan_state", None)
                         if scan_state is not None:
                             if scan_state != account.last_scan_uid:

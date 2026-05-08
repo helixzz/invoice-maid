@@ -408,6 +408,325 @@ def _serialize_graph_state(state: dict[str, str]) -> str:
     return json.dumps(state, ensure_ascii=False)
 
 
+# Microsoft Graph delta query (v1.1.0) page-size header value.
+# 100 is comfortably below the observed ~510 server-side cap and high
+# enough that a multi-page round still completes in a few requests.
+DELTA_PAGE_SIZE = 100
+
+# Bridge-scan ceiling: when migrating an account from v0.9.x to v1.1.0
+# state format we use $filter=receivedDateTime ge ... once on the delta
+# endpoint to drain the boundary. Microsoft caps $filter at 5,000
+# messages; 30 × DELTA_PAGE_SIZE = 3,000 stays well under that bound.
+MAX_BRIDGE_PAGES = 30
+
+
+def _parse_outlook_delta_state(raw: str | None) -> tuple[dict[str, dict[str, str]], bool]:
+    """Parse Outlook scanner state across format generations.
+
+    Returns ``(state, is_legacy_v0_9)``. Three input shapes:
+
+    * v1.1.0 native: ``{"_format": "outlook_delta_v1", "folders": {...}}``
+    * v0.9.x legacy: ``{folder_id: "ISO_timestamp"}`` — bridged into
+      ``{folder_id: {"_legacy_received_dt": "...", "delta_link": "",
+      "last_sync_at": ""}}`` and ``is_legacy_v0_9=True``.
+    * Pre-v0.9.0 ``{"__legacy_uid__": "..."}`` — discarded; returns
+      ``({}, False)`` so the next scan does a fresh initial sync.
+
+    Malformed JSON / wrong shape / None / empty also return ``({}, False)``.
+    """
+    if not raw:
+        return {}, False
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}, False
+    if not isinstance(data, dict):
+        return {}, False
+    if data.get("_format") == "outlook_delta_v1":
+        folders = data.get("folders", {})
+        if isinstance(folders, dict):
+            return (
+                {str(k): {str(k2): str(v2) for k2, v2 in v.items()} for k, v in folders.items() if isinstance(v, dict)},
+                False,
+            )
+        return {}, False
+    if "__legacy_uid__" in data:
+        return {}, False
+    if all(isinstance(v, str) for v in data.values()):
+        return (
+            {
+                str(fid): {"_legacy_received_dt": ts, "delta_link": "", "last_sync_at": ""}
+                for fid, ts in data.items()
+            },
+            True,
+        )
+    return {}, False
+
+
+def _serialize_outlook_delta_state(envelope: dict[str, Any]) -> str:
+    return json.dumps(envelope, ensure_ascii=False)
+
+
+def _input_was_v110_format(raw: str | None) -> bool:
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and data.get("_format") == "outlook_delta_v1"
+
+
+def _v09_shape_from_parsed(
+    parsed_v110: dict[str, dict[str, str]],
+    parsed_v09: dict[str, str],
+) -> dict[str, str]:
+    """Build a v0.9.x-shape per-folder watermark dict from whatever state
+    we have. Used in the kill-switch flag-off path where the legacy
+    polling code expects ``{folder_id: ISO_timestamp}``. Prefers the
+    delta-bridge ``_legacy_received_dt`` if present; falls back to the
+    raw v0.9.x state when no v1.1.0 state exists."""
+    if parsed_v110:
+        out: dict[str, str] = {}
+        for fid, sub in parsed_v110.items():
+            ts = sub.get("_legacy_received_dt") or sub.get("last_sync_at") or ""
+            if ts:
+                out[fid] = ts
+        if out:
+            return out
+    return dict(parsed_v09)
+
+
+class DeltaResyncRequiredError(Exception):
+    """Raised when Microsoft Graph returns 410 Gone with
+    ``error.code == "resyncRequired"`` on a delta endpoint. Signals that
+    the stored ``delta_link`` is invalidated server-side and the caller
+    must restart that folder's sync from scratch (a fresh initial delta
+    call). Caught only at the per-folder layer (incremental fetch); the
+    bridge and initial fetches don't expect to see it."""
+
+    def __init__(self, folder_id: str, code: str, message: str) -> None:
+        self.folder_id = folder_id
+        self.code = code
+        super().__init__(f"[{code}] folder={folder_id}: {message}")
+
+
+def _build_raw_email_from_graph_item(
+    item: dict[str, Any],
+    folder_id: str,
+    folder_name: str,
+) -> RawEmail:
+    """Construct a metadata-only RawEmail from a Graph /messages item.
+
+    Extracted verbatim from the v0.9.x inline block in OutlookScanner.scan
+    so the v1.1.0 delta fetch helpers and the legacy polling path can
+    share one implementation. Pure function; no state, no I/O."""
+    message_uid = cast(str, item.get("internetMessageId") or item.get("id") or "")
+    body_preview = str(item.get("bodyPreview") or "")
+    sender = cast(dict[str, Any], item.get("from") or {})
+    email_address = cast(dict[str, Any], sender.get("emailAddress") or {})
+    return RawEmail(
+        uid=message_uid,
+        subject=str(item.get("subject") or ""),
+        body_text=body_preview,
+        body_html="",
+        from_addr=str(email_address.get("address") or ""),
+        received_at=_normalize_datetime(item.get("receivedDateTime")),
+        attachments=[],
+        body_links=[],
+        headers={
+            "_graph_id": cast(str, item.get("id") or ""),
+            "_graph_folder_id": folder_id,
+            "_has_attachments": str(bool(item.get("hasAttachments"))),
+        },
+        is_hydrated=False,
+        folder=folder_name,
+        message_id=message_uid,
+    )
+
+
+async def _delta_fetch_round(
+    *,
+    client: Any,
+    headers: dict[str, str],
+    initial_url: str,
+    folder_id: str,
+    folder_name: str,
+    seen_message_ids: set[str],
+    emit_limit: int | None,
+    max_pages: int | None,
+) -> tuple[list[RawEmail], str, bool]:
+    """Inner pagination loop shared by all three v1.1.0 fetch helpers.
+
+    Walks ``@odata.nextLink`` URLs until the round terminates with an
+    ``@odata.deltaLink``. Per-message handling:
+
+    * ``@removed`` entries are logged at INFO and skipped (invoice-maid
+      never reactively deletes saved invoices in response to upstream
+      deletes — see design doc §7.2).
+    * ``DeltaResyncRequiredError`` is raised on 410 + resyncRequired so
+      the caller can decide whether to fall back to a fresh initial
+      sync.
+    * Cross-folder dedup uses the shared ``seen_message_ids`` set.
+    * If ``emit_limit`` is reached, we keep paginating to claim the
+      deltaLink but stop appending new emails (see design §4.3.4).
+    * If ``max_pages`` is exceeded without a deltaLink, returns
+      ``new_delta_link=""`` and ``overflow=True``; caller decides what
+      to do (bridge → initial fallback per §4.3.3).
+
+    Returns ``(emails, new_delta_link, overflow)``.
+    """
+    fetched: list[RawEmail] = []
+    new_delta_link = ""
+    pages = 0
+    emit_blocked = False
+    url: str | None = initial_url
+    sentinel_headers = {**headers, "Prefer": f"odata.maxpagesize={DELTA_PAGE_SIZE}"}
+
+    while url:
+        if max_pages is not None and pages >= max_pages:
+            return fetched, "", True
+        response = await client.get(url, headers=sentinel_headers)
+        if response.status_code == 410:
+            try:
+                err_body = response.json().get("error", {}) or {}
+            except (ValueError, AttributeError):
+                err_body = {}
+            if err_body.get("code") == "resyncRequired":
+                raise DeltaResyncRequiredError(
+                    folder_id=folder_id,
+                    code="resyncRequired",
+                    message=str(err_body.get("message", "")),
+                )
+        response.raise_for_status()
+        payload = response.json()
+        pages += 1
+
+        for item in payload.get("value", []):
+            if "@removed" in item:
+                logger.info(
+                    "Outlook delta: message %s removed from folder %s (reason: %s)",
+                    item.get("id"),
+                    folder_id,
+                    (item.get("@removed") or {}).get("reason"),
+                )
+                continue
+            email_obj = _build_raw_email_from_graph_item(item, folder_id, folder_name)
+            if email_obj.uid and email_obj.uid in seen_message_ids:
+                continue
+            if email_obj.uid:
+                seen_message_ids.add(email_obj.uid)
+            if not emit_blocked:
+                fetched.append(email_obj)
+                if emit_limit is not None and len(fetched) >= emit_limit:
+                    emit_blocked = True
+
+        if payload.get("@odata.nextLink"):
+            url = cast(str, payload["@odata.nextLink"])
+        elif payload.get("@odata.deltaLink"):
+            new_delta_link = cast(str, payload["@odata.deltaLink"])
+            break
+        else:
+            logger.error(
+                "Outlook delta: response has neither nextLink nor deltaLink for folder %s",
+                folder_id,
+            )
+            break
+
+    return fetched, new_delta_link, False
+
+
+async def _delta_fetch_incremental(
+    *,
+    client: Any,
+    headers: dict[str, str],
+    delta_link: str,
+    folder_id: str,
+    folder_name: str,
+    seen_message_ids: set[str],
+) -> tuple[list[RawEmail], str]:
+    """Steady-state incremental sync. Walks the stored ``delta_link``;
+    propagates ``DeltaResyncRequiredError`` so the caller (scan loop)
+    can decide whether to fall back via FALLBACK_ON_RESYNC."""
+    emails, new_delta_link, _overflow = await _delta_fetch_round(
+        client=client,
+        headers=headers,
+        initial_url=delta_link,
+        folder_id=folder_id,
+        folder_name=folder_name,
+        seen_message_ids=seen_message_ids,
+        emit_limit=None,
+        max_pages=None,
+    )
+    return emails, new_delta_link
+
+
+async def _delta_fetch_bridge(
+    *,
+    client: Any,
+    headers: dict[str, str],
+    folder_id: str,
+    folder_name: str,
+    legacy_received_dt: str,
+    seen_message_ids: set[str],
+) -> tuple[list[RawEmail], str, bool]:
+    """v0.9.x → v1.1.0 one-shot bridge. Uses ``$filter=receivedDateTime ge``
+    on the delta endpoint to drain the boundary in a single round, then
+    returns the fresh ``@odata.deltaLink`` for steady-state use.
+
+    Caps at MAX_BRIDGE_PAGES to stay under Microsoft's 5,000-msg
+    ``$filter``-on-delta limit; if exceeded, returns ``overflow=True``
+    so the caller can fall back to a fresh full initial sync."""
+    select_clause = "id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments"
+    initial_url = (
+        f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/messages/delta"
+        f"?$filter=receivedDateTime ge {legacy_received_dt}"
+        f"&$select={select_clause}"
+    )
+    return await _delta_fetch_round(
+        client=client,
+        headers=headers,
+        initial_url=initial_url,
+        folder_id=folder_id,
+        folder_name=folder_name,
+        seen_message_ids=seen_message_ids,
+        emit_limit=None,
+        max_pages=MAX_BRIDGE_PAGES,
+    )
+
+
+async def _delta_fetch_initial(
+    *,
+    client: Any,
+    headers: dict[str, str],
+    folder_id: str,
+    folder_name: str,
+    seen_message_ids: set[str],
+    emit_limit: int | None,
+) -> tuple[list[RawEmail], str]:
+    """Fresh initial sync — no ``$filter``, no ``$orderby``. Used both
+    for first-time scans of an account and as the fallback after a 410
+    resyncRequired or a bridge overflow. Always pages all the way to
+    the deltaLink even if ``emit_limit`` cuts off email emission, so we
+    bookmark the position for the next incremental round."""
+    select_clause = "id,internetMessageId,subject,bodyPreview,from,receivedDateTime,hasAttachments"
+    initial_url = (
+        f"{GRAPH_BASE_URL}/me/mailFolders/{folder_id}/messages/delta"
+        f"?$select={select_clause}"
+    )
+    emails, new_delta_link, _overflow = await _delta_fetch_round(
+        client=client,
+        headers=headers,
+        initial_url=initial_url,
+        folder_id=folder_id,
+        folder_name=folder_name,
+        seen_message_ids=seen_message_ids,
+        emit_limit=emit_limit,
+        max_pages=None,
+    )
+    return emails, new_delta_link
+
+
 def _build_qq_fetch_criteria(effective_prev_uid: str, options: ScanOptions | None) -> Any:
     """For QQ, ALWAYS restrict the server-side SEARCH to a UID range. A bare
     `SEARCH ALL` on a 35k-message INBOX makes QQ's IMAP server time out
@@ -1149,6 +1468,180 @@ class OutlookScanner(BaseEmailScanner):
         options: ScanOptions | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[RawEmail]:
+        # Per-call buffer drained by scheduler.scan_all_accounts(). See
+        # design doc §4.6 — anomaly events (delta_resync, bridge_overflow)
+        # become ExtractionLog rows in the scheduler post-processing pass.
+        self._scan_events: list[dict[str, Any]] = []
+
+        settings = get_settings()
+        delta_enabled = bool(settings.OUTLOOK_DELTA_ENABLED)
+        fallback_on_resync = bool(settings.OUTLOOK_DELTA_FALLBACK_ON_RESYNC)
+
+        reset_state = options is not None and options.reset_state
+        raw_state = None if reset_state else last_uid
+        parsed_v110, _is_legacy_v09 = _parse_outlook_delta_state(raw_state)
+        parsed_v09 = _parse_graph_state(raw_state)
+
+        # Kill-switch path. Authoritative semantics from design §6.2:
+        # if state on disk is already v1.1.0-format, SKIP the account
+        # entirely and preserve state byte-identical so flipping the
+        # flag back on resumes delta scanning from the saved delta_link.
+        # Otherwise (v0.9.x or NULL) fall through to the preserved
+        # legacy code path.
+        if not delta_enabled:
+            if _input_was_v110_format(raw_state):
+                self._last_scan_state = raw_state
+                return []
+            return await self._scan_v09_legacy(
+                account=account,
+                last_uid=last_uid,
+                options=options,
+                progress_callback=progress_callback,
+            )
+
+        access_token = await self._acquire_access_token(account)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        seen_message_ids: set[str] = set()
+        emails: list[RawEmail] = []
+        state_out: dict[str, dict[str, str]] = {}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            folders = [f async for f in self._iter_mail_folders(client, headers)]
+            for folder in folders:
+                if self._should_skip_folder(folder):
+                    continue
+                folder_id = cast(str, folder.get("id") or "")
+                folder_name = cast(str, folder.get("displayName") or folder.get("wellKnownName") or "")
+                if not folder_id:
+                    continue
+
+                folder_state = parsed_v110.get(folder_id, {}) if parsed_v110 else {}
+                delta_link = folder_state.get("delta_link", "") if folder_state else ""
+                legacy_dt = folder_state.get("_legacy_received_dt", "") if folder_state else ""
+                if not folder_state and folder_id in parsed_v09:
+                    legacy_dt = parsed_v09[folder_id]
+
+                folder_emails, new_delta_link = await self._delta_scan_folder(
+                    client=client,
+                    headers=headers,
+                    folder_id=folder_id,
+                    folder_name=folder_name,
+                    delta_link=delta_link,
+                    legacy_received_dt=legacy_dt,
+                    seen_message_ids=seen_message_ids,
+                    fallback_on_resync=fallback_on_resync,
+                )
+                emails.extend(folder_emails)
+                if new_delta_link:
+                    state_out[folder_id] = {
+                        "delta_link": new_delta_link,
+                        "last_sync_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+
+        self._last_scan_state = _serialize_outlook_delta_state(
+            {"_format": "outlook_delta_v1", "folders": state_out}
+        )
+        return emails
+
+    async def _delta_scan_folder(
+        self,
+        *,
+        client: Any,
+        headers: dict[str, str],
+        folder_id: str,
+        folder_name: str,
+        delta_link: str,
+        legacy_received_dt: str,
+        seen_message_ids: set[str],
+        fallback_on_resync: bool,
+    ) -> tuple[list[RawEmail], str]:
+        """Per-folder dispatch — picks incremental / bridge / initial
+        based on the input state for this folder. Handles 410 fallback
+        and bridge overflow per design §4.3.2 / §4.3.3."""
+        if delta_link:
+            try:
+                return await _delta_fetch_incremental(
+                    client=client,
+                    headers=headers,
+                    delta_link=delta_link,
+                    folder_id=folder_id,
+                    folder_name=folder_name,
+                    seen_message_ids=seen_message_ids,
+                )
+            except DeltaResyncRequiredError:
+                self._scan_events.append(
+                    {
+                        "kind": "delta_resync",
+                        "folder_id": folder_id,
+                        "error_detail": (
+                            f"[DELTA_RESYNC] folder={folder_id} 410 Gone; "
+                            "restarting with fresh delta token"
+                        ),
+                    }
+                )
+                if not fallback_on_resync:
+                    raise
+                return await _delta_fetch_initial(
+                    client=client,
+                    headers=headers,
+                    folder_id=folder_id,
+                    folder_name=folder_name,
+                    seen_message_ids=seen_message_ids,
+                    emit_limit=FIRST_SCAN_LIMIT,
+                )
+
+        if legacy_received_dt:
+            emails, new_delta_link, overflow = await _delta_fetch_bridge(
+                client=client,
+                headers=headers,
+                folder_id=folder_id,
+                folder_name=folder_name,
+                legacy_received_dt=legacy_received_dt,
+                seen_message_ids=seen_message_ids,
+            )
+            if overflow:
+                self._scan_events.append(
+                    {
+                        "kind": "delta_bridge_overflow",
+                        "folder_id": folder_id,
+                        "error_detail": (
+                            f"[DELTA_BRIDGE_OVERFLOW] folder={folder_id} bridge "
+                            f"exceeded {MAX_BRIDGE_PAGES} pages; falling back to "
+                            "initial sync"
+                        ),
+                    }
+                )
+                return await _delta_fetch_initial(
+                    client=client,
+                    headers=headers,
+                    folder_id=folder_id,
+                    folder_name=folder_name,
+                    seen_message_ids=seen_message_ids,
+                    emit_limit=FIRST_SCAN_LIMIT,
+                )
+            return emails, new_delta_link
+
+        return await _delta_fetch_initial(
+            client=client,
+            headers=headers,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            seen_message_ids=seen_message_ids,
+            emit_limit=FIRST_SCAN_LIMIT,
+        )
+
+    async def _scan_v09_legacy(
+        self,
+        account: EmailAccount,
+        last_uid: str | None = None,
+        options: ScanOptions | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[RawEmail]:
+        """Preserved v0.9.x scanner body, used only when
+        OUTLOOK_DELTA_ENABLED=False. The body below is verbatim from
+        v1.0.x — DO NOT modify behavior here without coordinated changes
+        to the v1.1.0 delta path; the kill-switch contract requires
+        flipping the flag yields the prior release's exact behavior."""
         access_token = await self._acquire_access_token(account)
         headers = {"Authorization": f"Bearer {access_token}"}
         if options is not None and options.reset_state:
@@ -1178,13 +1671,6 @@ class OutlookScanner(BaseEmailScanner):
                 }
                 filter_clauses: list[str] = []
                 if prev_dt:
-                    # ge (not gt): a strict > boundary permanently excludes any
-                    # email whose receivedDateTime equals the watermark, which
-                    # happens when two messages land in the same second or when
-                    # the server's precision truncates to whole seconds. Using
-                    # ge re-fetches the boundary email; the per-attachment
-                    # seen-check in scheduler._was_attachment_seen and the
-                    # composite UNIQUE(user_id, invoice_no) dedupe it cheaply.
                     filter_clauses.append(f"receivedDateTime ge {prev_dt}")
                 if options is not None:
                     if options.unread_only:
@@ -1212,29 +1698,8 @@ class OutlookScanner(BaseEmailScanner):
                             seen_message_ids.add(message_uid)
 
                         received_dt_str = cast(str, item.get("receivedDateTime") or "")
-                        body_preview = str(item.get("bodyPreview") or "")
-                        sender = cast(dict[str, Any], item.get("from") or {})
-                        email_address = cast(dict[str, Any], sender.get("emailAddress") or {})
-
                         emails.append(
-                            RawEmail(
-                                uid=message_uid,
-                                subject=str(item.get("subject") or ""),
-                                body_text=body_preview,
-                                body_html="",
-                                from_addr=str(email_address.get("address") or ""),
-                                received_at=_normalize_datetime(item.get("receivedDateTime")),
-                                attachments=[],
-                                body_links=[],
-                                headers={
-                                    "_graph_id": cast(str, item.get("id") or ""),
-                                    "_graph_folder_id": folder_id,
-                                    "_has_attachments": str(bool(item.get("hasAttachments"))),
-                                },
-                                is_hydrated=False,
-                                folder=folder_name,
-                                message_id=message_uid,
-                            )
+                            _build_raw_email_from_graph_item(item, folder_id, folder_name)
                         )
                         if received_dt_str and (not highest_dt or received_dt_str > highest_dt):
                             highest_dt = received_dt_str

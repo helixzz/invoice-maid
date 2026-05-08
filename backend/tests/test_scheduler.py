@@ -2634,3 +2634,88 @@ async def test_set_cache_stamps_appropriate_expires_at(db, settings) -> None:
     extract_days = (_to_aware(rows["new-extract"].expires_at) - now).total_seconds() / 86400
     assert 6.9 < classify_days < 7.1
     assert 364.9 < extract_days < 365.1
+
+
+async def test_scheduler_drains_scanner_events_into_extraction_logs(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    """Plan §8.2 test case #12: when a scanner sets _scan_events during
+    scan(), scheduler must drain each event into an ExtractionLog row
+    carrying scan_log_id + user_id + outcome + error_detail. Guards the
+    v1.1.0 delta_resync / delta_bridge_overflow diagnostic trail."""
+    account = await create_email_account()
+
+    class _ScannerWithEvents:
+        async def scan(self, account, last_uid=None, options=None, progress_callback=None):
+            del account, last_uid, options, progress_callback
+            self._last_scan_state = None
+            self._scan_events = [
+                {
+                    "kind": "delta_resync",
+                    "folder_id": "f1",
+                    "error_detail": "[DELTA_RESYNC] folder=f1 410 Gone",
+                },
+                {
+                    "kind": "delta_bridge_overflow",
+                    "folder_id": "f2",
+                    "error_detail": "[DELTA_BRIDGE_OVERFLOW] folder=f2 exceeded 30 pages",
+                },
+            ]
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(
+        scheduler.ScannerFactory, "get_scanner", lambda account_type: _ScannerWithEvents()
+    )
+
+    await scheduler.scan_all_accounts()
+
+    rows = (
+        await db.execute(
+            select(ExtractionLog).where(
+                ExtractionLog.outcome.in_(["delta_resync", "delta_bridge_overflow"])
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 2
+    outcomes = {r.outcome for r in rows}
+    assert outcomes == {"delta_resync", "delta_bridge_overflow"}
+    assert all(r.scan_log_id is not None for r in rows)
+    assert all(r.user_id == account.user_id for r in rows)
+    assert all("scanner:" in (r.email_uid or "") for r in rows)
+    assert all("DELTA_" in (r.error_detail or "") for r in rows)
+
+
+async def test_scheduler_drain_handles_scanner_without_events_attribute(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    """Plan §4.6 backward-compat: non-Outlook scanners (IMAP/QQ/POP3)
+    don't set _scan_events. getattr(..., None) or [] must handle that
+    cleanly — zero ExtractionLogs from drain, zero errors."""
+    await create_email_account()
+
+    class _LegacyScannerNoEvents:
+        async def scan(self, account, last_uid=None, options=None, progress_callback=None):
+            del account, last_uid, options, progress_callback
+            self._last_scan_state = None
+            return []
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(
+        scheduler.ScannerFactory,
+        "get_scanner",
+        lambda account_type: _LegacyScannerNoEvents(),
+    )
+
+    await scheduler.scan_all_accounts()
+
+    rows = (
+        await db.execute(
+            select(ExtractionLog).where(
+                ExtractionLog.outcome.in_(["delta_resync", "delta_bridge_overflow"])
+            )
+        )
+    ).scalars().all()
+    assert rows == []

@@ -4,6 +4,75 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.1.0] - 2026-05-08
+
+### Theme
+
+**Microsoft Graph Delta Query for OutlookScanner.** Replaces v0.9.x `receivedDateTime ge` polling with `/me/mailFolders/{id}/messages/delta`. Opaque per-folder delta tokens eliminate timezone / boundary-equality edge cases and give explicit server-side signal for deleted messages. Feature-flagged behind `OUTLOOK_DELTA_ENABLED` (default true) with a byte-identical byte-preserving kill-switch back to v1.0.x polling. Zero schema changes, zero user-visible UI changes, zero forced operator action — existing Outlook accounts auto-migrate via a one-shot bridge scan on first v1.1.0 run.
+
+### Added
+
+- **`/me/mailFolders/{id}/messages/delta` integration** in `app/services/email_scanner.py`:
+  - `DeltaResyncRequiredError` exception raised when Graph returns 410 Gone + `error.code == "resyncRequired"` on a stored `delta_link`.
+  - `_delta_fetch_round` — shared pagination loop handling `@odata.nextLink` / `@odata.deltaLink` / `@removed` entries / `Prefer: odata.maxpagesize=100` header.
+  - `_delta_fetch_incremental` — steady-state sync from stored delta_link.
+  - `_delta_fetch_bridge` — one-shot v0.9.x → v1.1.0 migration using `$filter=receivedDateTime ge {legacy_watermark}`, capped at `MAX_BRIDGE_PAGES=30` (3,000 messages, safely under Microsoft's 5,000-msg `$filter`-on-delta limit).
+  - `_delta_fetch_initial` — fresh full sync with no filter; paginates past `FIRST_SCAN_LIMIT` to claim the deltaLink bookmark.
+  - `_build_raw_email_from_graph_item` — extracted from v0.9.x inline block so delta and legacy paths share one implementation.
+- **Opaque state format** `outlook_delta_v1` stored as JSON in `EmailAccount.last_scan_uid`:
+  ```json
+  {"_format": "outlook_delta_v1", "folders": {"<folder-id>": {"delta_link": "...", "last_sync_at": "..."}}}
+  ```
+  Runtime state parser (`_parse_outlook_delta_state`) handles three input shapes: new v1.1.0, legacy v0.9.x `{folder_id: ISO_timestamp}` (bridged), and pre-v0.9.0 `{__legacy_uid__: ...}` (discarded → first-scan). No Alembic migration required.
+- **`_scan_events` diagnostic buffer** on `OutlookScanner`. Scanner-level anomalies (410 resync, bridge overflow) buffer events during `scan()`; scheduler drains them into `ExtractionLog` rows with `outcome="delta_resync"` or `outcome="delta_bridge_overflow"` and operator-visible `error_detail`. Events surface in the Settings → Scan Operations panel via existing Fix 8 aggregation (no frontend changes).
+- **`OUTLOOK_DELTA_ENABLED: bool = True`** (new env var). Operator kill-switch. When `false`, accounts with v1.1.0-format state are **skipped** (state preserved byte-identical for when the flag flips back on); accounts with v0.9.x or NULL state fall through to the preserved `_scan_v09_legacy` code path.
+- **`OUTLOOK_DELTA_FALLBACK_ON_RESYNC: bool = True`** (new env var). When `true`, 410 Gone + resyncRequired triggers automatic fresh initial sync + event log. When `false`, the exception propagates — use only for debugging 410-loop scenarios.
+- **`OutlookScanner._scan_v09_legacy`** — the entire v1.0.x scan body preserved as a private method, invoked by the kill-switch path. This is the **rollback contract**: `OUTLOOK_DELTA_ENABLED=false` yields byte-identical v1.0.x behavior.
+- **52 new tests** (+51 delta, +1 test infra edge case):
+  - 17 state parser/serializer tests covering all three input shapes, malformed JSON, pre-v0.9.0 legacy, partial dict values, empty strings, roundtrip, v0.9.x shape fallback helper.
+  - 15 delta fetch helper tests covering incremental happy path, 410 resync detection, 410 without resync code, malformed error body, bridge happy path, bridge overflow at `MAX_BRIDGE_PAGES`, initial happy path, `EMIT_LIMIT_REACHED` page-past behavior, `@removed` message skipping, cross-folder dedup via seen_set, empty URL/uid edge cases.
+  - 13 `OutlookScanner.scan()` integration tests: first scan (initial path), v0.9.x state (bridge path), v1.1.0 state (incremental path), 410 resync fallback with event log, 410 with fallback disabled propagates, bridge overflow → initial fallback with event, pre-v0.9.0 state → first scan, malformed state → first scan, multi-page incremental, kill-switch off + v1.1.0 state skip-preserve, cross-folder dedup, `reset_state` option, skipped folders (Drafts / empty id), parsed_v09 fallback path, malformed Graph response doesn't pollute state.
+  - 2 scheduler drain tests: Outlook scanner events → ExtractionLog, non-Outlook scanner without `_scan_events` attr handled cleanly.
+
+### Changed
+
+- **`OutlookScanner.scan()` dispatches by flag + state shape** per design §6.2:
+  - `OUTLOOK_DELTA_ENABLED=True` → delta path (new behavior)
+  - `OUTLOOK_DELTA_ENABLED=False` + v1.1.0 state → skip account, return `[]`, preserve state byte-identical
+  - `OUTLOOK_DELTA_ENABLED=False` + v0.9.x/NULL state → `_scan_v09_legacy` (preserved v1.0.x body)
+- **Scheduler drain pass** in `app/tasks/scheduler.py:~820` converts `scanner._scan_events` into `ExtractionLog` rows per scan. Backward-compatible via `getattr(..., None) or []` — non-Outlook scanners unaffected.
+
+### Not Changed
+
+- **No Alembic migration.** State format change is app-managed via polymorphic `_parse_outlook_delta_state`.
+- **No API contract changes.** All endpoints return identical shapes.
+- **No frontend changes.** Existing Fix 8 panel displays `delta_resync` / `delta_bridge_overflow` outcomes as unknown outcomes (rank 0 in `OUTCOME_PRIORITY`); acceptable for the MVP since these events are rare.
+- **No scheduler architectural change.** Same polling interval, same `scan_all_accounts` orchestration.
+
+### Upgrade path
+
+Zero-touch from v1.0.2. On first scan after upgrade:
+- Each Outlook account's v0.9.x state (flat `{folder_id: ISO}`) is bridged to v1.1.0 format via a one-time `_delta_fetch_bridge` call per folder.
+- Subsequent scans use `_delta_fetch_incremental` with the server-returned `delta_link`.
+- Operators who need to roll back: set `OUTLOOK_DELTA_ENABLED=false` in `/etc/invoice-maid/invoice-maid.env` → next scan uses preserved v1.0.x polling. State preserved so flipping back on resumes delta seamlessly.
+
+### Soak window confirmation
+
+v0.9.1 email scanner hardening (deployed 2026-04-25 02:19) ran 13 days in production with zero anomalies, 11 new invoices correctly saved during the window. Phase A gate criteria green: no duplicate spikes, no error rate change, tier distribution stable. Design doc Task 0 `.sisyphus/plans/v1.1.0-delta-query.md` unblocked Phase B implementation.
+
+### Verification
+
+- `pytest --cov=app --cov-report=term-missing --cov-fail-under=100` → **682 passed, 100% coverage** (up from 631 in v1.0.2, +51 tests).
+- All pre-existing Outlook scan tests migrated to `outlook_legacy_mode` fixture — they now verify the `_scan_v09_legacy` preserved body (the v1.0.x rollback contract).
+- Playwright E2E suite unchanged (17 specs); v1.1.0 has no frontend impact.
+
+### Deferred to a separate session
+
+- **Oracle re-review** (Task 8 of the plan, maintainer-only gate) resuming session `ses_23f60d060ffevhyBG6HQGYnePm` — required before production deploy.
+- **Production deploy + live smoke** (Task 9 of the plan, maintainer-only gate) — pending Oracle approval.
+
+---
+
 ## [1.0.2] - 2026-04-25
 
 ### Theme
