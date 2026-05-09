@@ -1117,3 +1117,180 @@ def test_0014_downgrade_is_noop(
 
     after = _read_classifier_trusted_senders(migration_db)
     assert before == after
+
+
+def _insert_test_invoice(migration_db: Path, invoice_no: str, invoice_type: str = "电子发票（普通发票）") -> None:
+    """Seed one invoice row with schema-compatible defaults. Caller
+    must have already applied the migration that creates users[1]
+    (0010+) and the tenant user_id columns (0011+)."""
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO email_accounts (user_id, name, type, host, port, username,
+                    password_encrypted, oauth_token_path, is_active, last_scan_uid, created_at,
+                    outlook_account_type)
+                VALUES (1, 'test-acct', 'imap', 'imap.test.invalid', 993, 'u@test.invalid',
+                    NULL, NULL, 1, NULL, '2026-05-08T00:00:00Z', 'personal')
+                ON CONFLICT DO NOTHING
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO invoices (user_id, invoice_no, buyer, seller, amount, invoice_date,
+                    invoice_type, item_summary, file_path, raw_text, email_uid, email_account_id,
+                    source_format, extraction_method, confidence, is_manually_corrected, created_at)
+                VALUES (1, :inv_no, 'Test Buyer', 'Test Seller', 100.0, '2026-05-08',
+                    :inv_type, NULL, '/tmp/test.pdf', '', :uid, 1, 'pdf', 'qr', 0.95, 0, '2026-05-08T00:00:00Z')
+                """
+            ),
+            {"inv_no": invoice_no, "inv_type": invoice_type, "uid": f"uid-{invoice_no}"},
+        )
+    engine.dispose()
+
+
+def test_0015_add_invoice_category_applies_cleanly_and_adds_column(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+    _upgrade_to(migration_db, "0015_add_invoice_category")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        cols = {
+            row[1]: {"type": row[2], "notnull": row[3], "dflt_value": row[4]}
+            for row in conn.execute(sa.text("PRAGMA table_info(invoices)")).all()
+        }
+    engine.dispose()
+
+    assert "invoice_category" in cols
+    assert cols["invoice_category"]["notnull"] == 1, "invoice_category must be NOT NULL"
+    assert cols["invoice_category"]["dflt_value"] is not None, "must have a server default"
+    assert "vat_invoice" in str(cols["invoice_category"]["dflt_value"])
+
+
+def test_0015_backfills_existing_rows_to_vat_invoice(
+    migration_db: Path,
+) -> None:
+    """Production-path audit: all 250 live invoices (2026-05-08 audit)
+    are Chinese VAT variants, so backfilling everyone to vat_invoice
+    is safe. This test verifies the backfill runs before the column
+    is tightened to NOT NULL."""
+    _upgrade_to(migration_db, "0010_users_and_sessions")
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO users (id, email, hashed_password, is_active, is_admin, "
+                "created_at, updated_at) VALUES "
+                "(1, 'admin@local', 'hash', 1, 1, '2026-05-08', '2026-05-08')"
+            )
+        )
+    engine.dispose()
+
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+    _insert_test_invoice(migration_db, "TEST-INV-001")
+    _insert_test_invoice(migration_db, "TEST-INV-002")
+    _upgrade_to(migration_db, "0015_add_invoice_category")
+
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        categories = [
+            row[0]
+            for row in conn.execute(sa.text("SELECT invoice_category FROM invoices ORDER BY id")).all()
+        ]
+    engine.dispose()
+
+    assert categories == ["vat_invoice", "vat_invoice"]
+
+
+def test_0015_fts5_table_includes_invoice_category_column(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+    _upgrade_to(migration_db, "0015_add_invoice_category")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        schema_row = conn.execute(
+            sa.text(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='invoices_fts'"
+            )
+        ).first()
+    engine.dispose()
+
+    assert schema_row is not None, "invoices_fts must exist after 0015"
+    assert "invoice_category" in schema_row[0], (
+        "FTS5 virtual table must include invoice_category after 0015"
+    )
+
+
+def test_0015_index_on_invoice_category_exists(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0014_seed_default_trusted_senders")
+    _upgrade_to(migration_db, "0015_add_invoice_category")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                sa.text("SELECT name FROM sqlite_master WHERE type='index'")
+            ).all()
+        }
+    engine.dispose()
+
+    assert "ix_invoices_invoice_category" in indexes
+
+
+def test_0015_downgrade_removes_column_and_rebuilds_fts_without_category(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0015_add_invoice_category")
+    _downgrade_to(migration_db, "0014_seed_default_trusted_senders")
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(sa.text("PRAGMA table_info(invoices)")).all()
+        }
+        schema_row = conn.execute(
+            sa.text(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='invoices_fts'"
+            )
+        ).first()
+    engine.dispose()
+
+    assert "invoice_category" not in cols, "column must be dropped on downgrade"
+    assert schema_row is not None
+    assert "invoice_category" not in schema_row[0], (
+        "FTS5 must be rebuilt without invoice_category on downgrade"
+    )
+
+
+def test_0015_enum_string_literals_match_pydantic_enum() -> None:
+    """Cross-file invariant: the enum in app/schemas/invoice.py is the
+    single source of truth. The migration string literal and the
+    backfill default must use the same values. If someone adds a new
+    category to the enum but forgets to update the migration (or vice
+    versa), this test fails loudly."""
+    from app.schemas.invoice import InvoiceCategory
+
+    expected_values = {c.value for c in InvoiceCategory}
+    assert expected_values == {"vat_invoice", "receipt", "proforma", "saas_invoice", "other"}
+
+    migration_file = BACKEND_ROOT / "alembic" / "versions" / "0015_add_invoice_category.py"
+    src = migration_file.read_text()
+    assert "'vat_invoice'" in src, "migration 0015 must backfill with 'vat_invoice' (enum value)"
+    assert 'server_default="vat_invoice"' in src, "column default must match enum"

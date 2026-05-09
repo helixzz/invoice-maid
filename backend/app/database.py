@@ -118,28 +118,29 @@ async def create_fts5_objects(engine: AsyncEngine) -> None:
         """
         CREATE VIRTUAL TABLE IF NOT EXISTS invoices_fts
         USING fts5(
-            invoice_no, buyer, seller, invoice_type, item_summary, raw_text,
+            invoice_no, buyer, seller, invoice_type, invoice_category,
+            item_summary, raw_text,
             content='invoices', content_rowid='id'
         )
         """,
         """
         CREATE TRIGGER IF NOT EXISTS invoices_ai AFTER INSERT ON invoices BEGIN
-            INSERT INTO invoices_fts(rowid, invoice_no, buyer, seller, invoice_type, item_summary, raw_text)
-            VALUES (new.id, new.invoice_no, new.buyer, new.seller, new.invoice_type, new.item_summary, new.raw_text);
+            INSERT INTO invoices_fts(rowid, invoice_no, buyer, seller, invoice_type, invoice_category, item_summary, raw_text)
+            VALUES (new.id, new.invoice_no, new.buyer, new.seller, new.invoice_type, new.invoice_category, new.item_summary, new.raw_text);
         END
         """,
         """
         CREATE TRIGGER IF NOT EXISTS invoices_ad AFTER DELETE ON invoices BEGIN
-            INSERT INTO invoices_fts(invoices_fts, rowid, invoice_no, buyer, seller, invoice_type, item_summary, raw_text)
-            VALUES ('delete', old.id, old.invoice_no, old.buyer, old.seller, old.invoice_type, old.item_summary, old.raw_text);
+            INSERT INTO invoices_fts(invoices_fts, rowid, invoice_no, buyer, seller, invoice_type, invoice_category, item_summary, raw_text)
+            VALUES ('delete', old.id, old.invoice_no, old.buyer, old.seller, old.invoice_type, old.invoice_category, old.item_summary, old.raw_text);
         END
         """,
         """
         CREATE TRIGGER IF NOT EXISTS invoices_au AFTER UPDATE ON invoices BEGIN
-            INSERT INTO invoices_fts(invoices_fts, rowid, invoice_no, buyer, seller, invoice_type, item_summary, raw_text)
-            VALUES ('delete', old.id, old.invoice_no, old.buyer, old.seller, old.invoice_type, old.item_summary, old.raw_text);
-            INSERT INTO invoices_fts(rowid, invoice_no, buyer, seller, invoice_type, item_summary, raw_text)
-            VALUES (new.id, new.invoice_no, new.buyer, new.seller, new.invoice_type, new.item_summary, new.raw_text);
+            INSERT INTO invoices_fts(invoices_fts, rowid, invoice_no, buyer, seller, invoice_type, invoice_category, item_summary, raw_text)
+            VALUES ('delete', old.id, old.invoice_no, old.buyer, old.seller, old.invoice_type, old.invoice_category, old.item_summary, old.raw_text);
+            INSERT INTO invoices_fts(rowid, invoice_no, buyer, seller, invoice_type, invoice_category, item_summary, raw_text)
+            VALUES (new.id, new.invoice_no, new.buyer, new.seller, new.invoice_type, new.invoice_category, new.item_summary, new.raw_text);
         END
         """,
         "INSERT INTO invoices_fts(invoices_fts) VALUES ('rebuild')",

@@ -24,6 +24,22 @@ TRANSPORT_E_TICKET_TYPES: frozenset[str] = frozenset({
 })
 
 
+class InvoiceCategory(str, Enum):
+    """v1.2.0 Track A — structured document-kind taxonomy.
+
+    Orthogonal to both ``invoice_type`` (freeform display label) and
+    ``is_valid_tax_invoice`` (VAT-validity boolean). The enum is the
+    authoritative contract — SQLite enforces via Pydantic at the API
+    boundary and the LLM prompt's STEP 0 classifier, not via DB CHECK
+    (see migration 0015 rationale)."""
+
+    VAT_INVOICE = "vat_invoice"
+    RECEIPT = "receipt"
+    PROFORMA = "proforma"
+    SAAS_INVOICE = "saas_invoice"
+    OTHER = "other"
+
+
 class InvoiceExtract(BaseModel):
     """LLM-extracted invoice fields — used with instructor for structured output."""
 
@@ -34,6 +50,15 @@ class InvoiceExtract(BaseModel):
     amount: Decimal = Field(ge=0, description="价税合计金额，纯数字。对于图片型铁路/航空电子客票若无法读取可填 0.01 标记占位")
     item_summary: str = Field(description="商品/服务一句话中文概括")
     invoice_type: str = Field(description="发票类型，如增值税电子普通发票、数电专票、电子发票（铁路电子客票）")
+    invoice_category: InvoiceCategory = Field(
+        default=InvoiceCategory.VAT_INVOICE,
+        description=(
+            "Document category taxonomy. Determined by STEP 0 of the "
+            "extract prompt. Legacy cache entries without this field "
+            "default to vat_invoice (safe for the 250 pre-v1.2.0 "
+            "production invoices, all Chinese VAT)."
+        ),
+    )
     confidence: float = Field(ge=0, le=1, default=0.9)
     is_valid_tax_invoice: bool = Field(
         default=False,
@@ -131,6 +156,7 @@ class InvoiceResponse(BaseModel):
     amount: float
     invoice_date: str
     invoice_type: str
+    invoice_category: str
     item_summary: str | None
     source_format: str
     extraction_method: str

@@ -34,6 +34,9 @@ class Invoice(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     invoice_date: Mapped[date] = mapped_column(Date(), index=True)
     invoice_type: Mapped[str] = mapped_column(String(128))
+    invoice_category: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="vat_invoice", index=True
+    )
     item_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     file_path: Mapped[str] = mapped_column(String(500))
     raw_text: Mapped[str] = mapped_column(Text(), default="")

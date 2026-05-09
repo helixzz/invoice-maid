@@ -133,6 +133,7 @@ def _serialize_invoice(invoice: Invoice) -> InvoiceResponse:
         amount=float(invoice.amount),
         invoice_date=invoice.invoice_date.isoformat(),
         invoice_type=invoice.invoice_type,
+        invoice_category=invoice.invoice_category,
         item_summary=invoice.item_summary,
         source_format=invoice.source_format,
         extraction_method=invoice.extraction_method,
