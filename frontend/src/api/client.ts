@@ -108,8 +108,11 @@ export const api = {
   },
 
   // Invoices
-  async getInvoices(params?: {q?: string, date_from?: string, date_to?: string, page?: number, size?: number}): Promise<InvoiceListResponse> {
-    const res = await apiClient.get('/invoices', { params })
+  async getInvoices(params?: {q?: string, date_from?: string, date_to?: string, category?: string[], page?: number, size?: number}): Promise<InvoiceListResponse> {
+    const res = await apiClient.get('/invoices', {
+      params,
+      paramsSerializer: { indexes: null },
+    })
     return res.data
   },
   
@@ -177,8 +180,12 @@ export const api = {
     return res.data
   },
 
-  exportInvoicesCSV(params?: {q?: string, date_from?: string, date_to?: string}): Promise<Blob> {
-    return apiClient.get('/invoices/export/csv', { params, responseType: 'blob' }).then(res => res.data)
+  exportInvoicesCSV(params?: {q?: string, date_from?: string, date_to?: string, category?: string[]}): Promise<Blob> {
+    return apiClient.get('/invoices/export', {
+      params,
+      paramsSerializer: { indexes: null },
+      responseType: 'blob',
+    }).then(res => res.data)
   },
 
   async getSavedViews(): Promise<SavedView[]> {

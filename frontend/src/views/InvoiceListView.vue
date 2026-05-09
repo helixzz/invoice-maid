@@ -1,17 +1,47 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useInvoicesStore } from '@/stores/invoices'
 import { useDebounceFn } from '@vueuse/core'
 import { useAuthStore } from '@/stores/auth'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AppLayout from '@/components/AppLayout.vue'
+import CategoryBadge from '@/components/CategoryBadge.vue'
+import MultiSelectChips from '@/components/MultiSelectChips.vue'
 import { api } from '@/api/client'
-import type { StatsResponse, SavedView } from '@/types'
+import {
+  CATEGORY_LABELS,
+  CATEGORY_ORDER,
+  type InvoiceCategory,
+  type StatsResponse,
+  type SavedView,
+} from '@/types'
 
 const router = useRouter()
+const route = useRoute()
 const invoicesStore = useInvoicesStore()
 const authStore = useAuthStore()
+
+const CATEGORY_VALUES = new Set<InvoiceCategory>(CATEGORY_ORDER)
+
+const categoryOptions = CATEGORY_ORDER.map(value => ({
+  value,
+  label: CATEGORY_LABELS[value],
+}))
+
+function parseCategoriesFromQuery(): InvoiceCategory[] {
+  const raw = route.query.category
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : []
+  const result: InvoiceCategory[] = []
+  for (const entry of list) {
+    if (typeof entry === 'string' && CATEGORY_VALUES.has(entry as InvoiceCategory)) {
+      result.push(entry as InvoiceCategory)
+    }
+  }
+  return result
+}
+
+const selectedCategories = ref<InvoiceCategory[]>(parseCategoriesFromQuery())
 
 const stats = ref<StatsResponse | null>(null)
 const loadingStats = ref(true)
@@ -100,7 +130,8 @@ const exportCSV = async () => {
     const blob = await api.exportInvoicesCSV({
       q: searchQuery.value || undefined,
       date_from: dateFrom.value || undefined,
-      date_to: dateTo.value || undefined
+      date_to: dateTo.value || undefined,
+      category: selectedCategories.value.length > 0 ? [...selectedCategories.value] : undefined,
     })
     
     const url = window.URL.createObjectURL(blob)
@@ -144,7 +175,8 @@ const fetchInvoices = async () => {
     dateFrom.value || undefined,
     dateTo.value || undefined,
     page.value,
-    size.value
+    size.value,
+    [...selectedCategories.value],
   )
 }
 
@@ -158,6 +190,37 @@ watch(searchQuery, debouncedSearch)
 watch([dateFrom, dateTo, size], () => {
   page.value = 1
   fetchInvoices()
+})
+
+function syncCategoryQuery(next: InvoiceCategory[]) {
+  const query = { ...route.query }
+  if (next.length > 0) {
+    query.category = next
+  } else {
+    delete query.category
+  }
+  router.replace({ query })
+}
+
+watch(selectedCategories, (next, prev) => {
+  if (prev && next.length === prev.length && next.every((v, i) => v === prev[i])) {
+    return
+  }
+  invoicesStore.setCategories(next)
+  syncCategoryQuery(next)
+  page.value = 1
+  fetchInvoices()
+}, { deep: true })
+
+watch(() => route.query.category, () => {
+  const next = parseCategoriesFromQuery()
+  if (
+    next.length === selectedCategories.value.length &&
+    next.every((v, i) => v === selectedCategories.value[i])
+  ) {
+    return
+  }
+  selectedCategories.value = next
 })
 
 const handlePageChange = (newPage: number) => {
@@ -304,7 +367,24 @@ const clearDates = () => {
   dateTo.value = ''
 }
 
+const categoryBreakdown = computed<{ category: InvoiceCategory; count: number }[]>(() => {
+  const counts: Record<InvoiceCategory, number> = {
+    vat_invoice: 0,
+    saas_invoice: 0,
+    receipt: 0,
+    proforma: 0,
+    other: 0,
+  }
+  for (const point of stats.value?.by_category ?? []) {
+    if (CATEGORY_VALUES.has(point.category)) {
+      counts[point.category] = point.count
+    }
+  }
+  return CATEGORY_ORDER.map(category => ({ category, count: counts[category] }))
+})
+
 onMounted(() => {
+  invoicesStore.setCategories([...selectedCategories.value])
   fetchStats()
   fetchInvoices()
   fetchSavedViews()
@@ -332,6 +412,30 @@ onMounted(() => {
           <p class="text-sm font-medium text-slate-500">Active Accounts</p>
           <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.active_accounts }}</p>
           <p class="text-xs text-slate-400 mt-1" v-if="stats.last_scan_at">Last scan: {{ formatDate(stats.last_scan_at) }}</p>
+        </div>
+      </div>
+
+      <div
+        v-if="!loadingStats && stats && (stats.total_invoices > 0 || (stats.by_category && stats.by_category.length > 0))"
+        class="bg-white p-4 rounded-xl shadow-sm border border-slate-200"
+        data-test-id="stats-by-category"
+      >
+        <p class="text-sm font-medium text-slate-500 mb-3">By Category</p>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div
+            v-for="bucket in categoryBreakdown"
+            :key="bucket.category"
+            class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"
+            :data-test-id="`stats-category-${bucket.category}`"
+          >
+            <CategoryBadge :category="bucket.category" />
+            <span
+              class="text-sm font-semibold"
+              :class="bucket.count === 0 ? 'text-slate-400' : 'text-slate-900'"
+            >
+              {{ bucket.count === 0 ? '— (0)' : bucket.count }}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -438,6 +542,14 @@ onMounted(() => {
             </button>
           </div>
         </div>
+
+        <div class="pt-2 border-t border-slate-100" data-test-id="category-filter">
+          <MultiSelectChips
+            v-model="selectedCategories"
+            :options="categoryOptions"
+            label="Category"
+          />
+        </div>
       </div>
 
       <!-- Batch Actions -->
@@ -498,6 +610,7 @@ onMounted(() => {
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Seller</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Amount</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
+                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Category</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Type</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Summary</th>
                 <th scope="col" class="relative px-6 py-3">
@@ -514,6 +627,7 @@ onMounted(() => {
                 <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-16"></div></td>
                 <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-24"></div></td>
                 <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-20"></div></td>
+                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-20"></div></td>
                 <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-40"></div></td>
                 <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                   <div class="h-4 bg-slate-200 rounded w-16 inline-block"></div>
@@ -521,7 +635,7 @@ onMounted(() => {
               </tr>
               
               <tr v-else-if="invoicesStore.invoices.length === 0">
-                <td colspan="9" class="px-6 py-16 text-center text-slate-500">
+                <td colspan="10" class="px-6 py-16 text-center text-slate-500">
                   <div class="flex flex-col items-center justify-center">
                     <svg class="w-12 h-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                     <p class="text-base font-medium text-slate-900">No invoices match your search</p>
@@ -537,7 +651,7 @@ onMounted(() => {
                 </td>
               </tr>
 
-              <tr v-else v-for="invoice in invoicesStore.invoices" :key="invoice.id" class="hover:bg-slate-50 transition-colors">
+              <tr v-else v-for="invoice in invoicesStore.invoices" :key="invoice.id" class="hover:bg-slate-50 transition-colors" :data-test-id="`invoice-row-${invoice.id}`">
                 <td class="px-6 py-4 whitespace-nowrap">
                   <input
                     type="checkbox"
@@ -551,6 +665,9 @@ onMounted(() => {
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ invoice.seller }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ formatCurrency(invoice.amount) }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(invoice.invoice_date) }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                  <CategoryBadge :category="invoice.invoice_category" />
+                </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
                   <span
                     class="px-2.5 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full border"
