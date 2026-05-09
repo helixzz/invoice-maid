@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-732%20passing-brightgreen" alt="732 tests">
+  <img src="https://img.shields.io/badge/Tests-733%20passing-brightgreen" alt="733 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -184,7 +184,7 @@ Configure your LLM provider, API key, chat model, and embedding model from the b
 | Database | SQLite (WAL), FTS5, sqlite-vec |
 | AI | OpenAI-compatible HTTP API |
 | Parsing | pdfplumber, PyMuPDF, easyofd, lxml, pyzbar, imap-tools, msal |
-| Testing | pytest (732 tests, 100% coverage), Playwright (e2e smoke) |
+| Testing | pytest (733 tests, 100% coverage), Playwright (e2e smoke) |
 
 Roughly 6 800 lines of Python and 3 600 lines of Vue / TypeScript.
 

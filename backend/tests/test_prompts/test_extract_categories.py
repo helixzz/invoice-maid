@@ -20,13 +20,14 @@ from app.services.ai_service import AIService
 
 
 LIVE = os.getenv("INVOICE_MAID_LIVE_LLM_TESTS") == "1"
-pytestmark = pytest.mark.skipif(
+requires_live_llm = pytest.mark.skipif(
     not LIVE, reason="Live LLM test; set INVOICE_MAID_LIVE_LLM_TESTS=1"
 )
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "invoice_samples"
 
 
+@requires_live_llm
 @pytest.mark.parametrize(
     "fixture_rel,expected_category,expected_valid_tax",
     [
