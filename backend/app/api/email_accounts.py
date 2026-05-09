@@ -54,6 +54,10 @@ def _serialize_account(account: EmailAccount) -> EmailAccountResponse:
         is_active=account.is_active,
         last_scan_uid=account.last_scan_uid,
         created_at=account.created_at.isoformat(),
+        has_secondary_credential=bool(account.secondary_credential_encrypted),
+        has_secondary_password=bool(account.secondary_password_encrypted),
+        has_totp_secret=bool(account.totp_secret_encrypted),
+        has_playwright_storage_state=bool(account.playwright_storage_state),
     )
 
 
@@ -159,6 +163,19 @@ async def create_account(
         password_encrypted=encrypt_password(payload.password, settings.JWT_SECRET) if payload.password else None,
         oauth_token_path=payload.oauth_token_path,
         is_active=payload.is_active,
+        secondary_credential_encrypted=(
+            encrypt_password(payload.secondary_credential, settings.JWT_SECRET)
+            if payload.secondary_credential else None
+        ),
+        secondary_password_encrypted=(
+            encrypt_password(payload.secondary_password, settings.JWT_SECRET)
+            if payload.secondary_password else None
+        ),
+        totp_secret_encrypted=(
+            encrypt_password(payload.totp_secret, settings.JWT_SECRET)
+            if payload.totp_secret else None
+        ),
+        playwright_storage_state=payload.playwright_storage_state,
     )
     db.add(account)
     await db.commit()
@@ -194,6 +211,23 @@ async def update_account(
         account.outlook_account_type = payload.outlook_account_type
     if payload.password is not None:
         account.password_encrypted = encrypt_password(payload.password, settings.JWT_SECRET)
+    if payload.secondary_credential is not None:
+        account.secondary_credential_encrypted = (
+            encrypt_password(payload.secondary_credential, settings.JWT_SECRET)
+            if payload.secondary_credential else None
+        )
+    if payload.secondary_password is not None:
+        account.secondary_password_encrypted = (
+            encrypt_password(payload.secondary_password, settings.JWT_SECRET)
+            if payload.secondary_password else None
+        )
+    if payload.totp_secret is not None:
+        account.totp_secret_encrypted = (
+            encrypt_password(payload.totp_secret, settings.JWT_SECRET)
+            if payload.totp_secret else None
+        )
+    if payload.playwright_storage_state is not None:
+        account.playwright_storage_state = payload.playwright_storage_state or None
     if payload.is_active is not None:
         account.is_active = payload.is_active
 

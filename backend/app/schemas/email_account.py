@@ -11,6 +11,10 @@ class EmailAccountCreate(BaseModel):
     password: str | None = None
     oauth_token_path: str | None = None
     is_active: bool = True
+    secondary_credential: str | None = None
+    secondary_password: str | None = None
+    totp_secret: str | None = None
+    playwright_storage_state: str | None = None
 
 
 class EmailAccountUpdate(BaseModel):
@@ -21,6 +25,10 @@ class EmailAccountUpdate(BaseModel):
     outlook_account_type: str | None = None
     password: str | None = None
     is_active: bool | None = None
+    secondary_credential: str | None = None
+    secondary_password: str | None = None
+    totp_secret: str | None = None
+    playwright_storage_state: str | None = None
 
 
 class EmailAccountResponse(BaseModel):
@@ -34,6 +42,10 @@ class EmailAccountResponse(BaseModel):
     is_active: bool
     last_scan_uid: str | None
     created_at: str
+    has_secondary_credential: bool = False
+    has_secondary_password: bool = False
+    has_totp_secret: bool = False
+    has_playwright_storage_state: bool = False
 
 
 class OAuthInitiateResponse(BaseModel):

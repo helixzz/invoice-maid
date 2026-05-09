@@ -588,3 +588,116 @@ async def test_email_account_test_connection_generic_exception(client, auth_head
 
     assert response.status_code == 200
     assert response.json() == {"ok": False, "detail": "Connection test failed"}
+
+
+async def test_create_cursor_account_encrypts_secondary_credentials_and_totp(
+    client, auth_headers, db
+) -> None:
+    response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "My Cursor",
+            "type": "cursor",
+            "username": "cursor-acct",
+            "secondary_credential": "cursor-user@example.com",
+            "secondary_password": "cursor-pw",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "playwright_storage_state": '{"cookies": []}',
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["has_secondary_credential"] is True
+    assert body["has_secondary_password"] is True
+    assert body["has_totp_secret"] is True
+    assert body["has_playwright_storage_state"] is True
+    assert "secondary_password" not in body
+    assert "totp_secret" not in body
+
+    account = (await db.execute(select(EmailAccount))).scalars().first()
+    assert account.secondary_credential_encrypted is not None
+    assert account.secondary_credential_encrypted != "cursor-user@example.com"
+    assert account.secondary_password_encrypted is not None
+    assert account.secondary_password_encrypted != "cursor-pw"
+    assert account.totp_secret_encrypted is not None
+    assert account.playwright_storage_state == '{"cookies": []}'
+
+
+async def test_update_cursor_account_rotates_each_credential_field(
+    client, auth_headers, db
+) -> None:
+    create_response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "cursor-rotate",
+            "type": "cursor",
+            "username": "x",
+            "secondary_credential": "old@example.com",
+            "secondary_password": "old-pw",
+            "totp_secret": "OLDSECRET",
+            "playwright_storage_state": "{}",
+        },
+    )
+    account_id = create_response.json()["id"]
+    account = (await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))).scalar_one()
+    old_cred = account.secondary_credential_encrypted
+    old_pw = account.secondary_password_encrypted
+    old_totp = account.totp_secret_encrypted
+
+    update_response = await client.put(
+        f"/api/v1/accounts/{account_id}",
+        headers=auth_headers,
+        json={
+            "secondary_credential": "new@example.com",
+            "secondary_password": "new-pw",
+            "totp_secret": "NEWSECRET",
+            "playwright_storage_state": '{"cookies": [{"name": "refreshed"}]}',
+        },
+    )
+    assert update_response.status_code == 200
+
+    await db.refresh(account)
+    assert account.secondary_credential_encrypted != old_cred
+    assert account.secondary_password_encrypted != old_pw
+    assert account.totp_secret_encrypted != old_totp
+    assert account.playwright_storage_state == '{"cookies": [{"name": "refreshed"}]}'
+
+
+async def test_update_cursor_account_clears_credentials_on_empty_string(
+    client, auth_headers, db
+) -> None:
+    create_response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "cursor-clear",
+            "type": "cursor",
+            "username": "x",
+            "secondary_credential": "fill@example.com",
+            "secondary_password": "fill-pw",
+            "totp_secret": "FILLTOTP",
+            "playwright_storage_state": "{}",
+        },
+    )
+    account_id = create_response.json()["id"]
+
+    update_response = await client.put(
+        f"/api/v1/accounts/{account_id}",
+        headers=auth_headers,
+        json={
+            "secondary_credential": "",
+            "secondary_password": "",
+            "totp_secret": "",
+            "playwright_storage_state": "",
+        },
+    )
+    assert update_response.status_code == 200
+
+    account = (await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))).scalar_one()
+    await db.refresh(account)
+    assert account.secondary_credential_encrypted is None
+    assert account.secondary_password_encrypted is None
+    assert account.totp_secret_encrypted is None
+    assert account.playwright_storage_state is None

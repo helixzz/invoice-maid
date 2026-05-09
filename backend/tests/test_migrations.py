@@ -1294,3 +1294,94 @@ def test_0015_enum_string_literals_match_pydantic_enum() -> None:
     src = migration_file.read_text()
     assert "'vat_invoice'" in src, "migration 0015 must backfill with 'vat_invoice' (enum value)"
     assert 'server_default="vat_invoice"' in src, "column default must match enum"
+
+
+SCRAPER_COLUMNS = (
+    "playwright_storage_state",
+    "secondary_credential_encrypted",
+    "secondary_password_encrypted",
+    "totp_secret_encrypted",
+)
+
+
+def test_0016_add_scraper_account_fields_up_applies_cleanly(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0015_add_invoice_category")
+    _upgrade_to(migration_db, "0016_add_scraper_account_fields")
+
+    assert _current_revision(migration_db) == "0016_add_scraper_account_fields"
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        cols = {
+            row[1]: {"type": row[2], "notnull": row[3]}
+            for row in conn.execute(sa.text("PRAGMA table_info(email_accounts)")).all()
+        }
+    engine.dispose()
+
+    for name in SCRAPER_COLUMNS:
+        assert name in cols, f"column {name} must exist after 0016 upgrade"
+        assert cols[name]["notnull"] == 0, f"{name} must remain nullable for legacy rows"
+
+
+def test_0016_legacy_imap_account_inserts_with_null_scraper_fields(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0016_add_scraper_account_fields")
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO users (email, hashed_password, is_active, is_admin, "
+                "created_at, updated_at) VALUES "
+                "('scraper-test@local', 'h', 1, 0, '2026-05-09', '2026-05-09') "
+                "ON CONFLICT DO NOTHING"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "INSERT INTO email_accounts (user_id, name, type, username, is_active, "
+                "created_at, outlook_account_type) VALUES "
+                "((SELECT id FROM users WHERE email='scraper-test@local'), "
+                "'legacy-imap', 'imap', 'u@e.com', 1, '2026-05-09', 'personal')"
+            )
+        )
+    engine.dispose()
+
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        row = conn.execute(
+            sa.text(
+                "SELECT playwright_storage_state, secondary_credential_encrypted, "
+                "secondary_password_encrypted, totp_secret_encrypted "
+                "FROM email_accounts WHERE type='imap'"
+            )
+        ).first()
+    engine.dispose()
+
+    assert row is not None
+    assert all(value is None for value in row)
+
+
+def test_0016_downgrade_removes_all_four_columns(
+    migration_db: Path,
+) -> None:
+    _upgrade_to(migration_db, "0016_add_scraper_account_fields")
+    _downgrade_to(migration_db, "0015_add_invoice_category")
+
+    assert _current_revision(migration_db) == "0015_add_invoice_category"
+
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(sa.text("PRAGMA table_info(email_accounts)")).all()
+        }
+    engine.dispose()
+
+    for name in SCRAPER_COLUMNS:
+        assert name not in cols, f"{name} must be dropped on downgrade"

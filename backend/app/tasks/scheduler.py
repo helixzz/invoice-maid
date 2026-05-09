@@ -27,6 +27,7 @@ from app.services.email_classifier import EmailClassifier, _parse_extra_keywords
 from app.services.email_scanner import ScanOptions, ScannerFactory, _is_uid_newer
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import parse as parse_invoice
+from app.services.scrapers.factory import ScraperFactory
 from app.services.search_service import store_embedding
 from app.services import scan_progress as sp
 
@@ -778,7 +779,10 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                     await db.refresh(log)
 
                     try:
-                        scanner = ScannerFactory.get_scanner(account.type)
+                        if ScraperFactory.is_scraper_type(account.type):
+                            scanner = ScraperFactory.get_scraper(account.type)
+                        else:
+                            scanner = ScannerFactory.get_scanner(account.type)
                         scan_loop = asyncio.get_running_loop()
 
                         def _publish_scan_progress(update: dict[str, Any]) -> None:
@@ -870,6 +874,10 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                                 account.last_scan_uid = scan_state
                         elif last_uid and last_uid != account.last_scan_uid:
                             account.last_scan_uid = last_uid
+
+                        updated_storage = getattr(scanner, "_updated_storage_state", None)
+                        if updated_storage is not None and updated_storage != account.playwright_storage_state:
+                            account.playwright_storage_state = updated_storage
 
                         log.invoices_found = invoices_added
                         log.finished_at = datetime.now(timezone.utc)
