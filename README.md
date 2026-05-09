@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue" alt="v1.1.0">
+  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="v1.2.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-682%20passing-brightgreen" alt="682 tests">
+  <img src="https://img.shields.io/badge/Tests-732%20passing-brightgreen" alt="732 tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -94,6 +94,8 @@ Two invoice sources feed the **same** five-stage pipeline. The email scanner run
 - **Tier-3 body-link analysis** — when an email contains download links, the LLM picks the **single best direct invoice link** instead of blindly following every URL, with a pre-download URL blocklist that rejects tracking pixels and unsubscribe links before spending any HTTP round-trip
 - **Multi-format parsing** — PDF (pdfplumber + PyMuPDF), XML (lxml), OFD (easyofd) with QR code decoding via pyzbar
 - **Railway + airline e-ticket support** — 铁路电子客票 (2024年第8号公告) and 航空运输电子客票行程单 (2024年第9号公告) are recognized as valid VAT invoices, including image-based PDFs where only the 20-digit invoice_no survives parsing
+- **Invoice category taxonomy** — every invoice is classified by the LLM into one of five categories — `vat_invoice` (Chinese 增值税发票 / 数电票 / railway / airline e-tickets), `saas_invoice` (Cursor / Stripe / OpenAI and other subscription providers in non-CNY currencies), `receipt` (informal 收据 with no tax standing), `proforma` (pre-payment quote), and `other` (legitimate billing documents not matching the above). Non-VAT invoices are saved with the correct category tag rather than rejected. Filter the invoice list by one or more categories; the stats panel breaks down counts per category. Operators who want the stricter v1.1.x behavior can set `STRICT_VAT_ONLY=true` to reject everything except `vat_invoice`.
+- **SaaS portal scraping (Cursor)** — experimental Playwright-based scanner for SaaS vendors that don't email invoices. Add an account of type `cursor`, paste a session `storage_state` JSON captured via `scripts/cursor_login_local.py`, and the scheduler will navigate the Cursor billing dashboard, download each invoice PDF, and feed it through the same parse → LLM enrich → dedupe → save pipeline as email and manual uploads. 2FA supported via stored TOTP secret. Stripe / OpenAI / other providers pluggable via the `BaseScraper` interface.
 - **Manual correction** — edit any extracted field inline with a full audit trail (`CorrectionLog`)
 - **Confidence scoring** — extraction confidence and method displayed per invoice as coloured badges
 - **Duplicate detection** — composite deduplication on invoice number + email UID + attachment filename
@@ -182,7 +184,7 @@ Configure your LLM provider, API key, chat model, and embedding model from the b
 | Database | SQLite (WAL), FTS5, sqlite-vec |
 | AI | OpenAI-compatible HTTP API |
 | Parsing | pdfplumber, PyMuPDF, easyofd, lxml, pyzbar, imap-tools, msal |
-| Testing | pytest (619 tests, 100% coverage), Playwright (e2e smoke) |
+| Testing | pytest (732 tests, 100% coverage), Playwright (e2e smoke) |
 
 Roughly 6 800 lines of Python and 3 600 lines of Vue / TypeScript.
 

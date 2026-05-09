@@ -163,6 +163,50 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v1.2.0 — Released (code-complete, pending Oracle review + deploy)
+
+**Invoice taxonomy + SaaS portal scraping.** Two parallel tracks bundled into one release.
+
+**Track A — `invoice_category` taxonomy**: widens acceptance from "Chinese VAT only" to five categories (`vat_invoice`, `saas_invoice`, `receipt`, `proforma`, `other`). Non-VAT invoices save with the right tag instead of getting rejected. `STRICT_VAT_ONLY=true` kill-switch reverts to v1.1.x strictness. Migration 0015 backfills every pre-v1.2.0 invoice to `vat_invoice`; FTS5 rebuilt to include the category token. Frontend surfaces filter chips, colored category badges, a by-category stats panel, and `?category=` URL sync. LLM prompt STEP 0.5 classifier + 5-fixture live-LLM validation harness (`INVOICE_MAID_LIVE_LLM_TESTS=1`).
+
+**Track B — SaaS portal scraping (Cursor-first)**: Playwright-based scanner feeds the same parse → LLM enrich → dedupe → save pipeline as email and manual uploads. Fernet-encrypted credentials + TOTP 2FA support. `storage_state` JSON auto-persists so operators only log in once. `BaseScraper` + `ScraperFactory` make adding Stripe / OpenAI / any other vendor a one-file change. Graceful degradation when the `playwright` package is absent (scanners emit `auth_required` events and return `[]` instead of crashing the scheduler).
+
+**What changed**:
+- Migrations: 0015 (invoice_category column + index + FTS5 rebuild), 0016 (4 nullable columns on `email_accounts` for scraper credentials).
+- Prompt rewrite with STEP 0.5 category classification + STEP 1 VAT-validity scoped to `vat_invoice` category.
+- `app/services/scrapers/` new package: `base.py` (ABC + `ScraperAuthRequiredError`), `playwright_session.py` (async context manager + `PlaywrightUnavailableError`), `cursor.py` (CursorScraper with centralized selectors), `factory.py` (open-closed registry).
+- Scheduler dispatch: `scan_all_accounts` routes `ScraperFactory.is_scraper_type(type)` hits to the scraper path; updated `storage_state` Fernet-encrypted + persisted back.
+- API: `GET /api/v1/invoices?category=...` repeatable array param; `StatsResponse.by_category` list; CSV export includes `invoice_category` column; test-helpers `POST /seed-invoice-category-mix` for E2E.
+- Frontend: `InvoiceCategory` TS union, `MultiSelectChips.vue`, `CategoryBadge.vue`, by-category stats, E2E spec.
+- Rejection rule (manual_upload + scheduler): `low_confidence` / `not_vat_invoice` fires only when `category=='vat_invoice'` AND validity failed. Non-VAT saves with `is_valid_tax_invoice=false`.
+- `scripts/cursor_login_local.py` — operator helper for Mode-B storage_state capture.
+- 50 new backend tests (682 → 732), 2 new frontend E2E specs (17 → 19), 100% backend coverage held.
+- 2 new env vars: `STRICT_VAT_ONLY` (default false, v1.1.x kill-switch), `ENABLE_TEST_HELPERS` (default false, Playwright harness gate).
+- 2 new deps: `playwright>=1.45,<2.0` (main), `reportlab>=4.0,<5.0` (dev).
+
+**What did NOT change**:
+- Outlook delta scanner (v1.1.0) — byte-identical.
+- Email scanner interface — scrapers bolt on; existing IMAP/POP3/QQ/Outlook paths unchanged.
+- Multi-user tenant isolation (v0.9.0) — preserved.
+- Webhooks, admin panel, rate limiting, health endpoint — unchanged.
+- API response shapes for existing endpoints — additive only (`invoice_category` / `by_category` / `has_*` booleans).
+
+**Verification**:
+- 732 backend tests / 100% line + branch coverage (gate unchanged, +50 tests from v1.1.0).
+- 19 Playwright E2E specs pass (+2 from v1.1.0).
+- `alembic upgrade head` + `alembic downgrade -2` round-trip clean.
+- Import check: `from app.services.scrapers import cursor` with `playwright` uninstalled returns graceful degradation.
+
+**Deferred to v1.2.1+**:
+- Real-Cursor manual QA (§8.3 B13) — post-deploy, requires operator credentials.
+- Stripe / OpenAI scrapers — `BaseScraper` + `ScraperFactory` ready.
+- Settings UI form for Cursor account type — backend API ready.
+- Independent `TOTP_ENCRYPTION_KEY` — v1.2.0 shares JWT_SECRET-derived Fernet key; key-rotation migration can land without schema change.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details, [`.sisyphus/plans/v1.2.0-track-a-invoice-category.md`](/.sisyphus/plans/v1.2.0-track-a-invoice-category.md) (Momus round-4 OKAY) and [`.sisyphus/plans/v1.2.0-track-b-saas-scraper.md`](/.sisyphus/plans/v1.2.0-track-b-saas-scraper.md) (Momus round-4 OKAY) for the approved designs.
+
+---
+
 ## v1.1.0 — Released (code-complete, pending Oracle review + deploy)
 
 **Microsoft Graph Delta Query for OutlookScanner.** Replaces v0.9.x `receivedDateTime ge` polling with `/me/mailFolders/{id}/messages/delta`. Opaque per-folder delta tokens eliminate timezone / boundary-equality edge cases; explicit server-side signal for deleted messages. Feature-flagged via `OUTLOOK_DELTA_ENABLED` with byte-identical kill-switch back to v1.0.x polling.
