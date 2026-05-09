@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.tasks.scheduler as scheduler
 from app.models import EmailAccount, ExtractionLog, Invoice, LLMCache, ScanLog, WebhookLog
-from app.schemas.invoice import EmailAnalysis, InvoiceFormat, InvoicePlatform, UrlKind
+from app.schemas.invoice import EmailAnalysis, InvoiceExtract, InvoiceFormat, InvoicePlatform, UrlKind
 from app.services import scan_progress as sp
 from app.services.email_scanner import RawAttachment, RawEmail
 from app.services.invoice_parser import ParsedInvoice
@@ -974,7 +974,7 @@ async def test_scan_all_accounts_rejects_llm_flagged_non_vat_invoice(
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert invoices == []
     assert extraction_logs[0].outcome == "not_vat_invoice"
-    assert extraction_logs[0].error_detail == "type='' llm_rejected=True"
+    assert extraction_logs[0].error_detail == "type='' category='vat_invoice' llm_rejected=True"
 
 
 @pytest.mark.asyncio
@@ -1019,7 +1019,112 @@ async def test_scan_all_accounts_rejects_heuristic_non_vat_invoice_without_llm(
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert invoices == []
     assert extraction_logs[0].outcome == "not_vat_invoice"
-    assert extraction_logs[0].error_detail == "type='酒店收据' llm_rejected=False"
+    assert extraction_logs[0].error_detail == "type='酒店收据' category='vat_invoice' llm_rejected=False"
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_saves_saas_invoice_instead_of_rejecting_v120(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
+) -> None:
+    """v1.2.0 Track A: invoice_category=saas_invoice + is_valid_tax_invoice=False
+    SAVES normally under the default STRICT_VAT_ONLY=false policy. Under v1.1.x
+    this would have been rejected as not_vat_invoice."""
+    from app.schemas.invoice import InvoiceCategory
+
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-saas-1",
+        subject="Cursor Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="billing@cursor.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(invoice_no=None, raw_text="cursor invoice", confidence=0.1, is_vat_document=False)
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={
+            "invoice_no": "in_cursor_001",
+            "invoice_type": "Cursor Pro Subscription",
+            "invoice_category": InvoiceCategory.SAAS_INVOICE,
+            "is_valid_tax_invoice": False,
+            "buyer": "Acme Corp",
+            "seller": "Cursor AI Inc",
+            "amount": Decimal("20.00"),
+            "invoice_date": date(2026, 5, 1),
+            "item_summary": "AI editor subscription",
+        }
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None, options=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert len(invoices) == 1
+    assert invoices[0].invoice_category == "saas_invoice"
+    assert invoices[0].invoice_no == "in_cursor_001"
+    assert invoices[0].invoice_type == "Cursor Pro Subscription"
+    assert all(log.outcome != "not_vat_invoice" for log in extraction_logs)
+
+
+@pytest.mark.asyncio
+async def test_scan_all_accounts_strict_vat_only_reverts_to_v11x_rejection(
+    db, create_email_account, monkeypatch: pytest.MonkeyPatch, settings, mock_ai_service
+) -> None:
+    """STRICT_VAT_ONLY=true reverts to v1.1.x rejection — even saas_invoice
+    category rows get rejected because type is not in VALID_INVOICE_TYPES.
+    Operator rollback escape hatch."""
+    from app.schemas.invoice import InvoiceCategory
+
+    settings.STRICT_VAT_ONLY = True
+
+    await create_email_account(last_scan_uid=None)
+    email = RawEmail(
+        uid="uid-strict-1",
+        subject="Cursor Invoice",
+        body_text="body",
+        body_html="",
+        from_addr="billing@cursor.com",
+        received_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        attachments=[RawAttachment(filename="invoice.pdf", payload=b"1", content_type="application/pdf")],
+    )
+    parsed = ParsedInvoice(invoice_no=None, raw_text="cursor invoice", confidence=0.1, is_vat_document=False)
+    mock_ai_service.extract_invoice_fields.return_value = mock_ai_service.extract_invoice_fields.return_value.model_copy(
+        update={
+            "invoice_no": "in_cursor_002",
+            "invoice_type": "Cursor Pro Subscription",
+            "invoice_category": InvoiceCategory.SAAS_INVOICE,
+            "is_valid_tax_invoice": False,
+        }
+    )
+
+    class FakeScanner:
+        async def scan(self, account, last_uid=None, options=None):
+            del account, last_uid
+            return [email]
+
+    monkeypatch.setattr(scheduler, "get_db", make_get_db_override(db))
+    monkeypatch.setattr(scheduler, "AIService", lambda settings: mock_ai_service)
+    monkeypatch.setattr(scheduler.ScannerFactory, "get_scanner", lambda account_type: FakeScanner())
+    monkeypatch.setattr(scheduler, "parse_invoice", lambda filename, payload: parsed)
+
+    await scheduler.scan_all_accounts()
+
+    invoices = (await db.execute(select(Invoice))).scalars().all()
+    extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
+    assert invoices == []
+    assert extraction_logs[0].outcome == "not_vat_invoice"
+    assert "category='saas_invoice'" in extraction_logs[0].error_detail
 
 
 @pytest.mark.asyncio
@@ -1506,7 +1611,7 @@ async def test_process_single_email_handles_invoice_integrity_error(monkeypatch:
         ai=SimpleNamespace(
             analyze_email=AsyncMock(),
             extract_invoice_fields=AsyncMock(
-                return_value=SimpleNamespace(
+                return_value=InvoiceExtract(
                     buyer="Buyer",
                     seller="Seller",
                     invoice_no="INV-RACE",
@@ -1521,7 +1626,7 @@ async def test_process_single_email_handles_invoice_integrity_error(monkeypatch:
             embed_text=AsyncMock(),
         ),
         file_mgr=SimpleNamespace(save_invoice=AsyncMock(return_value="saved.pdf")),
-        settings=SimpleNamespace(sqlite_vec_available=False),
+        settings=SimpleNamespace(sqlite_vec_available=False, STRICT_VAT_ONLY=False),
         log_id=1,
         account_id=1,
         user_id=1,

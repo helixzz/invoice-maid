@@ -31,6 +31,7 @@ class SearchService:
         user_id: int,
         date_from: date | None = None,
         date_to: date | None = None,
+        categories: list[str] | None = None,
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
@@ -42,7 +43,11 @@ class SearchService:
         hydration query constrains to the caller's rows. This is safe
         because we rely on the ORM filter, not on the FTS index, for
         authorization — the FTS index is a shared tokenizer, not a
-        security boundary."""
+        security boundary.
+
+        v1.2.0 Track A: ``categories`` takes a list of invoice_category
+        enum values. Empty list / None means "no filter" (backward-compat
+        with v1.1.x clients)."""
         if not query.strip():
             stmt = select(Invoice).where(Invoice.user_id == user_id)
             count_stmt = select(func.count(Invoice.id)).where(Invoice.user_id == user_id)
@@ -53,6 +58,9 @@ class SearchService:
             if date_to is not None:
                 stmt = stmt.where(Invoice.invoice_date <= date_to)
                 count_stmt = count_stmt.where(Invoice.invoice_date <= date_to)
+            if categories:
+                stmt = stmt.where(Invoice.invoice_category.in_(categories))
+                count_stmt = count_stmt.where(Invoice.invoice_category.in_(categories))
 
             total = (await db.execute(count_stmt)).scalar() or 0
             stmt = stmt.order_by(Invoice.invoice_date.desc(), Invoice.id.desc())
@@ -92,6 +100,9 @@ class SearchService:
         if date_to is not None:
             stmt = stmt.where(Invoice.invoice_date <= date_to)
             count_stmt = count_stmt.where(Invoice.invoice_date <= date_to)
+        if categories:
+            stmt = stmt.where(Invoice.invoice_category.in_(categories))
+            count_stmt = count_stmt.where(Invoice.invoice_category.in_(categories))
 
         total = (await db.execute(count_stmt)).scalar() or 0
         stmt = stmt.order_by(Invoice.invoice_date.desc(), Invoice.id.desc())

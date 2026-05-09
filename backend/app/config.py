@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     ALLOW_REGISTRATION: bool = False
     OUTLOOK_DELTA_ENABLED: bool = True
     OUTLOOK_DELTA_FALLBACK_ON_RESYNC: bool = True
+    STRICT_VAT_ONLY: bool = False
     LOG_LEVEL: str = "INFO"
     OUTLOOK_PERSONAL_CLIENT_ID: str = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
     OUTLOOK_AAD_CLIENT_ID: str = "d3590ed6-52b3-4102-aeff-aad2292ab01c"

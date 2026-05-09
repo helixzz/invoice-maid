@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 
 import aiofiles
 import filetype
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -276,6 +276,7 @@ async def list_invoices(
     q: str = "",
     date_from: date | None = None,
     date_to: date | None = None,
+    category: list[str] = Query(default_factory=list),
     page: int = 1,
     size: int = 20,
 ) -> InvoiceListResponse:
@@ -286,6 +287,7 @@ async def list_invoices(
         user_id=_current_user.id,
         date_from=date_from,
         date_to=date_to,
+        categories=category,
         page=page,
         size=size,
     )
@@ -305,6 +307,7 @@ async def export_invoices(
     q: str = "",
     date_from: date | None = None,
     date_to: date | None = None,
+    category: list[str] = Query(default_factory=list),
 ) -> StreamingResponse:
     del format
     search_service = SearchService(get_settings())
@@ -314,6 +317,7 @@ async def export_invoices(
         user_id=_current_user.id,
         date_from=date_from,
         date_to=date_to,
+        categories=category,
         page=1,
         size=1,
     )
@@ -323,6 +327,7 @@ async def export_invoices(
         user_id=_current_user.id,
         date_from=date_from,
         date_to=date_to,
+        categories=category,
         page=1,
         size=max(total, 1),
     )

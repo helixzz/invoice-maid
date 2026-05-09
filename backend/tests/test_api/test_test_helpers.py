@@ -342,3 +342,62 @@ async def test_restore_admin_from_bootstrap_noop_when_already_correct(
 
     await db.refresh(admin)
     assert admin.hashed_password == original_hash
+
+
+async def test_seed_invoice_category_mix_creates_5_invoices(
+    client, auth_headers, settings, db
+) -> None:
+    """v1.2.0 Track A: seed one invoice per category for Playwright E2E."""
+    settings.ENABLE_TEST_HELPERS = True
+    reset_response = await client.post("/api/v1/test-helpers/reset-smoke")
+    assert reset_response.status_code == 200
+
+    response = await client.post(
+        "/api/v1/test-helpers/seed-invoice-category-mix", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["invoice_ids"]) == 5
+    assert set(body["categories"]) == {"vat_invoice", "saas_invoice", "receipt", "proforma", "other"}
+
+    from app.models import Invoice as InvoiceModel
+
+    rows = (await db.execute(select(InvoiceModel).where(InvoiceModel.id.in_(body["invoice_ids"])))).scalars().all()
+    category_counts: dict[str, int] = {}
+    for row in rows:
+        category_counts[row.invoice_category] = category_counts.get(row.invoice_category, 0) + 1
+    assert category_counts == {
+        "vat_invoice": 1,
+        "saas_invoice": 1,
+        "receipt": 1,
+        "proforma": 1,
+        "other": 1,
+    }
+
+
+async def test_seed_invoice_category_mix_guarded_when_disabled(
+    client, settings, auth_headers
+) -> None:
+    settings.ENABLE_TEST_HELPERS = False
+
+    response = await client.post(
+        "/api/v1/test-helpers/seed-invoice-category-mix", headers=auth_headers
+    )
+    assert response.status_code == 404
+
+
+async def test_seed_invoice_category_mix_requires_email_account(
+    client, settings, auth_headers, db
+) -> None:
+    """Fails cleanly if no email_accounts row exists (reset-smoke not called)."""
+    settings.ENABLE_TEST_HELPERS = True
+    from app.models import EmailAccount as EmailAccountModel
+
+    await db.execute(EmailAccountModel.__table__.delete())
+    await db.commit()
+
+    response = await client.post(
+        "/api/v1/test-helpers/seed-invoice-category-mix", headers=auth_headers
+    )
+    assert response.status_code == 400
+    assert "reset-smoke first" in response.json()["detail"]

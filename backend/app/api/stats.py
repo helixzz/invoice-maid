@@ -26,6 +26,7 @@ class StatsResponse(BaseModel):
     monthly_spend: list["MonthlySpendPoint"]
     top_sellers: list["SellerSpendPoint"]
     by_type: list["TypeCountPoint"]
+    by_category: list["CategoryCountPoint"]
     by_method: list["MethodCountPoint"]
     avg_confidence: float
 
@@ -44,6 +45,11 @@ class SellerSpendPoint(BaseModel):
 
 class TypeCountPoint(BaseModel):
     type: str
+    count: int
+
+
+class CategoryCountPoint(BaseModel):
+    category: str
     count: int
 
 
@@ -157,6 +163,14 @@ async def get_stats(
             .order_by(func.count(Invoice.id).desc())
         )
     ).all()
+    category_rows = (
+        await db.execute(
+            select(Invoice.invoice_category.label("category"), func.count(Invoice.id).label("count"))
+            .where(Invoice.user_id == user_id)
+            .group_by(Invoice.invoice_category)
+            .order_by(func.count(Invoice.id).desc())
+        )
+    ).all()
     method_rows = (
         await db.execute(
             select(Invoice.extraction_method.label("method"), func.count(Invoice.id).label("count"))
@@ -190,6 +204,10 @@ async def get_stats(
         by_type=[
             TypeCountPoint(type=row.type, count=row.count)
             for row in sorted(type_rows, key=lambda row: row.type, reverse=True)
+        ],
+        by_category=[
+            CategoryCountPoint(category=row.category, count=row.count)
+            for row in category_rows
         ],
         by_method=[MethodCountPoint(method=row.method, count=row.count) for row in method_rows],
         avg_confidence=_rounded_float(avg_confidence),

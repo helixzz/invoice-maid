@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
-from app.schemas.invoice import VALID_INVOICE_TYPES
+from app.schemas.invoice import InvoiceCategory, VALID_INVOICE_TYPES
 from app.services.ai_service import AIService, _resolve_safelink
 from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders, is_scam_text
 from app.services.email_scanner import ScanOptions, ScannerFactory, _is_uid_newer
@@ -459,10 +459,18 @@ async def _process_single_email(
                                     exc,
                                 )
 
-                            if extracted is not None and extracted.is_valid_tax_invoice:
+                            if extracted is not None and (
+                                extracted.is_valid_tax_invoice
+                                or extracted.invoice_category != InvoiceCategory.VAT_INVOICE
+                            ):
                                 # Selective merge: LLM fills semantic fields (buyer/seller/type/summary)
                                 # unconditionally when non-未知. Parser keeps invoice_no/amount/date when
                                 # it had strong deterministic evidence; LLM backfills missing/invalid ones.
+                                #
+                                # v1.2.0 Track A: extend the merge trigger to non-vat_invoice categories.
+                                # Under v1.1.x the merge only ran when is_valid_tax_invoice=True, but
+                                # receipt/proforma/saas_invoice/other legitimately have is_valid_tax_invoice=False;
+                                # without this, saas invoices would silently fail to populate invoice_no.
                                 if extracted.buyer and extracted.buyer != "未知":
                                     parsed.buyer = extracted.buyer
                                 if extracted.seller and extracted.seller != "未知":
@@ -471,6 +479,7 @@ async def _process_single_email(
                                     parsed.item_summary = extracted.item_summary
                                 if extracted.invoice_type and extracted.invoice_type != "未知":
                                     parsed.invoice_type = extracted.invoice_type
+                                parsed.invoice_category = extracted.invoice_category.value
 
                                 # invoice_no: parser wins if deterministic 8/20-digit match
                                 if not parser_invoice_no_looks_valid and extracted.invoice_no:
@@ -525,7 +534,25 @@ async def _process_single_email(
                         )
                         heuristic_rejected = extracted is None and not parsed.is_vat_document and not type_is_valid
 
-                        if llm_rejected or (not type_is_valid and heuristic_rejected):
+                        # v1.2.0 Track A: rejection rule gated by STRICT_VAT_ONLY.
+                        # Default false: only reject invoice_category=vat_invoice
+                        # rows with is_valid_tax_invoice=false. Non-VAT categories
+                        # (receipt / proforma / saas_invoice / other) save normally.
+                        # See .sisyphus/plans/v1.2.0-track-a-invoice-category.md §5.2.
+                        final_category = (
+                            extracted.invoice_category.value
+                            if extracted is not None
+                            else (parsed.invoice_category or "vat_invoice")
+                        )
+                        if settings.STRICT_VAT_ONLY:
+                            should_reject = llm_rejected or (not type_is_valid and heuristic_rejected)
+                        else:
+                            should_reject = (
+                                final_category == "vat_invoice"
+                                and (llm_rejected or (not type_is_valid and heuristic_rejected))
+                            )
+
+                        if should_reject:
                             db.add(
                                 _record_extraction_log(
                                     user_id=user_id,
@@ -539,7 +566,7 @@ async def _process_single_email(
                                     parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                     confidence=parsed.confidence,
-                                    error_detail=f"type={final_type!r} llm_rejected={llm_rejected}",
+                                    error_detail=f"type={final_type!r} category={final_category!r} llm_rejected={llm_rejected}",
                                 )
                             )
                             await db.commit()
@@ -613,6 +640,7 @@ async def _process_single_email(
                             amount=parsed.amount or 0,
                             invoice_date=parsed.invoice_date or datetime.now(timezone.utc).date(),
                             invoice_type=parsed.invoice_type or "未知",
+                            invoice_category=final_category,
                             item_summary=parsed.item_summary or "",
                             file_path=file_path,
                             raw_text=parsed.raw_text[:10000],

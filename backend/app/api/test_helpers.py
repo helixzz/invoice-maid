@@ -381,3 +381,76 @@ async def seed_second_user(
         second_user_id=existing.id,
         second_user_password=_SECOND_USER_PASSWORD,
     )
+
+
+class CategoryMixSeedResponse(BaseModel):
+    invoice_ids: list[int]
+    categories: list[str]
+
+
+@router.post("/seed-invoice-category-mix", response_model=CategoryMixSeedResponse)
+async def seed_invoice_category_mix(
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> CategoryMixSeedResponse:
+    del _current_user
+    _require_test_helpers()
+    settings = get_settings()
+
+    account = (
+        await db.execute(select(EmailAccount).order_by(EmailAccount.id).limit(1))
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No email_accounts row exists; call /reset-smoke first",
+        )
+
+    file_manager = FileManager(settings.STORAGE_PATH)
+    admin = (await db.execute(select(User).order_by(User.id).limit(1))).scalar_one()
+
+    mix = [
+        ("CATMIX-VAT-001", "vat_invoice", "电子发票（普通发票）"),
+        ("CATMIX-SAAS-001", "saas_invoice", "Cursor Pro Subscription"),
+        ("CATMIX-RCPT-001", "receipt", "Receipt"),
+        ("CATMIX-PROF-001", "proforma", "PROFORMA INVOICE"),
+        ("CATMIX-OTHR-001", "other", "Membership Fee"),
+    ]
+    created_ids: list[int] = []
+    created_cats: list[str] = []
+    for invoice_no, category, type_label in mix:
+        file_path = await file_manager.save_invoice(
+            content=_SMOKE_PDF_BYTES,
+            buyer=f"Buyer {category}",
+            seller=f"Seller {category}",
+            invoice_no=invoice_no,
+            invoice_date=date(2026, 5, 1),
+            amount=Decimal("50.00"),
+            extension=".pdf",
+            user_id=admin.id,
+        )
+        invoice = Invoice(
+            user_id=admin.id,
+            invoice_no=invoice_no,
+            buyer=f"Buyer {category}",
+            seller=f"Seller {category}",
+            amount=Decimal("50.00"),
+            invoice_date=date(2026, 5, 1),
+            invoice_type=type_label,
+            invoice_category=category,
+            item_summary=f"{category} sample",
+            file_path=file_path,
+            raw_text=f"{category} sample {type_label}",
+            email_uid=f"catmix:{category}",
+            email_account_id=account.id,
+            source_format="pdf",
+            extraction_method="seed",
+            confidence=0.95,
+        )
+        db.add(invoice)
+        await db.flush()
+        created_ids.append(invoice.id)
+        created_cats.append(category)
+    await db.commit()
+
+    return CategoryMixSeedResponse(invoice_ids=created_ids, categories=created_cats)

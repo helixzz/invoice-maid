@@ -294,6 +294,7 @@ async def test_export_invoices_csv(client, auth_headers, create_invoice) -> None
         "seller",
         "amount",
         "invoice_date",
+        "invoice_category",
         "invoice_type",
         "item_summary",
         "extraction_method",
@@ -321,3 +322,104 @@ async def test_export_invoices_requires_auth(client) -> None:
     response = await client.get("/api/v1/invoices/export?format=csv")
 
     assert response.status_code == 401
+
+
+async def test_list_invoices_with_single_category_narrows_results(
+    client, auth_headers, create_invoice
+) -> None:
+    """v1.2.0 Track A: ?category=saas_invoice returns only that category."""
+    await create_invoice(invoice_no="INV-VAT-1", invoice_category="vat_invoice", email_uid="u1")
+    await create_invoice(invoice_no="INV-SAAS-1", invoice_category="saas_invoice", email_uid="u2")
+    await create_invoice(invoice_no="INV-RCPT-1", invoice_category="receipt", email_uid="u3")
+
+    response = await client.get(
+        "/api/v1/invoices?category=saas_invoice", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["invoice_no"] == "INV-SAAS-1"
+    assert body["items"][0]["invoice_category"] == "saas_invoice"
+
+
+async def test_list_invoices_with_multi_category_returns_union(
+    client, auth_headers, create_invoice
+) -> None:
+    """Repeated ?category=X&category=Y yields union."""
+    await create_invoice(invoice_no="INV-VAT-2", invoice_category="vat_invoice", email_uid="u1")
+    await create_invoice(invoice_no="INV-SAAS-2", invoice_category="saas_invoice", email_uid="u2")
+    await create_invoice(invoice_no="INV-RCPT-2", invoice_category="receipt", email_uid="u3")
+
+    response = await client.get(
+        "/api/v1/invoices?category=saas_invoice&category=receipt", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    returned_nos = {item["invoice_no"] for item in body["items"]}
+    assert returned_nos == {"INV-SAAS-2", "INV-RCPT-2"}
+
+
+async def test_list_invoices_without_category_returns_all(
+    client, auth_headers, create_invoice
+) -> None:
+    """Backward-compat: omitting ?category returns all rows regardless
+    of category (v1.1.x behavior)."""
+    await create_invoice(invoice_no="INV-VAT-3", invoice_category="vat_invoice", email_uid="u1")
+    await create_invoice(invoice_no="INV-SAAS-3", invoice_category="saas_invoice", email_uid="u2")
+
+    response = await client.get("/api/v1/invoices", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+
+
+async def test_list_invoices_with_category_and_search_query_both_apply(
+    client, auth_headers, create_invoice
+) -> None:
+    """FTS branch: ?q=Alpha + ?category=saas_invoice both filter."""
+    await create_invoice(
+        invoice_no="INV-ALPHA-SAAS",
+        invoice_category="saas_invoice",
+        buyer="Alpha",
+        raw_text="Alpha",
+        email_uid="u1",
+    )
+    await create_invoice(
+        invoice_no="INV-ALPHA-VAT",
+        invoice_category="vat_invoice",
+        buyer="Alpha",
+        raw_text="Alpha",
+        email_uid="u2",
+    )
+    await create_invoice(
+        invoice_no="INV-BETA-SAAS",
+        invoice_category="saas_invoice",
+        buyer="Beta",
+        raw_text="Beta",
+        email_uid="u3",
+    )
+
+    response = await client.get(
+        "/api/v1/invoices?q=Alpha&category=saas_invoice", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["invoice_no"] == "INV-ALPHA-SAAS"
+
+
+async def test_export_invoices_respects_category_filter(
+    client, auth_headers, create_invoice
+) -> None:
+    """CSV export ?category=saas_invoice returns only those rows."""
+    await create_invoice(invoice_no="INV-VAT-E", invoice_category="vat_invoice", email_uid="u1")
+    await create_invoice(invoice_no="INV-SAAS-E", invoice_category="saas_invoice", email_uid="u2")
+
+    response = await client.get(
+        "/api/v1/invoices/export?category=saas_invoice", headers=auth_headers
+    )
+    assert response.status_code == 200
+    # CSV body should contain the saas invoice but not the VAT one
+    body_text = response.content.decode("utf-8-sig")
+    assert "INV-SAAS-E" in body_text
+    assert "INV-VAT-E" not in body_text

@@ -27,6 +27,7 @@ async def test_get_stats_empty_db(client, auth_headers) -> None:
         "monthly_spend": [],
         "top_sellers": [],
         "by_type": [],
+        "by_category": [],
         "by_method": [],
         "avg_confidence": 0.0,
     }
@@ -95,6 +96,7 @@ async def test_get_stats_populated_db(client, auth_headers, db, create_email_acc
         ],
         "top_sellers": [{"seller": "Beta Seller", "total": 175.0, "count": 3}],
         "by_type": [{"type": "增值税电子普通发票", "count": 3}],
+        "by_category": [{"category": "vat_invoice", "count": 3}],
         "by_method": [{"method": "regex", "count": 3}],
         "avg_confidence": 0.8,
     }
@@ -174,3 +176,21 @@ async def test_get_stats_analytics_aggregations(client, auth_headers, create_ema
 def test_stats_helpers_cover_edge_cases() -> None:
     assert stats_api._to_float(None) == 0.0
     assert stats_api._month_bounds(date(2024, 12, 15)) == (date(2024, 12, 1), date(2025, 1, 1))
+
+
+async def test_stats_returns_by_category_breakdown(
+    client, auth_headers, create_email_account, create_invoice
+) -> None:
+    """v1.2.0 Track A: /stats.by_category groups by invoice_category enum."""
+    del create_email_account
+
+    await create_invoice(invoice_no="S-VAT-1", invoice_category="vat_invoice", email_uid="a1")
+    await create_invoice(invoice_no="S-VAT-2", invoice_category="vat_invoice", email_uid="a2")
+    await create_invoice(invoice_no="S-SAAS-1", invoice_category="saas_invoice", email_uid="a3")
+    await create_invoice(invoice_no="S-RCPT-1", invoice_category="receipt", email_uid="a4")
+
+    response = await client.get("/api/v1/stats", headers=auth_headers)
+    assert response.status_code == 200
+
+    by_cat = {item["category"]: item["count"] for item in response.json()["by_category"]}
+    assert by_cat == {"vat_invoice": 2, "saas_invoice": 1, "receipt": 1}

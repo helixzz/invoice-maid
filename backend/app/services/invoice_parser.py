@@ -27,6 +27,7 @@ class ParsedInvoice:
     amount: Decimal | None = None
     invoice_date: date | None = None
     invoice_type: str | None = None
+    invoice_category: str | None = None
     item_summary: str | None = None
     raw_text: str = ""
     source_format: Literal["pdf", "xml", "ofd"] = "pdf"

@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.models import EmailAccount, ExtractionLog, Invoice, ScanLog
-from app.schemas.invoice import TRANSPORT_E_TICKET_TYPES, VALID_INVOICE_TYPES
+from app.schemas.invoice import InvoiceCategory, TRANSPORT_E_TICKET_TYPES, VALID_INVOICE_TYPES
 from app.services.ai_service import AIService
 from app.services.email_classifier import is_scam_text
 from app.services.file_manager import FileManager
@@ -181,6 +181,7 @@ def _merge_llm_into_parsed(parsed: ParsedInvoice, extracted: Any) -> bool:
         parsed.item_summary = extracted.item_summary
     if extracted.invoice_type and extracted.invoice_type != "未知":
         parsed.invoice_type = extracted.invoice_type
+    parsed.invoice_category = extracted.invoice_category.value
     if not parser_invoice_no_looks_valid and extracted.invoice_no:
         parsed.invoice_no = extracted.invoice_no
     if parsed.invoice_date is None and extracted.invoice_date:
@@ -294,7 +295,10 @@ async def process_uploaded_invoice(
                 exc,
             )
             extracted = None
-        if extracted is not None and extracted.is_valid_tax_invoice:
+        if extracted is not None and (
+            extracted.is_valid_tax_invoice
+            or extracted.invoice_category != InvoiceCategory.VAT_INVOICE
+        ):
             amount_is_sentinel = _merge_llm_into_parsed(parsed, extracted)
 
     scam_text = " ".join(
@@ -336,20 +340,38 @@ async def process_uploaded_invoice(
         and not type_is_valid
         and not is_transport_eticket
     )
-    if llm_rejected or (not type_is_valid and heuristic_rejected):
+    # v1.2.0 Track A: the rejection rule depends on STRICT_VAT_ONLY.
+    # When false (default), non-VAT categories (receipt / proforma /
+    # saas_invoice / other) save normally — only invoice_category=
+    # vat_invoice rows with is_valid_tax_invoice=false get rejected.
+    # When true, revert to the v1.1.x rule (reject by type + flag).
+    # See .sisyphus/plans/v1.2.0-track-a-invoice-category.md §5.2.
+    final_category = (
+        extracted.invoice_category.value
+        if extracted is not None
+        else (parsed.invoice_category or "vat_invoice")
+    )
+    if settings.STRICT_VAT_ONLY:
+        should_reject = llm_rejected or (not type_is_valid and heuristic_rejected)
+    else:
+        should_reject = (
+            final_category == "vat_invoice"
+            and (llm_rejected or (not type_is_valid and heuristic_rejected))
+        )
+    if should_reject:
         _log_extraction(
             "not_vat_invoice",
             parse_method=parsed.extraction_method,
             parse_format=parsed.source_format,
             invoice_no=parsed.invoice_no,
             confidence=parsed.confidence,
-            error_detail=f"type={final_type!r} llm_rejected={llm_rejected}",
+            error_detail=f"type={final_type!r} category={final_category!r} llm_rejected={llm_rejected}",
         )
         return await _finalize(
             outcome="not_vat_invoice",
             detail=(
                 "File does not appear to be a valid VAT invoice "
-                f"(type={final_type!r}, llm_rejected={llm_rejected})"
+                f"(type={final_type!r}, category={final_category!r}, llm_rejected={llm_rejected})"
             ),
             invoice_no=parsed.invoice_no,
             confidence=parsed.confidence,
@@ -439,6 +461,7 @@ async def process_uploaded_invoice(
         amount=parsed.amount or 0,
         invoice_date=parsed.invoice_date or datetime.now(timezone.utc).date(),
         invoice_type=parsed.invoice_type or "未知",
+        invoice_category=final_category,
         item_summary=parsed.item_summary or "",
         file_path=file_path,
         raw_text=parsed.raw_text[:10000],

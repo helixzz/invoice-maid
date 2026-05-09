@@ -21,6 +21,7 @@ def _make_invoice(**overrides):
         "seller": "Widget Co",
         "amount": Decimal("1234.56"),
         "invoice_date": date(2026, 4, 20),
+        "invoice_category": "vat_invoice",
         "invoice_type": "电子发票",
         "item_summary": "widgets",
         "extraction_method": "llm",
@@ -42,6 +43,7 @@ def test_csv_columns_has_expected_order() -> None:
         "seller",
         "amount",
         "invoice_date",
+        "invoice_category",
         "invoice_type",
         "item_summary",
         "extraction_method",
@@ -58,6 +60,7 @@ def test_invoice_csv_row_renders_in_column_order() -> None:
         "Widget Co",
         "1234.56",
         "2026-04-20",
+        "vat_invoice",
         "电子发票",
         "widgets",
         "llm",
@@ -68,7 +71,7 @@ def test_invoice_csv_row_renders_in_column_order() -> None:
 
 def test_invoice_csv_row_empty_item_summary_renders_as_blank() -> None:
     row = invoice_csv_row(_make_invoice(item_summary=None))
-    assert row[6] == ""
+    assert row[7] == ""
 
 
 def test_build_csv_content_emits_header_then_rows() -> None:

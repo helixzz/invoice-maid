@@ -757,3 +757,101 @@ def test_content_size_middleware_ignores_non_http_request_messages() -> None:
 
     asyncio.get_event_loop().run_until_complete(mw(scope, receive, send))
     assert any(m.get("type") == "http.disconnect" for m in delivered)
+
+
+async def test_upload_saves_saas_invoice_instead_of_rejecting_v120(
+    client, auth_headers, manual_upload_account, mock_ai_service, settings, monkeypatch
+) -> None:
+    """v1.2.0 Track A default (STRICT_VAT_ONLY=false): a saas_invoice with
+    is_valid_tax_invoice=False now SAVES. Under v1.1.x it would have been
+    rejected as not_vat_invoice. The LLM merge runs for non-vat categories
+    so invoice_no etc. populate correctly."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.api import invoices as invoices_api
+    from app.schemas.invoice import InvoiceCategory
+    from app.services import manual_upload as mu
+
+    parsed = ParsedInvoice(
+        invoice_no=None,
+        raw_text="Cursor invoice body " * 5,
+        confidence=0.1,
+        is_vat_document=False,
+    )
+    monkeypatch.setattr(mu, "parse_invoice", lambda filename, payload: parsed)
+    mock_ai_service.extract_invoice_fields.return_value = (
+        mock_ai_service.extract_invoice_fields.return_value.model_copy(
+            update={
+                "invoice_no": "in_cursor_001",
+                "invoice_type": "Cursor Pro Subscription",
+                "invoice_category": InvoiceCategory.SAAS_INVOICE,
+                "is_valid_tax_invoice": False,
+                "buyer": "Acme Corp",
+                "seller": "Cursor AI Inc",
+                "amount": Decimal("20.00"),
+                "invoice_date": date(2026, 5, 1),
+                "item_summary": "AI editor subscription",
+            }
+        )
+    )
+    monkeypatch.setattr(invoices_api, "AIService", lambda _settings: mock_ai_service)
+    del settings
+
+    response = await client.post(
+        "/api/v1/invoices/upload",
+        headers=auth_headers,
+        files={"file": ("cursor.pdf", PDF_MAGIC_BYTES, "application/pdf")},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["invoice_no"] == "in_cursor_001"
+    assert body["invoice_category"] == "saas_invoice"
+    assert body["invoice_type"] == "Cursor Pro Subscription"
+
+
+async def test_upload_strict_vat_only_reverts_to_v11x_rejection(
+    client, auth_headers, manual_upload_account, mock_ai_service, settings, monkeypatch
+) -> None:
+    """STRICT_VAT_ONLY=true env flag reverts to v1.1.x behavior: saas_invoice
+    with is_valid_tax_invoice=False gets rejected as not_vat_invoice even
+    though category is saas_invoice. Operator rollback path."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.api import invoices as invoices_api
+    from app.schemas.invoice import InvoiceCategory
+    from app.services import manual_upload as mu
+
+    settings.STRICT_VAT_ONLY = True
+
+    parsed = ParsedInvoice(
+        invoice_no=None,
+        raw_text="Cursor invoice body " * 5,
+        confidence=0.1,
+        is_vat_document=False,
+    )
+    monkeypatch.setattr(mu, "parse_invoice", lambda filename, payload: parsed)
+    mock_ai_service.extract_invoice_fields.return_value = (
+        mock_ai_service.extract_invoice_fields.return_value.model_copy(
+            update={
+                "invoice_no": "in_cursor_002",
+                "invoice_type": "Cursor Pro Subscription",
+                "invoice_category": InvoiceCategory.SAAS_INVOICE,
+                "is_valid_tax_invoice": False,
+                "amount": Decimal("20.00"),
+                "invoice_date": date(2026, 5, 1),
+            }
+        )
+    )
+    monkeypatch.setattr(invoices_api, "AIService", lambda _settings: mock_ai_service)
+
+    response = await client.post(
+        "/api/v1/invoices/upload",
+        headers=auth_headers,
+        files={"file": ("cursor.pdf", PDF_MAGIC_BYTES, "application/pdf")},
+    )
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    detail_str = detail if isinstance(detail, str) else str(detail)
+    assert "not_vat_invoice" in detail_str.lower() or "not a valid VAT" in detail_str or "not appear to be a valid VAT" in detail_str
