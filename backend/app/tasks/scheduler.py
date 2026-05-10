@@ -451,7 +451,22 @@ async def _process_single_email(
 
                         if should_enrich:
                             try:
-                                extracted = await ai.extract_invoice_fields(db, parsed.raw_text)
+                                # Prepend email body context so the LLM sees
+                                # structured hints (Provider:/Bill-to:/currency)
+                                # before the raw parsed text. Critical for
+                                # scraper-generated RawEmails where the PDF text
+                                # alone carries no category signal.
+                                enriched_text = parsed.raw_text
+                                if email_data.body_text:
+                                    enriched_text = (
+                                        f"[Email context]\n"
+                                        f"{email_data.body_text}\n"
+                                        f"[/Email context]\n\n"
+                                        f"[Attachment text]\n"
+                                        f"{parsed.raw_text}\n"
+                                        f"[/Attachment text]"
+                                    )
+                                extracted = await ai.extract_invoice_fields(db, enriched_text)
                             except Exception as exc:
                                 extracted = None
                                 logger.warning(
