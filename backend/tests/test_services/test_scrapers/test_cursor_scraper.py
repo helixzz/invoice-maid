@@ -209,8 +209,8 @@ async def test_scan_navigates_billing_url_and_uses_request_context() -> None:
     page.goto.assert_awaited_once()
     args, kwargs = page.goto.call_args
     assert args[0] == CURSOR_BILLING_URL
-    assert kwargs.get("wait_until") == "networkidle"
-    assert kwargs.get("timeout") == 30_000
+    assert kwargs.get("wait_until") == "load"
+    assert kwargs.get("timeout") == 90_000
     page.context.request.get.assert_awaited_once()
     get_args, get_kwargs = page.context.request.get.call_args
     assert get_args[0] == "https://pay.stripe.com/invoice/in_001/pdf"

@@ -54,7 +54,7 @@ INVOICE_PDF_LINK_SELECTORS: tuple[str, ...] = (
 # redirecting forever) cannot be allowed to block other accounts.
 SCRAPE_TIMEOUT_SECONDS = 60.0
 
-NAV_TIMEOUT_MS = 30_000
+NAV_TIMEOUT_MS = 90_000
 SELECTOR_WAIT_TIMEOUT_MS = 15_000
 
 SEEN_INVOICE_IDS_CAP = 1000
@@ -221,7 +221,7 @@ class CursorScraper(BaseScraper):
     ) -> None:
         await page.goto(
             CURSOR_BILLING_URL,
-            wait_until="networkidle",
+            wait_until="load",
             timeout=NAV_TIMEOUT_MS,
         )
 
