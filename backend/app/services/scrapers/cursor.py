@@ -355,6 +355,7 @@ class CursorScraper(BaseScraper):
                 wait_until="load",
                 timeout=STRIPE_LOAD_TIMEOUT_MS,
             )
+            await asyncio.sleep(3)  # React hydration — Download button deferred
         except PlaywrightTimeoutError as exc:
             logger.warning("Stripe invoice navigation timed out for %s: %s", invoice_url, exc)
             return None
