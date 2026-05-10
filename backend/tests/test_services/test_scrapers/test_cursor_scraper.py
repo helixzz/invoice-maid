@@ -586,7 +586,7 @@ async def test_sixty_second_timeout_cap(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 async def test_scrape_timeout_constant_is_900_seconds() -> None:
     assert SCRAPE_TIMEOUT_SECONDS == 900.0
-    assert PARALLEL_INVOICE_WORKERS == 4
+    assert PARALLEL_INVOICE_WORKERS == 2
 
 
 async def test_parallel_invoice_processing(tmp_path: Any) -> None:
