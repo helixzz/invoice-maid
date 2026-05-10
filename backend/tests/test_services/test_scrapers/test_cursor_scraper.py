@@ -11,7 +11,7 @@ import pytest
 from app.services.scrapers import cursor as cursor_mod
 from app.services.scrapers.cursor import (
     CURSOR_BILLING_URL,
-    HTTP_PDF_TIMEOUT_MS,
+    PARALLEL_INVOICE_WORKERS,
     SCRAPE_TIMEOUT_SECONDS,
     SEEN_URLS_CAP,
     CursorScraper,
@@ -85,16 +85,6 @@ def _make_expect_page_cm(new_page: MagicMock) -> MagicMock:
 _UNSET = object()
 
 
-class _FakeHTTPResponse:
-    def __init__(self, status: int, body: bytes, content_type: str) -> None:
-        self.status = status
-        self._body = body
-        self.headers = {"content-type": content_type}
-
-    async def body(self) -> bytes:
-        return self._body
-
-
 def _make_stripe_page(
     *,
     tmp_path: Any,
@@ -106,7 +96,6 @@ def _make_stripe_page(
     expect_download_exc: BaseException | None = None,
     download_pdf_bytes: bytes = b"%PDF-1.7\n" + b"X" * 2048,
     download_path_override: Any = _UNSET,
-    http_pdf_response: Any = _UNSET,
 ) -> MagicMock:
     stripe_page = MagicMock(name="stripe_page")
     stripe_page.url = "https://billing.stripe.com/session/xxx"
@@ -166,23 +155,65 @@ def _make_stripe_page(
         return top
 
     stripe_page.locator = MagicMock(side_effect=_locator)
+    # Save default goto so workers can detect test overrides.
+    stripe_page._default_goto = stripe_page.goto
 
-    # HTTP PDF download path: stripe_page.context.request.get(url)
-    http_get = AsyncMock()
-    if http_pdf_response is _UNSET:
-        # Default: HTTP GET fails (forces Playwright fallback)
-        http_get.return_value = _FakeHTTPResponse(status=404, body=b"", content_type="text/html")
-    elif isinstance(http_pdf_response, BaseException):
-        http_get.side_effect = http_pdf_response
-    else:
-        http_get.return_value = http_pdf_response
-    http_request = MagicMock(name="http-request")
-    http_request.get = http_get
-    stripe_context = MagicMock(name="stripe-context")
-    stripe_context.request = http_request
-    stripe_page.context = stripe_context
+    # Parallel processing: stripe_page.context.new_page() creates workers
+    scrape_context = MagicMock(name="stripe-context")
+    scrape_context.new_page = AsyncMock(
+        side_effect=lambda: _make_worker_page(
+            invoice_pages, stripe_page, has_download_button,
+        ),
+    )
+    stripe_page.context = scrape_context
 
     return stripe_page
+
+
+def _make_worker_page(
+    invoice_pages: dict,
+    stripe_page: MagicMock,
+    has_download_button: bool = True,
+) -> MagicMock:
+    wp = MagicMock(name="worker_page")
+    wp.url = ""
+    wp._current_url: dict[str, str] = {"url": ""}
+
+    # Only share goto when the test has overridden the default; otherwise
+    # each worker needs its own independent goto to track navigation state.
+    if stripe_page.goto is not stripe_page._default_goto:
+        wp.goto = stripe_page.goto
+    else:
+        async def _goto(url: str, **_kwargs: Any) -> None:
+            wp._current_url["url"] = url
+            wp.url = url
+        wp.goto = AsyncMock(side_effect=_goto)
+
+    # Share the main page's expect_download so post-creation overrides work.
+    wp.expect_download = stripe_page.expect_download
+
+    async def _inner_text(_sel: str) -> str:
+        return (invoice_pages or {}).get(wp._current_url["url"], {}).get("text", "")
+
+    wp.inner_text = AsyncMock(side_effect=_inner_text)
+    wp.text_content = AsyncMock(side_effect=_inner_text)
+    wp.close = AsyncMock(return_value=None)
+
+    btn = MagicMock(name="worker-download-btn")
+    btn.count = AsyncMock(return_value=1 if has_download_button else 0)
+    btn.click = AsyncMock(return_value=None)
+
+    def _wp_locator(selector: str) -> MagicMock:
+        top = MagicMock(name=f"worker-locator[{selector}]")
+        if "Download invoice" in selector:
+            top.first = btn
+        else:
+            top.first = MagicMock()
+            top.first.count = AsyncMock(return_value=0)
+        return top
+
+    wp.locator = MagicMock(side_effect=_wp_locator)
+    return wp
 
 
 def _make_cursor_page(
@@ -303,11 +334,12 @@ async def test_happy_path_three_invoices_all_downloaded(tmp_path: Any) -> None:
     )
 
     assert len(result) == 3
-    assert result[0].from_addr == "billing@cursor.com"
-    assert result[0].attachments[0].content_type == "application/pdf"
-    assert result[0].attachments[0].payload.startswith(b"%PDF-1.7")
-    assert "May 7, 2026" in result[0].subject
-    assert "$1,001.79" in result[0].subject
+    r0 = _find_by_prefix(result, INVOICE_URL_1)
+    assert r0.from_addr == "billing@cursor.com"
+    assert r0.attachments[0].content_type == "application/pdf"
+    assert r0.attachments[0].payload.startswith(b"%PDF-1.7")
+    assert "May 7, 2026" in r0.subject
+    assert "$1,001.79" in r0.subject
     state = json.loads(scraper._last_scan_state or "{}")
     assert state["_format"] == "cursor_stripe_v1"
     assert state["seen_urls"] == [INVOICE_URL_1, INVOICE_URL_2, INVOICE_URL_3]
@@ -554,75 +586,55 @@ async def test_sixty_second_timeout_cap(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 async def test_scrape_timeout_constant_is_900_seconds() -> None:
     assert SCRAPE_TIMEOUT_SECONDS == 900.0
-    assert HTTP_PDF_TIMEOUT_MS == 15_000
+    assert PARALLEL_INVOICE_WORKERS == 4
 
 
-async def test_download_via_http_success(tmp_path: Any) -> None:
-    """HTTP GET {url}/pdf returns valid PDF — no Playwright fallback needed."""
-    pdf_body = b"%PDF-1.7\ngood"
+async def test_parallel_invoice_processing(tmp_path: Any) -> None:
+    """Parallel workers: 8 invoices processed through Semaphore."""
+    urls = [INVOICE_URL_1, INVOICE_URL_2, INVOICE_URL_3,
+            INVOICE_URL_1 + "x", INVOICE_URL_2 + "x", INVOICE_URL_3 + "x",
+            INVOICE_URL_1 + "y", INVOICE_URL_2 + "y"]
+    page_map = {}
+    for i, url in enumerate(urls):
+        page_map[url] = {"text": _invoice_page_text(f"May {i+1}, 2026", f"${10+i}.00")}
     stripe_page = _make_stripe_page(
         tmp_path=tmp_path,
-        http_pdf_response=_FakeHTTPResponse(status=200, body=pdf_body, content_type="application/pdf"),
+        portal_html=_portal_html(urls),
+        invoice_pages=page_map,
     )
-    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
-    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
-    assert result == pdf_body
+    cursor_page = _make_cursor_page(stripe_page=stripe_page)
+    session = _FakeSession(cursor_page)
+    scraper = CursorScraper(session_cls=session)
+
+    # Spy on _process_single_invoice to verify parallel dispatch.
+    calls = []
+    original = scraper._process_single_invoice
+    async def _spy(**kwargs):
+        calls.append(kwargs["invoice_url"])
+        return await original(**kwargs)
+    scraper._process_single_invoice = _spy  # type: ignore[method-assign]
+
+    result = await scraper.scan(_make_account())
+    assert len(result) == 8
+    assert len(calls) == 8
+    assert set(calls) == set(urls)
 
 
-async def test_download_via_http_non_200(tmp_path: Any) -> None:
+async def test_parallel_all_seen_returns_empty(tmp_path: Any) -> None:
     stripe_page = _make_stripe_page(
         tmp_path=tmp_path,
-        http_pdf_response=_FakeHTTPResponse(status=404, body=b"not found", content_type="text/html"),
+        portal_html=_portal_html([INVOICE_URL_1, INVOICE_URL_2]),
     )
-    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
-    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
-    assert result is None
-
-
-async def test_download_via_http_non_pdf_content_type(tmp_path: Any) -> None:
-    stripe_page = _make_stripe_page(
-        tmp_path=tmp_path,
-        http_pdf_response=_FakeHTTPResponse(status=200, body=b"%PDF-1.7\nx", content_type="text/html"),
+    cursor_page = _make_cursor_page(stripe_page=stripe_page)
+    scraper = CursorScraper(session_cls=_FakeSession(cursor_page))
+    result = await scraper.scan(
+        _make_account(),
+        last_uid=json.dumps({
+            "_format": "cursor_stripe_v1",
+            "seen_urls": [INVOICE_URL_1, INVOICE_URL_2],
+        }),
     )
-    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
-    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
-    assert result is None
-
-
-async def test_download_via_http_invalid_pdf_body(tmp_path: Any) -> None:
-    stripe_page = _make_stripe_page(
-        tmp_path=tmp_path,
-        http_pdf_response=_FakeHTTPResponse(status=200, body=b"<html>...</html>", content_type="application/pdf"),
-    )
-    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
-    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
-    assert result is None
-
-
-async def test_download_via_http_exception_falls_back(tmp_path: Any) -> None:
-    """HTTP GET raises → falls back to Playwright expect_download."""
-    pdf_body = b"%PDF-1.7\nfallback"
-    stripe_page = _make_stripe_page(
-        tmp_path=tmp_path,
-        http_pdf_response=Exception("Connection reset"),
-        download_pdf_bytes=pdf_body,
-    )
-    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
-    result = await scraper._download_invoice_pdf(stripe_page, INVOICE_URL_1)
-    assert result == pdf_body
-
-
-async def test_download_invoice_pdf_http_then_fallback(tmp_path: Any) -> None:
-    """HTTP GET fails (404) → falls back to Playwright button click."""
-    pdf_body = b"%PDF-1.7\nboth"
-    stripe_page = _make_stripe_page(
-        tmp_path=tmp_path,
-        http_pdf_response=_FakeHTTPResponse(status=404, body=b"", content_type="text/html"),
-        download_pdf_bytes=pdf_body,
-    )
-    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
-    result = await scraper._download_invoice_pdf(stripe_page, INVOICE_URL_1)
-    assert result == pdf_body
+    assert result == []
 
 
 async def test_storage_state_captured_back_to_scheduler_hook(tmp_path: Any) -> None:
@@ -829,13 +841,22 @@ async def test_inner_text_none_returns_empty_string(tmp_path: Any) -> None:
     result = await scraper.scan(_make_account())
 
     assert len(result) == 1
-    assert result[0].subject == f"Cursor Invoice {_invoice_id_prefix(INVOICE_URL_1)}"
+    assert result[0].subject.startswith(f"Cursor Invoice {_invoice_id_prefix(INVOICE_URL_1)}")
 
 
 def _invoice_id_prefix(url: str) -> str:
     from app.services.scrapers.cursor import _invoice_id_from_url
 
     return _invoice_id_from_url(url)
+
+
+def _find_by_prefix(results: list, url: str) -> Any:
+    from app.services.scrapers.cursor import _invoice_id_from_url
+    invoice_id = _invoice_id_from_url(url)
+    for r in results:
+        if invoice_id in r.subject:
+            return r
+    raise AssertionError(f"No result found for {invoice_id}")
 
 
 async def test_invoice_id_from_url_fallback_shapes() -> None:

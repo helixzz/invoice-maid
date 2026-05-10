@@ -55,9 +55,10 @@ SCRAPE_TIMEOUT_SECONDS = 900.0
 NAV_TIMEOUT_MS = 90_000
 STRIPE_LOAD_TIMEOUT_MS = 60_000
 DOWNLOAD_TIMEOUT_MS = 30_000
-HTTP_PDF_TIMEOUT_MS = 15_000  # Direct HTTP GET for Stripe PDF at {url}/pdf
 
 SEEN_URLS_CAP = 200
+
+PARALLEL_INVOICE_WORKERS = 4
 
 SYNTHETIC_FROM_ADDR = "billing@cursor.com"
 
@@ -280,25 +281,49 @@ class CursorScraper(BaseScraper):
                 return
 
             bill_to_name = self._extract_bill_to_name(await stripe_page.text_content("body"))
-            for invoice_url in invoice_urls:
-                if invoice_url in seen or invoice_url in new_urls_ordered:
-                    continue
+            pending_urls = [
+                u for u in invoice_urls
+                if u not in seen and u not in new_urls_ordered
+            ]
+            if not pending_urls:
+                return
 
-                raw_email = await self._process_single_invoice(
-                    stripe_page=stripe_page,
-                    account=account,
-                    invoice_url=invoice_url,
-                    bill_to_name=bill_to_name,
-                )
-                if raw_email is None:
-                    continue
+            sem = asyncio.Semaphore(PARALLEL_INVOICE_WORKERS)
 
-                new_invoices.append(raw_email)
-                new_urls_ordered.append(invoice_url)
-                if progress_callback is not None:
-                    progress_callback({
-                        "folder_fetch_msg": f"Cursor: {len(new_invoices)} invoice(s) fetched",
-                    })
+            async def _process_one(invoice_url: str) -> RawEmail | None:
+                async with sem:
+                    worker_page = await stripe_page.context.new_page()
+                    try:
+                        return await self._process_single_invoice(
+                            stripe_page=worker_page,
+                            account=account,
+                            invoice_url=invoice_url,
+                            bill_to_name=bill_to_name,
+                        )
+                    finally:
+                        try:
+                            await worker_page.close()
+                        except Exception:  # pragma: no cover - defensive
+                            pass
+
+            results = await asyncio.gather(
+                *(_process_one(url) for url in pending_urls),
+                return_exceptions=True,
+            )
+
+            for i, result in enumerate(results):
+                if isinstance(result, RawEmail):
+                    new_invoices.append(result)
+                    new_urls_ordered.append(pending_urls[i])
+                    if progress_callback is not None:
+                        progress_callback({
+                            "folder_fetch_msg": f"Cursor: {len(new_invoices)} invoice(s) fetched",
+                        })
+                elif isinstance(result, Exception):
+                    logger.warning(
+                        "Parallel invoice processing failed for %s: %s",
+                        pending_urls[i], result,
+                    )
         finally:
             try:
                 await stripe_page.close()
@@ -396,7 +421,7 @@ class CursorScraper(BaseScraper):
             logger.warning("Stripe invoice navigation failed for %s: %s", invoice_url, exc)
             return None
 
-        pdf_bytes = await self._download_invoice_pdf(stripe_page, invoice_url)
+        pdf_bytes = await self._download_invoice_pdf(stripe_page)
         if pdf_bytes is None:
             return None
 
@@ -418,40 +443,10 @@ class CursorScraper(BaseScraper):
             meta=meta,
         )
 
-    async def _download_via_http(self, stripe_page: Any, invoice_url: str) -> bytes | None:
-        base = invoice_url.split("?")[0]
-        pdf_url = base.rstrip("/") + "/pdf"
-        try:
-            response = await stripe_page.context.request.get(
-                pdf_url, timeout=HTTP_PDF_TIMEOUT_MS
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("HTTP PDF GET failed for %s: %s", invoice_url, exc)
-            return None
-        if response.status != 200:
-            logger.debug("HTTP PDF non-200 for %s: %s", invoice_url, response.status)
-            return None
-        ct = response.headers.get("content-type", "")
-        if "pdf" not in ct.lower():
-            logger.debug("HTTP PDF non-PDF content-type for %s: %s", invoice_url, ct)
-            return None
-        try:
-            body = await response.body()
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("HTTP PDF body read failed for %s: %s", invoice_url, exc)
-            return None
-        if body and body.startswith(b"%PDF"):
-            return body
-        logger.debug("HTTP PDF body invalid for %s", invoice_url)
-        return None
-
-    async def _download_invoice_pdf(self, stripe_page: Any, invoice_url: str) -> bytes | None:
-        # 1. Fast path: HTTP GET {invoice_url}/pdf using browser context cookies.
-        pdf_bytes = await self._download_via_http(stripe_page, invoice_url)
-        if pdf_bytes is not None:
-            return pdf_bytes
-        logger.info("HTTP PDF failed for %s — falling back to Playwright click", invoice_url)
-        # 2. Slow fallback: click "Download invoice" + expect_download.
+    async def _download_invoice_pdf(self, stripe_page: Any) -> bytes | None:
+        """Click "Download invoice" and capture the PDF via
+        ``expect_download``. Returns ``None`` on any per-invoice failure
+        so the outer loop can skip and continue."""
         button = stripe_page.locator('button:has-text("Download invoice")').first
         try:
             count = await button.count()
