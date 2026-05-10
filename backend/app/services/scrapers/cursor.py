@@ -32,91 +32,110 @@ except ImportError:  # pragma: no cover - falls back when playwright missing
 logger = logging.getLogger(__name__)
 
 
-CURSOR_SELECTOR_VERSION = "2026-05-10"
+CURSOR_SELECTOR_VERSION = "2026-05-10-stripe-portal"
 
-# Billing tab on the Cursor dashboard. Post-login this renders the
-# Stripe-portal-style invoice list. If the session is not authenticated,
-# Cursor issues a 302 to /login.
-CURSOR_BILLING_URL = "https://cursor.com/dashboard?tab=billing"
+# Cursor's billing page hosts a "Manage in Stripe" button that opens the
+# Stripe customer portal in a new tab. Cursor itself never exposes
+# invoice PDFs; the real invoice list (and PDF downloads) live on the
+# Stripe-hosted portal page.
+CURSOR_BILLING_URL = "https://cursor.com/dashboard/billing"
 CURSOR_LOGIN_URL_FRAGMENT = "/login"
 
-# Defensive selectors with fallbacks. Primary matches Stripe-hosted PDF
-# links (/pdf suffix) and Cursor's billing-proxy endpoint. Fallback walks
-# table rows containing "Paid" status and picks any PDF link inside.
-INVOICE_PDF_LINK_SELECTORS: tuple[str, ...] = (
-    'a[href*="/pdf"]',
-    'a[download][href*="invoice"]',
-    'tr:has(td:has-text("Paid")) a[href*="pdf"]',
+# The portal's React shell doesn't expose a stable DOM selector, so we
+# scrape invoice.stripe.com/i/... URLs from the raw HTML the portal
+# server returns.
+STRIPE_INVOICE_URL_RE = re.compile(
+    r"(https://invoice\.stripe\.com/i/[^\s\"'<>]+)"
 )
 
-# Upper bound on wall-clock time inside one scrape. The scheduler holds
-# the global scan loop, so a hung dashboard (e.g. cookieless session
-# redirecting forever) cannot be allowed to block other accounts.
+# Wall-clock ceiling per scrape; the scheduler's global loop cannot be
+# blocked indefinitely by one hung account.
 SCRAPE_TIMEOUT_SECONDS = 60.0
 
 NAV_TIMEOUT_MS = 90_000
-SELECTOR_WAIT_TIMEOUT_MS = 15_000
+STRIPE_LOAD_TIMEOUT_MS = 60_000
+DOWNLOAD_TIMEOUT_MS = 30_000
 
-SEEN_INVOICE_IDS_CAP = 1000
+SEEN_URLS_CAP = 1000
 
 SYNTHETIC_FROM_ADDR = "billing@cursor.com"
 
-STATE_FORMAT = "cursor_scraper_v1"
+STATE_FORMAT = "cursor_stripe_v1"
 
-# Match Stripe invoice IDs (in_XXXX) and Cursor proxy IDs (numeric / slug).
-_INVOICE_ID_RE = re.compile(r"(?:in_[A-Za-z0-9]+|invoices/([A-Za-z0-9_-]+)/pdf)")
+# Matches "$1,001.79" / "US$9.99" / "€12.00" — loose; PDF is authoritative.
+_AMOUNT_RE = re.compile(
+    r"(?:US\$|[$€£¥])\s?[\d,]+(?:\.\d{1,2})?",
+)
+
+# Matches "May 7, 2026" — loose; PDF is authoritative.
+_DATE_RE = re.compile(
+    r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
+    r"Dec(?:ember)?)\s+\d{1,2},\s+\d{4}"
+)
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_seen_ids(raw: str | None) -> set[str]:
+def _parse_seen_urls(raw: str | None) -> set[str]:
     if not raw:
         return set()
-    data = json.loads(raw)
-    seen = data.get("seen_invoice_ids") or []
-    return {str(x) for x in seen}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    urls = data.get("seen_urls") or []
+    if not isinstance(urls, list):
+        return set()
+    return {str(x) for x in urls}
 
 
 def _cap_seen(seen: set[str], ordered_new: list[str]) -> list[str]:
+    """FIFO-evict oldest entries when the cap is hit; ``ordered_new``
+    preserves discovery order so the newest invoices survive truncation."""
     merged = list(dict.fromkeys([*sorted(seen), *ordered_new]))
-    if len(merged) > SEEN_INVOICE_IDS_CAP:
-        merged = merged[-SEEN_INVOICE_IDS_CAP:]
+    if len(merged) > SEEN_URLS_CAP:
+        merged = merged[-SEEN_URLS_CAP:]
     return merged
 
 
-def _extract_invoice_id(pdf_url: str) -> str:
-    """Pull a stable ID out of a PDF URL. Prefers the Stripe ``in_XXXX``
-    form; falls back to the trailing segment before ``/pdf`` for Cursor's
-    billing proxy. Returns the full URL hash-ish as last resort so two
-    distinct invoices never collide."""
-    match = _INVOICE_ID_RE.search(pdf_url)
-    if match:
-        raw_match = match.group(0)
-        if raw_match.startswith("in_"):
-            return raw_match
-        return match.group(1)
-    stripped = pdf_url.rstrip("/")
-    if stripped.endswith("/pdf"):
-        stripped = stripped[: -len("/pdf")]
-    tail = stripped.rsplit("/", 1)[-1] or pdf_url
-    return tail
+def _invoice_id_from_url(url: str) -> str:
+    """Stable filename-safe ID for a Stripe invoice URL.
+
+    URL path after ``/i/`` is ``<acct_xxx>/<uniq>?query``; ``<uniq>`` is
+    the per-invoice component. Falls back to the last path segment if
+    the shape is unexpected."""
+    path = url.split("?", 1)[0]
+    parts = [p for p in path.split("/") if p]
+    # parts after filtering: [scheme, host, "i", acct_xxx, uniq, ...]
+    if len(parts) >= 5 and parts[2] == "i":
+        return parts[4][:64] or parts[3][:64]
+    return parts[-1][:64] if parts else "invoice"
+
+
 
 
 class CursorScraper(BaseScraper):
-    """Cursor billing scraper — Mode B only (storage_state auth).
+    """Cursor billing scraper — Stripe customer portal flow.
 
-    Mode A (password + TOTP) was removed in v1.2.1 because Cursor now
-    fronts auth with WorkOS SSO + MFA, which cannot be scripted reliably.
-    Operators must capture a real browser ``storage_state`` via
-    ``scripts/cursor_login_local.py`` (which persists the httpOnly
-    session cookies) and paste the resulting JSON into the account's
-    ``playwright_storage_state``. A session captured from
-    ``document.cookie`` in a Tampermonkey script will NOT include the
-    httpOnly ``workos-session`` + ``__Secure-*`` cookies and will
-    redirect to /login — the scraper detects that and emits
-    ``auth_required`` immediately rather than hanging."""
+    Cursor's dashboard only offers a "Manage in Stripe" button; actual
+    invoices live on the Stripe-hosted customer portal. Flow:
+
+    1. Load Cursor billing using stored ``playwright_storage_state``.
+    2. Click "Manage in Stripe" → Stripe portal opens in a new page.
+    3. Scroll the portal to force lazy-loaded invoice rows to render.
+    4. Extract ``invoice.stripe.com/i/...`` URLs from the raw HTML.
+    5. For each new URL: visit, click "Download invoice", capture PDF
+       via ``page.expect_download``, build ``RawEmail``.
+
+    Only storage_state auth is supported (Mode B); Mode A was removed
+    in v1.2.1. Recapture via ``scripts/cursor_login_local.py`` when the
+    session expires — scraper emits ``auth_required`` on /login redirect.
+    """
 
     def __init__(self, *, session_cls: type[PlaywrightSession] | Any | None = None) -> None:
         self._session_cls = session_cls or PlaywrightSession
@@ -144,9 +163,9 @@ class CursorScraper(BaseScraper):
             self._emit_auth_required("[CURSOR_DEPENDENCY] playwright package not installed")
             return []
 
-        seen = _parse_seen_ids(last_uid)
+        seen = _parse_seen_urls(last_uid)
         new_invoices: list[RawEmail] = []
-        new_ids_ordered: list[str] = []
+        new_urls_ordered: list[str] = []
 
         try:
             await asyncio.wait_for(
@@ -154,7 +173,7 @@ class CursorScraper(BaseScraper):
                     account=account,
                     seen=seen,
                     new_invoices=new_invoices,
-                    new_ids_ordered=new_ids_ordered,
+                    new_urls_ordered=new_urls_ordered,
                     progress_callback=progress_callback,
                 ),
                 timeout=SCRAPE_TIMEOUT_SECONDS,
@@ -184,7 +203,7 @@ class CursorScraper(BaseScraper):
 
         self._last_scan_state = json.dumps({
             "_format": STATE_FORMAT,
-            "seen_invoice_ids": _cap_seen(seen, new_ids_ordered),
+            "seen_urls": _cap_seen(seen, new_urls_ordered),
             "last_scan_at": _utcnow_iso(),
         })
         return new_invoices
@@ -195,7 +214,7 @@ class CursorScraper(BaseScraper):
         account: EmailAccount,
         seen: set[str],
         new_invoices: list[RawEmail],
-        new_ids_ordered: list[str],
+        new_urls_ordered: list[str],
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> None:
         async with self._session_cls(account) as page:
@@ -204,7 +223,7 @@ class CursorScraper(BaseScraper):
                 account=account,
                 seen=seen,
                 new_invoices=new_invoices,
-                new_ids_ordered=new_ids_ordered,
+                new_urls_ordered=new_urls_ordered,
                 progress_callback=progress_callback,
             )
             await self._capture_storage_state(page)
@@ -216,7 +235,7 @@ class CursorScraper(BaseScraper):
         account: EmailAccount,
         seen: set[str],
         new_invoices: list[RawEmail],
-        new_ids_ordered: list[str],
+        new_urls_ordered: list[str],
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> None:
         await page.goto(
@@ -232,116 +251,189 @@ class CursorScraper(BaseScraper):
             )
             raise ScraperAuthRequiredError("login redirect")
 
-        links = await self._locate_invoice_links(page)
-        if not links:
-            # No links yet — either no invoices, or selectors drifted.
-            # We don't raise here; the scheduler will re-run on the next
-            # cadence and we avoid false auth_required noise.
+        stripe_page = await self._open_stripe_portal(page)
+        if stripe_page is None:
             logger.info(
-                "CursorScraper found no invoice links for account %s (selectors=%s)",
+                "CursorScraper found no Stripe portal entry point for account %s",
                 account.id,
-                INVOICE_PDF_LINK_SELECTORS,
             )
             return
 
-        for link in links:
-            href = await link.get_attribute("href")
-            if not href:
-                continue
-            pdf_url = self._absolutize(href)
-            invoice_id = _extract_invoice_id(pdf_url)
-            if invoice_id in seen or invoice_id in new_ids_ordered:
-                continue
-
-            pdf_bytes = await self._download_pdf(page, pdf_url)
-            if pdf_bytes is None:
-                continue
-
-            row_meta = await self._extract_row_meta(link)
-            new_invoices.append(
-                self._build_raw_email(account, invoice_id, pdf_url, pdf_bytes, row_meta)
-            )
-            new_ids_ordered.append(invoice_id)
-            if progress_callback is not None:
-                progress_callback({
-                    "folder_fetch_msg": f"Cursor: {len(new_invoices)} invoice(s) fetched",
-                })
-
-    async def _locate_invoice_links(self, page: Any) -> list[Any]:
-        """Try each selector in order. The first one that yields any links
-        wins. We intentionally don't `wait_for_selector` on every
-        selector — a missing selector is the expected case (this
-        account has no invoices yet) and we don't want to pay 15s per
-        fallback."""
-        # Give the primary selector a single wait-window to let the
-        # billing table hydrate. If it times out, we still try
-        # fallbacks before giving up, because the primary may simply
-        # be wrong for this account's billing UI variant.
-        primary = INVOICE_PDF_LINK_SELECTORS[0]
         try:
-            await page.wait_for_selector(
-                primary, timeout=SELECTOR_WAIT_TIMEOUT_MS, state="visible"
-            )
+            await self._scroll_stripe_page_to_bottom(stripe_page)
+
+            invoice_urls = await self._extract_stripe_invoice_urls(stripe_page)
+            if not invoice_urls:
+                logger.info(
+                    "CursorScraper found no Stripe invoice URLs on portal page for account %s",
+                    account.id,
+                )
+                return
+
+            for invoice_url in invoice_urls:
+                if invoice_url in seen or invoice_url in new_urls_ordered:
+                    continue
+
+                raw_email = await self._process_single_invoice(
+                    stripe_page=stripe_page,
+                    account=account,
+                    invoice_url=invoice_url,
+                )
+                if raw_email is None:
+                    continue
+
+                new_invoices.append(raw_email)
+                new_urls_ordered.append(invoice_url)
+                if progress_callback is not None:
+                    progress_callback({
+                        "folder_fetch_msg": f"Cursor: {len(new_invoices)} invoice(s) fetched",
+                    })
+        finally:
+            try:
+                await stripe_page.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    async def _open_stripe_portal(self, page: Any) -> Any:
+        """Click "Manage in Stripe" and return the popped Stripe portal
+        page via ``context.expect_page``. Returns ``None`` if the button
+        is absent (account has no billing set up)."""
+        button = page.locator('button:has-text("Manage in Stripe")').first
+        count = await button.count()
+        if not count:
+            return None
+        async with page.context.expect_page(timeout=STRIPE_LOAD_TIMEOUT_MS) as new_page_info:
+            await button.click()
+        new_page = await new_page_info.value
+        try:
+            await new_page.wait_for_load_state("load", timeout=STRIPE_LOAD_TIMEOUT_MS)
         except PlaywrightTimeoutError:
-            pass
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("wait_for_selector(%s) raised %s; trying fallbacks", primary, exc)
+            logger.debug("Stripe portal load event did not fire within timeout")
+        return new_page
 
-        for selector in INVOICE_PDF_LINK_SELECTORS:
-            matches = await page.locator(selector).all()
-            if matches:
-                return matches
-        return []
-
-    async def _download_pdf(self, page: Any, pdf_url: str) -> bytes | None:
-        """Download a PDF using the authenticated browser context. Using
-        ``page.context.request.get`` means the request carries the same
-        cookies as the visible page, so Cursor's 302-to-/login trick
-        does not fire."""
+    async def _scroll_stripe_page_to_bottom(self, stripe_page: Any) -> None:
+        """Force Stripe's virtualised invoice rows to render by scrolling
+        to the document bottom."""
         try:
-            response = await page.context.request.get(
-                pdf_url,
-                headers={"Accept": "application/pdf"},
+            await stripe_page.evaluate(
+                "() => window.scrollTo(0, document.body.scrollHeight)"
             )
-        except PlaywrightTimeoutError as exc:
-            logger.warning("Cursor PDF fetch timed out for %s: %s", pdf_url, exc)
-            return None
-
-        status = getattr(response, "status", None)
-        if callable(status):
-            status = status()
-        if isinstance(status, int) and status >= 400:
-            logger.warning("Cursor PDF fetch %s returned HTTP %s", pdf_url, status)
-            return None
-        body = await response.body()
-        if not body:
-            return None
-        return body
-
-    async def _extract_row_meta(self, link: Any) -> dict[str, str]:
-        """Best-effort scrape of the table row surrounding the PDF link
-        for date / amount. Failures are non-fatal — the invoice still
-        flows through the pipeline with empty strings and the LLM
-        extractor fills the gap from the PDF itself."""
-        meta: dict[str, str] = {"date_text": "", "amount_text": ""}
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Stripe portal scroll failed (non-fatal): %s", exc)
         try:
-            row = link.locator("xpath=ancestor::tr[1]")
-            if await row.is_visible(timeout=1_000):
-                text = await row.text_content()
-                if text:
-                    meta["row_text"] = text.strip()
+            await asyncio.sleep(0.5)
         except Exception:  # pragma: no cover - defensive
             pass
-        return meta
 
-    def _absolutize(self, href: str) -> str:
-        if href.startswith(("http://", "https://")):
-            return href
-        if href.startswith("//"):
-            return f"https:{href}"
-        if href.startswith("/"):
-            return f"https://cursor.com{href}"
-        return href
+    async def _extract_stripe_invoice_urls(self, stripe_page: Any) -> list[str]:
+        html = await stripe_page.content()
+        if not html:
+            return []
+        matches = STRIPE_INVOICE_URL_RE.findall(html)
+        deduped: list[str] = []
+        seen_local: set[str] = set()
+        for url in matches:
+            if url in seen_local:
+                continue
+            seen_local.add(url)
+            deduped.append(url)
+        return deduped
+
+    async def _process_single_invoice(
+        self,
+        *,
+        stripe_page: Any,
+        account: EmailAccount,
+        invoice_url: str,
+    ) -> RawEmail | None:
+        try:
+            await stripe_page.goto(
+                invoice_url,
+                wait_until="load",
+                timeout=STRIPE_LOAD_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError as exc:
+            logger.warning("Stripe invoice navigation timed out for %s: %s", invoice_url, exc)
+            return None
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Stripe invoice navigation failed for %s: %s", invoice_url, exc)
+            return None
+
+        pdf_bytes = await self._download_invoice_pdf(stripe_page)
+        if pdf_bytes is None:
+            return None
+
+        page_text = ""
+        try:
+            page_text = await stripe_page.inner_text("body") or ""
+        except Exception:
+            try:
+                page_text = await stripe_page.text_content("body") or ""
+            except Exception:  # pragma: no cover - defensive
+                page_text = ""
+
+        meta = self._extract_invoice_metadata(page_text)
+        return self._build_raw_email(
+            account=account,
+            invoice_url=invoice_url,
+            pdf_bytes=pdf_bytes,
+            meta=meta,
+        )
+
+    async def _download_invoice_pdf(self, stripe_page: Any) -> bytes | None:
+        """Click "Download invoice" and capture the PDF via
+        ``expect_download``. Returns ``None`` on any per-invoice failure
+        so the outer loop can skip and continue."""
+        button = stripe_page.locator('button:has-text("Download invoice")').first
+        try:
+            count = await button.count()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Stripe download button count() failed: %s", exc)
+            return None
+        if not count:
+            logger.info("Stripe invoice page has no Download button — skipping")
+            return None
+
+        try:
+            async with stripe_page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download_info:
+                await button.click()
+            download = await download_info.value
+        except PlaywrightTimeoutError as exc:
+            logger.warning("Stripe invoice download timed out: %s", exc)
+            return None
+        except Exception as exc:
+            logger.warning("Stripe invoice download failed: %s", exc)
+            return None
+
+        try:
+            path = await download.path()
+            if path is None:
+                return None
+            with open(path, "rb") as f:
+                payload = f.read()
+        except Exception as exc:
+            logger.warning("Stripe invoice download read failed: %s", exc)
+            return None
+
+        if not payload:
+            return None
+        return payload
+
+    def _extract_invoice_metadata(self, text: str) -> dict[str, str]:
+        """Loose-regex extraction of date/amount from the invoice page
+        body. The PDF drives the canonical LLM extractor; this is only
+        for the RawEmail subject/body preview."""
+        meta: dict[str, str] = {"date_text": "", "amount_text": "", "page_text": ""}
+        if not text:
+            return meta
+        meta["page_text"] = text.strip()[:500]
+        date_match = _DATE_RE.search(text)
+        if date_match:
+            meta["date_text"] = date_match.group(0)
+        amount_match = _AMOUNT_RE.search(text)
+        if amount_match:
+            meta["amount_text"] = amount_match.group(0)
+        return meta
 
     async def _capture_storage_state(self, page: Any) -> None:
         state = await page.context.storage_state()
@@ -349,22 +441,33 @@ class CursorScraper(BaseScraper):
 
     def _build_raw_email(
         self,
+        *,
         account: EmailAccount,
-        invoice_id: str,
-        pdf_url: str,
+        invoice_url: str,
         pdf_bytes: bytes,
-        row_meta: dict[str, str],
+        meta: dict[str, str],
     ) -> RawEmail:
+        invoice_id = _invoice_id_from_url(invoice_url)
         received_at = datetime.now(timezone.utc)
         filename = f"cursor-invoice-{invoice_id}.pdf"
-        row_text = row_meta.get("row_text", "")
+        date_text = meta.get("date_text", "")
+        amount_text = meta.get("amount_text", "")
         subject = f"Cursor Invoice {invoice_id}"
-        if row_text:
-            subject = f"Cursor Invoice {invoice_id} — {row_text[:80]}"
+        if date_text or amount_text:
+            subject = (
+                f"Cursor Invoice {invoice_id} — {date_text} {amount_text}".strip()
+            )
+        body_text = (
+            f"Cursor invoice {invoice_id}\n"
+            f"URL: {invoice_url}\n"
+            f"Date: {date_text}\n"
+            f"Amount: {amount_text}\n"
+            f"{meta.get('page_text', '')}"
+        ).strip()
         return RawEmail(
             uid=f"cursor:{invoice_id}",
             subject=subject,
-            body_text=f"Cursor invoice {invoice_id}\n{row_text}".strip(),
+            body_text=body_text,
             body_html="",
             from_addr=SYNTHETIC_FROM_ADDR,
             received_at=received_at,
@@ -376,11 +479,11 @@ class CursorScraper(BaseScraper):
                     payload=pdf_bytes,
                 ),
             ],
-            body_links=[],
+            body_links=[invoice_url],
             headers={
                 "_scraper": "cursor",
                 "_invoice_id": invoice_id,
-                "_pdf_url": pdf_url,
+                "_invoice_url": invoice_url,
                 "_account_id": str(account.id or ""),
             },
             is_hydrated=True,
