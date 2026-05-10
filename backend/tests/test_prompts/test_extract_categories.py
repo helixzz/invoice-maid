@@ -32,7 +32,7 @@ FIXTURES = Path(__file__).parent.parent / "fixtures" / "invoice_samples"
     "fixture_rel,expected_category,expected_valid_tax",
     [
         ("vat_invoice/synthetic_vat.pdf", "vat_invoice", True),
-        ("saas_invoice/cursor_sample.pdf", "saas_invoice", False),
+        ("overseas_invoice/cursor_sample.pdf", "overseas_invoice", False),
         ("receipt/synthetic_receipt.pdf", "receipt", False),
         ("proforma/synthetic_proforma.pdf", "proforma", False),
         ("other/synthetic_other.pdf", "other", False),

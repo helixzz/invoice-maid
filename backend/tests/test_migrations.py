@@ -1288,7 +1288,7 @@ def test_0015_enum_string_literals_match_pydantic_enum() -> None:
     from app.schemas.invoice import InvoiceCategory
 
     expected_values = {c.value for c in InvoiceCategory}
-    assert expected_values == {"vat_invoice", "receipt", "proforma", "saas_invoice", "other"}
+    assert expected_values == {"vat_invoice", "receipt", "proforma", "overseas_invoice", "other"}
 
     migration_file = BACKEND_ROOT / "alembic" / "versions" / "0015_add_invoice_category.py"
     src = migration_file.read_text()
@@ -1385,3 +1385,81 @@ def test_0016_downgrade_removes_all_four_columns(
 
     for name in SCRAPER_COLUMNS:
         assert name not in cols, f"{name} must be dropped on downgrade"
+
+
+def _seed_user_and_invoice_with_category(migration_db: Path, invoice_no: str, category: str) -> None:
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO users (id, email, hashed_password, is_active, is_admin, "
+                "created_at, updated_at) VALUES "
+                "(1, 'admin@local', 'hash', 1, 1, '2026-05-10', '2026-05-10') "
+                "ON CONFLICT DO NOTHING"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "INSERT INTO email_accounts (user_id, name, type, host, port, username, "
+                "password_encrypted, oauth_token_path, is_active, last_scan_uid, created_at, "
+                "outlook_account_type) VALUES "
+                "(1, 'test-acct', 'imap', 'imap.test.invalid', 993, 'u@test.invalid', "
+                "NULL, NULL, 1, NULL, '2026-05-10T00:00:00Z', 'personal') "
+                "ON CONFLICT DO NOTHING"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "INSERT INTO invoices (user_id, invoice_no, buyer, seller, amount, invoice_date, "
+                "invoice_type, invoice_category, item_summary, file_path, raw_text, email_uid, "
+                "email_account_id, source_format, extraction_method, confidence, "
+                "is_manually_corrected, created_at) "
+                "VALUES (1, :inv_no, 'B', 'S', 1.0, '2026-05-10', 'Cursor Pro', :cat, NULL, "
+                "'/tmp/x.pdf', '', :uid, 1, 'pdf', 'llm', 0.9, 0, '2026-05-10T00:00:00Z')"
+            ),
+            {"inv_no": invoice_no, "cat": category, "uid": f"uid-{invoice_no}"},
+        )
+    engine.dispose()
+
+
+def _invoice_categories(migration_db: Path) -> list[tuple[str, str]]:
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT invoice_no, invoice_category FROM invoices ORDER BY invoice_no")
+        ).all()
+    engine.dispose()
+    return [(row[0], row[1]) for row in rows]
+
+
+def test_0017_rename_saas_to_overseas_rewrites_rows(migration_db: Path) -> None:
+    _upgrade_to(migration_db, "0016_add_scraper_account_fields")
+    _seed_user_and_invoice_with_category(migration_db, "SAAS-ROW-1", "saas_invoice")
+    _seed_user_and_invoice_with_category(migration_db, "VAT-ROW-1", "vat_invoice")
+    _seed_user_and_invoice_with_category(migration_db, "SAAS-ROW-2", "saas_invoice")
+
+    _upgrade_to(migration_db, "0017_rename_saas_to_overseas")
+
+    assert _current_revision(migration_db) == "0017_rename_saas_to_overseas"
+    assert _invoice_categories(migration_db) == [
+        ("SAAS-ROW-1", "overseas_invoice"),
+        ("SAAS-ROW-2", "overseas_invoice"),
+        ("VAT-ROW-1", "vat_invoice"),
+    ]
+
+
+def test_0017_downgrade_restores_saas_invoice_values(migration_db: Path) -> None:
+    _upgrade_to(migration_db, "0016_add_scraper_account_fields")
+    _seed_user_and_invoice_with_category(migration_db, "SAAS-RT-1", "saas_invoice")
+    _seed_user_and_invoice_with_category(migration_db, "RCPT-RT-1", "receipt")
+
+    _upgrade_to(migration_db, "0017_rename_saas_to_overseas")
+    _downgrade_to(migration_db, "0016_add_scraper_account_fields")
+
+    assert _current_revision(migration_db) == "0016_add_scraper_account_fields"
+    assert _invoice_categories(migration_db) == [
+        ("RCPT-RT-1", "receipt"),
+        ("SAAS-RT-1", "saas_invoice"),
+    ]

@@ -53,7 +53,7 @@ def generate_all() -> list[Path]:
     )
     paths.append(p)
 
-    p = OUT / "saas_invoice" / "cursor_sample.pdf"
+    p = OUT / "overseas_invoice" / "cursor_sample.pdf"
     make_pdf(
         p,
         "Cursor Pro Subscription",

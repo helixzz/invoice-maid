@@ -759,10 +759,10 @@ def test_content_size_middleware_ignores_non_http_request_messages() -> None:
     assert any(m.get("type") == "http.disconnect" for m in delivered)
 
 
-async def test_upload_saves_saas_invoice_instead_of_rejecting_v120(
+async def test_upload_saves_overseas_invoice_instead_of_rejecting_v120(
     client, auth_headers, manual_upload_account, mock_ai_service, settings, monkeypatch
 ) -> None:
-    """v1.2.0 Track A default (STRICT_VAT_ONLY=false): a saas_invoice with
+    """v1.2.0 Track A default (STRICT_VAT_ONLY=false): a overseas_invoice with
     is_valid_tax_invoice=False now SAVES. Under v1.1.x it would have been
     rejected as not_vat_invoice. The LLM merge runs for non-vat categories
     so invoice_no etc. populate correctly."""
@@ -785,7 +785,7 @@ async def test_upload_saves_saas_invoice_instead_of_rejecting_v120(
             update={
                 "invoice_no": "in_cursor_001",
                 "invoice_type": "Cursor Pro Subscription",
-                "invoice_category": InvoiceCategory.SAAS_INVOICE,
+                "invoice_category": InvoiceCategory.OVERSEAS_INVOICE,
                 "is_valid_tax_invoice": False,
                 "buyer": "Acme Corp",
                 "seller": "Cursor AI Inc",
@@ -806,16 +806,16 @@ async def test_upload_saves_saas_invoice_instead_of_rejecting_v120(
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["invoice_no"] == "in_cursor_001"
-    assert body["invoice_category"] == "saas_invoice"
+    assert body["invoice_category"] == "overseas_invoice"
     assert body["invoice_type"] == "Cursor Pro Subscription"
 
 
 async def test_upload_strict_vat_only_reverts_to_v11x_rejection(
     client, auth_headers, manual_upload_account, mock_ai_service, settings, monkeypatch
 ) -> None:
-    """STRICT_VAT_ONLY=true env flag reverts to v1.1.x behavior: saas_invoice
+    """STRICT_VAT_ONLY=true env flag reverts to v1.1.x behavior: overseas_invoice
     with is_valid_tax_invoice=False gets rejected as not_vat_invoice even
-    though category is saas_invoice. Operator rollback path."""
+    though category is overseas_invoice. Operator rollback path."""
     from datetime import date
     from decimal import Decimal
 
@@ -837,7 +837,7 @@ async def test_upload_strict_vat_only_reverts_to_v11x_rejection(
             update={
                 "invoice_no": "in_cursor_002",
                 "invoice_type": "Cursor Pro Subscription",
-                "invoice_category": InvoiceCategory.SAAS_INVOICE,
+                "invoice_category": InvoiceCategory.OVERSEAS_INVOICE,
                 "is_valid_tax_invoice": False,
                 "amount": Decimal("20.00"),
                 "invoice_date": date(2026, 5, 1),

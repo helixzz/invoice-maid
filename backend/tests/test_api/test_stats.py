@@ -186,11 +186,11 @@ async def test_stats_returns_by_category_breakdown(
 
     await create_invoice(invoice_no="S-VAT-1", invoice_category="vat_invoice", email_uid="a1")
     await create_invoice(invoice_no="S-VAT-2", invoice_category="vat_invoice", email_uid="a2")
-    await create_invoice(invoice_no="S-SAAS-1", invoice_category="saas_invoice", email_uid="a3")
+    await create_invoice(invoice_no="S-SAAS-1", invoice_category="overseas_invoice", email_uid="a3")
     await create_invoice(invoice_no="S-RCPT-1", invoice_category="receipt", email_uid="a4")
 
     response = await client.get("/api/v1/stats", headers=auth_headers)
     assert response.status_code == 200
 
     by_cat = {item["category"]: item["count"] for item in response.json()["by_category"]}
-    assert by_cat == {"vat_invoice": 2, "saas_invoice": 1, "receipt": 1}
+    assert by_cat == {"vat_invoice": 2, "overseas_invoice": 1, "receipt": 1}

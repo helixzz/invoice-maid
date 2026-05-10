@@ -1,13 +1,13 @@
 export type InvoiceCategory =
   | 'vat_invoice'
-  | 'saas_invoice'
+  | 'overseas_invoice'
   | 'receipt'
   | 'proforma'
   | 'other'
 
 export const CATEGORY_LABELS: Record<InvoiceCategory, string> = {
   vat_invoice: '增值税发票',
-  saas_invoice: 'SaaS 订阅',
+  overseas_invoice: '境外票据',
   receipt: '收据',
   proforma: '形式发票',
   other: '其它',
@@ -15,7 +15,7 @@ export const CATEGORY_LABELS: Record<InvoiceCategory, string> = {
 
 export const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
   vat_invoice: 'bg-blue-50 text-blue-700 border-blue-200',
-  saas_invoice: 'bg-violet-50 text-violet-700 border-violet-200',
+  overseas_invoice: 'bg-violet-50 text-violet-700 border-violet-200',
   receipt: 'bg-amber-50 text-amber-700 border-amber-200',
   proforma: 'bg-yellow-50 text-yellow-800 border-yellow-200',
   other: 'bg-slate-100 text-slate-700 border-slate-200',
@@ -23,7 +23,7 @@ export const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
 
 export const CATEGORY_ORDER: InvoiceCategory[] = [
   'vat_invoice',
-  'saas_invoice',
+  'overseas_invoice',
   'receipt',
   'proforma',
   'other',

@@ -342,7 +342,7 @@ async def process_uploaded_invoice(
     )
     # v1.2.0 Track A: the rejection rule depends on STRICT_VAT_ONLY.
     # When false (default), non-VAT categories (receipt / proforma /
-    # saas_invoice / other) save normally — only invoice_category=
+    # overseas_invoice / other) save normally — only invoice_category=
     # vat_invoice rows with is_valid_tax_invoice=false get rejected.
     # When true, revert to the v1.1.x rule (reject by type + flag).
     # See .sisyphus/plans/v1.2.0-track-a-invoice-category.md §5.2.

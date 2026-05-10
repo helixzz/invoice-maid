@@ -470,8 +470,8 @@ async def _process_single_email(
                                 #
                                 # v1.2.0 Track A: extend the merge trigger to non-vat_invoice categories.
                                 # Under v1.1.x the merge only ran when is_valid_tax_invoice=True, but
-                                # receipt/proforma/saas_invoice/other legitimately have is_valid_tax_invoice=False;
-                                # without this, saas invoices would silently fail to populate invoice_no.
+                                # receipt/proforma/overseas_invoice/other legitimately have is_valid_tax_invoice=False;
+                                # without this, overseas invoices would silently fail to populate invoice_no.
                                 if extracted.buyer and extracted.buyer != "未知":
                                     parsed.buyer = extracted.buyer
                                 if extracted.seller and extracted.seller != "未知":
@@ -538,7 +538,7 @@ async def _process_single_email(
                         # v1.2.0 Track A: rejection rule gated by STRICT_VAT_ONLY.
                         # Default false: only reject invoice_category=vat_invoice
                         # rows with is_valid_tax_invoice=false. Non-VAT categories
-                        # (receipt / proforma / saas_invoice / other) save normally.
+                        # (receipt / proforma / overseas_invoice / other) save normally.
                         # See .sisyphus/plans/v1.2.0-track-a-invoice-category.md §5.2.
                         final_category = (
                             extracted.invoice_category.value

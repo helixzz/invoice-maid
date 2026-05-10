@@ -358,7 +358,7 @@ async def test_seed_invoice_category_mix_creates_5_invoices(
     assert response.status_code == 200
     body = response.json()
     assert len(body["invoice_ids"]) == 5
-    assert set(body["categories"]) == {"vat_invoice", "saas_invoice", "receipt", "proforma", "other"}
+    assert set(body["categories"]) == {"vat_invoice", "overseas_invoice", "receipt", "proforma", "other"}
 
     from app.models import Invoice as InvoiceModel
 
@@ -368,7 +368,7 @@ async def test_seed_invoice_category_mix_creates_5_invoices(
         category_counts[row.invoice_category] = category_counts.get(row.invoice_category, 0) + 1
     assert category_counts == {
         "vat_invoice": 1,
-        "saas_invoice": 1,
+        "overseas_invoice": 1,
         "receipt": 1,
         "proforma": 1,
         "other": 1,

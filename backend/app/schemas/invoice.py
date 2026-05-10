@@ -36,7 +36,7 @@ class InvoiceCategory(str, Enum):
     VAT_INVOICE = "vat_invoice"
     RECEIPT = "receipt"
     PROFORMA = "proforma"
-    SAAS_INVOICE = "saas_invoice"
+    OVERSEAS_INVOICE = "overseas_invoice"
     OTHER = "other"
 
 

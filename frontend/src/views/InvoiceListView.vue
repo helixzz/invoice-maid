@@ -370,7 +370,7 @@ const clearDates = () => {
 const categoryBreakdown = computed<{ category: InvoiceCategory; count: number }[]>(() => {
   const counts: Record<InvoiceCategory, number> = {
     vat_invoice: 0,
-    saas_invoice: 0,
+    overseas_invoice: 0,
     receipt: 0,
     proforma: 0,
     other: 0,

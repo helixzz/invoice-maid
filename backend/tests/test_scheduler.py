@@ -1023,10 +1023,10 @@ async def test_scan_all_accounts_rejects_heuristic_non_vat_invoice_without_llm(
 
 
 @pytest.mark.asyncio
-async def test_scan_all_accounts_saves_saas_invoice_instead_of_rejecting_v120(
+async def test_scan_all_accounts_saves_overseas_invoice_instead_of_rejecting_v120(
     db, create_email_account, monkeypatch: pytest.MonkeyPatch, mock_ai_service
 ) -> None:
-    """v1.2.0 Track A: invoice_category=saas_invoice + is_valid_tax_invoice=False
+    """v1.2.0 Track A: invoice_category=overseas_invoice + is_valid_tax_invoice=False
     SAVES normally under the default STRICT_VAT_ONLY=false policy. Under v1.1.x
     this would have been rejected as not_vat_invoice."""
     from app.schemas.invoice import InvoiceCategory
@@ -1046,7 +1046,7 @@ async def test_scan_all_accounts_saves_saas_invoice_instead_of_rejecting_v120(
         update={
             "invoice_no": "in_cursor_001",
             "invoice_type": "Cursor Pro Subscription",
-            "invoice_category": InvoiceCategory.SAAS_INVOICE,
+            "invoice_category": InvoiceCategory.OVERSEAS_INVOICE,
             "is_valid_tax_invoice": False,
             "buyer": "Acme Corp",
             "seller": "Cursor AI Inc",
@@ -1071,7 +1071,7 @@ async def test_scan_all_accounts_saves_saas_invoice_instead_of_rejecting_v120(
     invoices = (await db.execute(select(Invoice))).scalars().all()
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert len(invoices) == 1
-    assert invoices[0].invoice_category == "saas_invoice"
+    assert invoices[0].invoice_category == "overseas_invoice"
     assert invoices[0].invoice_no == "in_cursor_001"
     assert invoices[0].invoice_type == "Cursor Pro Subscription"
     assert all(log.outcome != "not_vat_invoice" for log in extraction_logs)
@@ -1081,7 +1081,7 @@ async def test_scan_all_accounts_saves_saas_invoice_instead_of_rejecting_v120(
 async def test_scan_all_accounts_strict_vat_only_reverts_to_v11x_rejection(
     db, create_email_account, monkeypatch: pytest.MonkeyPatch, settings, mock_ai_service
 ) -> None:
-    """STRICT_VAT_ONLY=true reverts to v1.1.x rejection — even saas_invoice
+    """STRICT_VAT_ONLY=true reverts to v1.1.x rejection — even overseas_invoice
     category rows get rejected because type is not in VALID_INVOICE_TYPES.
     Operator rollback escape hatch."""
     from app.schemas.invoice import InvoiceCategory
@@ -1103,7 +1103,7 @@ async def test_scan_all_accounts_strict_vat_only_reverts_to_v11x_rejection(
         update={
             "invoice_no": "in_cursor_002",
             "invoice_type": "Cursor Pro Subscription",
-            "invoice_category": InvoiceCategory.SAAS_INVOICE,
+            "invoice_category": InvoiceCategory.OVERSEAS_INVOICE,
             "is_valid_tax_invoice": False,
         }
     )
@@ -1124,7 +1124,7 @@ async def test_scan_all_accounts_strict_vat_only_reverts_to_v11x_rejection(
     extraction_logs = (await db.execute(select(ExtractionLog))).scalars().all()
     assert invoices == []
     assert extraction_logs[0].outcome == "not_vat_invoice"
-    assert "category='saas_invoice'" in extraction_logs[0].error_detail
+    assert "category='overseas_invoice'" in extraction_logs[0].error_detail
 
 
 @pytest.mark.asyncio

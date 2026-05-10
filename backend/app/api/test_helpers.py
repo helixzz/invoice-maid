@@ -411,7 +411,7 @@ async def seed_invoice_category_mix(
 
     mix = [
         ("CATMIX-VAT-001", "vat_invoice", "电子发票（普通发票）"),
-        ("CATMIX-SAAS-001", "saas_invoice", "Cursor Pro Subscription"),
+        ("CATMIX-OVRS-001", "overseas_invoice", "Cursor Pro Subscription"),
         ("CATMIX-RCPT-001", "receipt", "Receipt"),
         ("CATMIX-PROF-001", "proforma", "PROFORMA INVOICE"),
         ("CATMIX-OTHR-001", "other", "Membership Fee"),
