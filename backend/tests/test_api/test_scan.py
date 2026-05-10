@@ -300,7 +300,7 @@ async def test_trigger_scan_with_body_options_passes_to_scheduler(client, auth_h
 
     captured_options: list = []
 
-    async def fake_scan_all_accounts(options=None):
+    async def fake_scan_all_accounts(options=None, **_kwargs):
         captured_options.append(options)
 
     monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)
@@ -320,7 +320,7 @@ async def test_trigger_scan_body_full_overrides_query(client, auth_headers, db, 
     task_calls: list[object] = []
     monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
 
-    async def fake_scan_all_accounts(options=None):
+    async def fake_scan_all_accounts(options=None, **_kwargs):
         del options
 
     monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)
@@ -344,7 +344,7 @@ async def test_trigger_scan_body_absent_still_works(client, auth_headers, db, cr
     task_calls: list[object] = []
     monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
 
-    async def fake_scan_all_accounts(options=None):
+    async def fake_scan_all_accounts(options=None, **_kwargs):
         del options
 
     monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)

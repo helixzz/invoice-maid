@@ -50,11 +50,12 @@ STRIPE_INVOICE_URL_RE = re.compile(
 
 # Wall-clock ceiling per scrape; the scheduler's global loop cannot be
 # blocked indefinitely by one hung account.
-SCRAPE_TIMEOUT_SECONDS = 600.0
+SCRAPE_TIMEOUT_SECONDS = 900.0
 
 NAV_TIMEOUT_MS = 90_000
 STRIPE_LOAD_TIMEOUT_MS = 60_000
 DOWNLOAD_TIMEOUT_MS = 30_000
+HTTP_PDF_TIMEOUT_MS = 15_000  # Direct HTTP GET for Stripe PDF at {url}/pdf
 
 SEEN_URLS_CAP = 200
 
@@ -395,7 +396,7 @@ class CursorScraper(BaseScraper):
             logger.warning("Stripe invoice navigation failed for %s: %s", invoice_url, exc)
             return None
 
-        pdf_bytes = await self._download_invoice_pdf(stripe_page)
+        pdf_bytes = await self._download_invoice_pdf(stripe_page, invoice_url)
         if pdf_bytes is None:
             return None
 
@@ -417,10 +418,39 @@ class CursorScraper(BaseScraper):
             meta=meta,
         )
 
-    async def _download_invoice_pdf(self, stripe_page: Any) -> bytes | None:
-        """Click "Download invoice" and capture the PDF via
-        ``expect_download``. Returns ``None`` on any per-invoice failure
-        so the outer loop can skip and continue."""
+    async def _download_via_http(self, stripe_page: Any, invoice_url: str) -> bytes | None:
+        pdf_url = invoice_url.rstrip("/") + "/pdf"
+        try:
+            response = await stripe_page.context.request.get(
+                pdf_url, timeout=HTTP_PDF_TIMEOUT_MS
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("HTTP PDF GET failed for %s: %s", invoice_url, exc)
+            return None
+        if response.status != 200:
+            logger.debug("HTTP PDF non-200 for %s: %s", invoice_url, response.status)
+            return None
+        ct = response.headers.get("content-type", "")
+        if "pdf" not in ct.lower():
+            logger.debug("HTTP PDF non-PDF content-type for %s: %s", invoice_url, ct)
+            return None
+        try:
+            body = await response.body()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("HTTP PDF body read failed for %s: %s", invoice_url, exc)
+            return None
+        if body and body.startswith(b"%PDF"):
+            return body
+        logger.debug("HTTP PDF body invalid for %s", invoice_url)
+        return None
+
+    async def _download_invoice_pdf(self, stripe_page: Any, invoice_url: str) -> bytes | None:
+        # 1. Fast path: HTTP GET {invoice_url}/pdf using browser context cookies.
+        pdf_bytes = await self._download_via_http(stripe_page, invoice_url)
+        if pdf_bytes is not None:
+            return pdf_bytes
+        logger.info("HTTP PDF failed for %s — falling back to Playwright click", invoice_url)
+        # 2. Slow fallback: click "Download invoice" + expect_download.
         button = stripe_page.locator('button:has-text("Download invoice")').first
         try:
             count = await button.count()

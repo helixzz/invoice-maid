@@ -11,6 +11,7 @@ import pytest
 from app.services.scrapers import cursor as cursor_mod
 from app.services.scrapers.cursor import (
     CURSOR_BILLING_URL,
+    HTTP_PDF_TIMEOUT_MS,
     SCRAPE_TIMEOUT_SECONDS,
     SEEN_URLS_CAP,
     CursorScraper,
@@ -84,6 +85,16 @@ def _make_expect_page_cm(new_page: MagicMock) -> MagicMock:
 _UNSET = object()
 
 
+class _FakeHTTPResponse:
+    def __init__(self, status: int, body: bytes, content_type: str) -> None:
+        self.status = status
+        self._body = body
+        self.headers = {"content-type": content_type}
+
+    async def body(self) -> bytes:
+        return self._body
+
+
 def _make_stripe_page(
     *,
     tmp_path: Any,
@@ -95,6 +106,7 @@ def _make_stripe_page(
     expect_download_exc: BaseException | None = None,
     download_pdf_bytes: bytes = b"%PDF-1.7\n" + b"X" * 2048,
     download_path_override: Any = _UNSET,
+    http_pdf_response: Any = _UNSET,
 ) -> MagicMock:
     stripe_page = MagicMock(name="stripe_page")
     stripe_page.url = "https://billing.stripe.com/session/xxx"
@@ -154,6 +166,22 @@ def _make_stripe_page(
         return top
 
     stripe_page.locator = MagicMock(side_effect=_locator)
+
+    # HTTP PDF download path: stripe_page.context.request.get(url)
+    http_get = AsyncMock()
+    if http_pdf_response is _UNSET:
+        # Default: HTTP GET fails (forces Playwright fallback)
+        http_get.return_value = _FakeHTTPResponse(status=404, body=b"", content_type="text/html")
+    elif isinstance(http_pdf_response, BaseException):
+        http_get.side_effect = http_pdf_response
+    else:
+        http_get.return_value = http_pdf_response
+    http_request = MagicMock(name="http-request")
+    http_request.get = http_get
+    stripe_context = MagicMock(name="stripe-context")
+    stripe_context.request = http_request
+    stripe_page.context = stripe_context
+
     return stripe_page
 
 
@@ -524,8 +552,77 @@ async def test_sixty_second_timeout_cap(monkeypatch: pytest.MonkeyPatch, tmp_pat
     )
 
 
-async def test_scrape_timeout_constant_is_240_seconds() -> None:
-    assert SCRAPE_TIMEOUT_SECONDS == 600.0
+async def test_scrape_timeout_constant_is_900_seconds() -> None:
+    assert SCRAPE_TIMEOUT_SECONDS == 900.0
+    assert HTTP_PDF_TIMEOUT_MS == 15_000
+
+
+async def test_download_via_http_success(tmp_path: Any) -> None:
+    """HTTP GET {url}/pdf returns valid PDF — no Playwright fallback needed."""
+    pdf_body = b"%PDF-1.7\ngood"
+    stripe_page = _make_stripe_page(
+        tmp_path=tmp_path,
+        http_pdf_response=_FakeHTTPResponse(status=200, body=pdf_body, content_type="application/pdf"),
+    )
+    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
+    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
+    assert result == pdf_body
+
+
+async def test_download_via_http_non_200(tmp_path: Any) -> None:
+    stripe_page = _make_stripe_page(
+        tmp_path=tmp_path,
+        http_pdf_response=_FakeHTTPResponse(status=404, body=b"not found", content_type="text/html"),
+    )
+    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
+    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
+    assert result is None
+
+
+async def test_download_via_http_non_pdf_content_type(tmp_path: Any) -> None:
+    stripe_page = _make_stripe_page(
+        tmp_path=tmp_path,
+        http_pdf_response=_FakeHTTPResponse(status=200, body=b"%PDF-1.7\nx", content_type="text/html"),
+    )
+    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
+    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
+    assert result is None
+
+
+async def test_download_via_http_invalid_pdf_body(tmp_path: Any) -> None:
+    stripe_page = _make_stripe_page(
+        tmp_path=tmp_path,
+        http_pdf_response=_FakeHTTPResponse(status=200, body=b"<html>...</html>", content_type="application/pdf"),
+    )
+    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
+    result = await scraper._download_via_http(stripe_page, INVOICE_URL_1)
+    assert result is None
+
+
+async def test_download_via_http_exception_falls_back(tmp_path: Any) -> None:
+    """HTTP GET raises → falls back to Playwright expect_download."""
+    pdf_body = b"%PDF-1.7\nfallback"
+    stripe_page = _make_stripe_page(
+        tmp_path=tmp_path,
+        http_pdf_response=Exception("Connection reset"),
+        download_pdf_bytes=pdf_body,
+    )
+    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
+    result = await scraper._download_invoice_pdf(stripe_page, INVOICE_URL_1)
+    assert result == pdf_body
+
+
+async def test_download_invoice_pdf_http_then_fallback(tmp_path: Any) -> None:
+    """HTTP GET fails (404) → falls back to Playwright button click."""
+    pdf_body = b"%PDF-1.7\nboth"
+    stripe_page = _make_stripe_page(
+        tmp_path=tmp_path,
+        http_pdf_response=_FakeHTTPResponse(status=404, body=b"", content_type="text/html"),
+        download_pdf_bytes=pdf_body,
+    )
+    scraper = CursorScraper(session_cls=_FakeSession(_make_cursor_page(stripe_page=stripe_page)))
+    result = await scraper._download_invoice_pdf(stripe_page, INVOICE_URL_1)
+    assert result == pdf_body
 
 
 async def test_storage_state_captured_back_to_scheduler_hook(tmp_path: Any) -> None:
