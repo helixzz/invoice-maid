@@ -747,7 +747,7 @@ async def _process_single_email(
     return _EmailResult()
 
 
-async def scan_all_accounts(options: ScanOptions | None = None) -> None:
+async def scan_all_accounts(options: ScanOptions | None = None, account_id: int | None = None) -> None:
     """Iterate active email accounts and ingest new invoices."""
     settings = get_settings()
     ai = AIService(settings)
@@ -767,7 +767,10 @@ async def scan_all_accounts(options: ScanOptions | None = None) -> None:
                     },
                 )
                 await db.commit()
-                result = await db.execute(select(EmailAccount).where(EmailAccount.is_active.is_(True)))
+                query = select(EmailAccount).where(EmailAccount.is_active.is_(True))
+                if account_id is not None:
+                    query = query.where(EmailAccount.id == account_id)
+                result = await db.execute(query)
                 accounts = list(result.scalars().all())
                 classifier = await _load_classifier(db)
                 sp.reset_progress(total_accounts=len(accounts))

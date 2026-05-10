@@ -30,6 +30,7 @@ class ScanTriggerRequest(BaseModel):
     full: bool = False
     unread_only: bool = False
     since: datetime | None = None
+    email_account_id: int | None = None
 
 
 class ScanLogResponse(BaseModel):
@@ -127,22 +128,35 @@ async def trigger_scan(
     effective_full = body.full if body is not None else full
     unread_only = body.unread_only if body is not None else False
     since = body.since if body is not None else None
+    account_id = body.email_account_id if body is not None else None
     if effective_full:
-        result = await db.execute(
-            select(EmailAccount).where(
-                EmailAccount.user_id == _current_user.id,
-                EmailAccount.is_active.is_(True),
+        if account_id is not None:
+            result = await db.execute(
+                select(EmailAccount).where(
+                    EmailAccount.id == account_id,
+                    EmailAccount.user_id == _current_user.id,
+                )
             )
-        )
-        for account in result.scalars().all():
-            account.last_scan_uid = None
-        await db.commit()
+            account = result.scalar_one_or_none()
+            if account is not None:
+                account.last_scan_uid = None
+                await db.commit()
+        else:
+            result = await db.execute(
+                select(EmailAccount).where(
+                    EmailAccount.user_id == _current_user.id,
+                    EmailAccount.is_active.is_(True),
+                )
+            )
+            for account in result.scalars().all():
+                account.last_scan_uid = None
+            await db.commit()
     options = ScanOptions(
         unread_only=unread_only,
         since=since,
         reset_state=effective_full,
     )
-    _ = asyncio.create_task(scan_all_accounts(options=options))
+    _ = asyncio.create_task(scan_all_accounts(options=options, account_id=account_id))
     return ScanTriggerResponse(status="triggered")
 
 
