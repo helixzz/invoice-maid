@@ -115,14 +115,18 @@ category or is_valid_tax_invoice. Non-VAT categories legitimately save with
 is_valid_tax_invoice=false; the application saves them with category label
 so operators can filter, stat, and export them separately.
 
-  buyer        购买方名称 / Bill-to name — exact text, no inference.
-                 For railway/airline e-tickets: 购买方 is the ticket purchaser
-                 (企业名称 if reimbursing, otherwise 乘车人/乘客 name).
-                 For overseas invoices: the "Bill to" company / individual.
-  seller       销售方名称 / Biller name — exact text, no inference.
-                 For railway: the 铁路运输企业. For airline: the 承运人/航空公司.
-                 For overseas: the provider (e.g. "Stripe, Inc.", "Cursor AI, Inc.",
-                 "OpenAI, LLC").
+   buyer        购买方名称 / Bill-to name — exact text, no inference.
+                  For railway/airline e-tickets: 购买方 is the ticket purchaser
+                  (企业名称 if reimbursing, otherwise 乘车人/乘客 name).
+                  For overseas_invoice: if the email body contains "Bill-to: X" or
+                  context, use the company/individual name ONLY — do NOT append
+                  addresses, VAT IDs, or postal codes. The PDF may contain full
+                  Stripe billing details; the email body hint is authoritative.
+   seller       销售方名称 / Biller name — exact text, no inference.
+                  For railway: the 铁路运输企业. For airline: the 承运人/航空公司.
+                  For overseas_invoice: if the email body contains "Provider: X"
+                  or context, use the provider company name ONLY — do NOT append
+                  physical addresses or tax IDs. Follow the email body hint.
   invoice_no   Invoice identifier — digits-only 8 or 20 for Chinese VAT,
                  otherwise the provider's invoice ID verbatim
                  (e.g. "in_1PxQz7Abc", "INV-2026-001").
@@ -149,15 +153,19 @@ so operators can filter, stat, and export them separately.
                  For airline: "航空客运 [起点]→[终点] [航班号]".
                  For overseas: provider + plan (e.g. "Cursor Pro monthly",
                  "OpenAI API usage 2026-05").
-  invoice_type Display label. For vat_invoice: exact type name from the VAT
-                 VALID TYPES list below (closest match if abbreviated).
-                 For railway: "电子发票（铁路电子客票）".
-                 For airline: "电子发票（航空运输电子客票行程单）".
-                 For overseas_invoice: "[Provider] [Plan] ([CURRENCY])" e.g.
-                 "Cursor Pro Subscription (USD)".
-                 For receipt: "Receipt" or "收据".
-                 For proforma: "Proforma Invoice".
-                 For other: a short descriptor of the document kind.
+   invoice_type Display label. For vat_invoice: exact type name from the VAT
+                  VALID TYPES list below (closest match if abbreviated).
+                  For railway: "电子发票（铁路电子客票）".
+                  For airline: "电子发票（航空运输电子客票行程单）".
+                  For overseas_invoice: "[Provider] Invoice ([CURRENCY])" where
+                  Provider is the seller name without address or legal suffix,
+                  e.g. "Cursor Invoice (USD)", "Stripe Invoice (USD)",
+                  "OpenAI Invoice (USD)". If the email body says "Provider: X",
+                  use that name directly. Do NOT use "Proforma Invoice" for
+                  overseas_invoice — that label is reserved for proforma category.
+                  For receipt: "Receipt" or "收据".
+                  For proforma: "Proforma Invoice".
+                  For other: a short descriptor of the document kind.
   confidence   your confidence that extracted fields are correct (0.0–1.0)
 
 If a field is genuinely absent: strings → "未知"  |  amount → 0.01
