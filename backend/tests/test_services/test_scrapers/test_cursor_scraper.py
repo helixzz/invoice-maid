@@ -524,8 +524,8 @@ async def test_sixty_second_timeout_cap(monkeypatch: pytest.MonkeyPatch, tmp_pat
     )
 
 
-async def test_scrape_timeout_constant_is_60_seconds() -> None:
-    assert SCRAPE_TIMEOUT_SECONDS == 60.0
+async def test_scrape_timeout_constant_is_180_seconds() -> None:
+    assert SCRAPE_TIMEOUT_SECONDS == 180.0
 
 
 async def test_storage_state_captured_back_to_scheduler_hook(tmp_path: Any) -> None:

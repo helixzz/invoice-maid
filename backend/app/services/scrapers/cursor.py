@@ -50,7 +50,7 @@ STRIPE_INVOICE_URL_RE = re.compile(
 
 # Wall-clock ceiling per scrape; the scheduler's global loop cannot be
 # blocked indefinitely by one hung account.
-SCRAPE_TIMEOUT_SECONDS = 60.0
+SCRAPE_TIMEOUT_SECONDS = 180.0
 
 NAV_TIMEOUT_MS = 90_000
 STRIPE_LOAD_TIMEOUT_MS = 60_000
