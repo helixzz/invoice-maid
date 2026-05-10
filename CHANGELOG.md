@@ -4,7 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.2.0] - 2026-05-09
+## [1.2.3] - 2026-05-10
+
+### Theme
+
+**CursorScraper rewrite — Stripe customer portal flow.** Cursor's own dashboard never exposed invoice PDFs; the legacy scraper (`v1.2.0`–`v1.2.2`) was scraping `<a href="*.pdf">` off the Cursor billing page and always returning zero links. Real invoices live on the Stripe-hosted customer portal, reached via a "Manage in Stripe" button that opens Stripe in a new tab. This release replaces the broken discovery path with the proven Stripe portal flow verified in production:
+
+1. Navigate `https://cursor.com/dashboard/billing`
+2. Click **Manage in Stripe** → Stripe customer portal opens in a new page
+3. Scroll to bottom (Stripe lazy-loads invoice rows)
+4. Extract `https://invoice.stripe.com/i/...` URLs from the raw HTML via regex
+5. For each new URL: visit, click **Download invoice**, capture PDF via Playwright `expect_download`, parse date/amount from page text
+6. Dedup by invoice URL (replaces the legacy invoice-ID dedup)
+
+### Changed
+
+- **`app/services/scrapers/cursor.py`** — complete rewrite (~500 LOC). Uses `page.context.expect_page` to capture the popup Stripe tab, `page.expect_download` to capture the PDF bytes, and `STRIPE_INVOICE_URL_RE` regex against raw HTML to enumerate invoices. The legacy `_locate_invoice_links`, `_download_pdf` (request-context variant), `_extract_row_meta`, `_absolutize`, and `_INVOICE_ID_RE` helpers are removed — Mode A (password + TOTP) was already dead in v1.2.1 and the Cursor-DOM link scraping is now dead too. Timeout budgets widened to match real Stripe portal behavior: `NAV_TIMEOUT_MS=90_000`, `STRIPE_LOAD_TIMEOUT_MS=60_000`, `DOWNLOAD_TIMEOUT_MS=30_000`, wall-clock cap unchanged at `SCRAPE_TIMEOUT_SECONDS=60.0`.
+- **Dedup key** — persisted `last_scan_uid` state format changes from `{"_format": "cursor_scraper_v1", "seen_invoice_ids": [...]}` to `{"_format": "cursor_stripe_v1", "seen_urls": [...]}`. Cap constant renamed `SEEN_INVOICE_IDS_CAP` → `SEEN_URLS_CAP` (still 1000). Existing persisted state from prior versions is silently ignored on next scan (falls back to empty set) — next scan will re-ingest invoices that were already captured, which is the safe failure mode because the downstream dedup gate (`UNIQUE(user_id, invoice_no)` on `invoices`) still blocks duplicates at save time.
+
+### Fixed
+
+- **[TRACK-B] Zero-invoice bug** — scraper previously returned `[]` for every Cursor account because the DOM selectors it looked for (`a[href*="/pdf"]`, `a[download][href*="invoice"]`, `tr:has(td:has-text("Paid")) a[href*="pdf"]`) never match anything on cursor.com. Now returns the actual invoice list via the Stripe portal.
+
+### Tests
+
+- **`backend/tests/test_services/test_scrapers/test_cursor_scraper.py`** — full rewrite, 32 tests, 100% branch coverage of the new scraper. Mocks real Playwright APIs via `unittest.mock.AsyncMock`: `page.goto`, `page.locator(...).first.count/click`, `page.context.expect_page` (popup capture), `stripe_page.content`, `stripe_page.expect_download` (with `download.path()` returning a real file on disk), `stripe_page.inner_text`, and `stripe_page.wait_for_load_state`. Test matrix: happy-path 3 invoices, empty portal, login redirect, missing "Manage in Stripe" button, invoice URL regex (including duplicate-URL dedup across `<a>` / `<div>` / `<span>` forms), metadata regex (date + amount), download-failure recovery, seen-URL dedup (first scan + second scan returns 0 new), 60s timeout cap, unexpected-exception catch, Playwright-not-installed dependency path, `PlaywrightUnavailableError` session path, invoice-navigation timeout, download-button-missing, download-path-None, download-path-unreadable, empty-PDF-bytes, empty-portal-HTML, `inner_text` → `text_content` fallback, `inner_text` returns None, `_invoice_id_from_url` fallback shapes, malformed-state `_parse_seen_urls`, `wait_for_load_state` timeout non-fatal, FIFO eviction at cap, plus scheduler-integration tests (extraction-log drain + storage-state persistence).
+- **Full suite** — 748 passing, 5 skipped, 100.00% coverage (enforced via `--cov-fail-under=100`).
+
+
 
 ### Theme
 

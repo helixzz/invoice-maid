@@ -163,6 +163,14 @@ See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ---
 
+## v1.2.3 — Released (2026-05-10)
+
+**CursorScraper rewrite — Stripe customer portal flow.** Replaces the broken v1.2.0–v1.2.2 Cursor DOM scraping with the proven Stripe customer portal path: click "Manage in Stripe" → popup Stripe page → scroll → regex-extract `invoice.stripe.com/i/...` URLs → per-invoice `page.expect_download` capture. Dedup key moves from Stripe invoice ID to invoice URL. 32-test matrix (100% branch coverage) mocks real Playwright APIs (`expect_page`, `expect_download`, `locator.first.count/click`, `inner_text`, `content`). Full backend suite: 748 passing, 100.00% coverage.
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+---
+
 ## v1.2.0 — Released (code-complete, pending Oracle review + deploy)
 
 **Invoice taxonomy + SaaS portal scraping.** Two parallel tracks bundled into one release.
