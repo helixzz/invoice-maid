@@ -89,6 +89,8 @@ def create_engine_and_session(
             # margin; observed under load during v0.8.7 multi-file uploads.
             "timeout": 30.0,
         },
+        pool_size=20,
+        max_overflow=20,
     )
     _install_sqlite_hooks(engine)
 
