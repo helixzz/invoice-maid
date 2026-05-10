@@ -56,7 +56,7 @@ NAV_TIMEOUT_MS = 90_000
 STRIPE_LOAD_TIMEOUT_MS = 60_000
 DOWNLOAD_TIMEOUT_MS = 30_000
 
-SEEN_URLS_CAP = 200
+SEEN_URLS_CAP = 400
 
 PARALLEL_INVOICE_WORKERS = 4
 
@@ -363,7 +363,7 @@ class CursorScraper(BaseScraper):
             except Exception:  # pragma: no cover - defensive
                 pass
         # Keep clicking 'View more' until all historical invoices load.
-        for _attempt in range(10):
+        for _attempt in range(20):
             try:
                 expand = stripe_page.locator(
                     'a:has-text("View more"), button:has-text("View more")'
