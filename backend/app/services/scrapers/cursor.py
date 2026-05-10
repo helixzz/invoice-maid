@@ -119,6 +119,13 @@ def _invoice_id_from_url(url: str) -> str:
 
 
 
+    # Stripe portal page text — concatenates "Billing informationNameMB ConsultingEmail..."
+_BILL_TO_NAME_RE = re.compile(
+    r"Billing\s*information\s*Name\s+([A-Z][A-Za-z\s&]+?)\s*(?:Email|Billing|Tax|$)"
+)
+_BILL_TO_FALLBACK = "Billing Contact"
+
+
 class CursorScraper(BaseScraper):
     """Cursor billing scraper — Stripe customer portal flow.
 
@@ -271,6 +278,7 @@ class CursorScraper(BaseScraper):
                 )
                 return
 
+            bill_to_name = self._extract_bill_to_name(await stripe_page.text_content("body"))
             for invoice_url in invoice_urls:
                 if invoice_url in seen or invoice_url in new_urls_ordered:
                     continue
@@ -279,6 +287,7 @@ class CursorScraper(BaseScraper):
                     stripe_page=stripe_page,
                     account=account,
                     invoice_url=invoice_url,
+                    bill_to_name=bill_to_name,
                 )
                 if raw_email is None:
                     continue
@@ -342,12 +351,22 @@ class CursorScraper(BaseScraper):
             deduped.append(url)
         return deduped
 
+    @staticmethod
+    def _extract_bill_to_name(portal_text: str) -> str:
+        m = _BILL_TO_NAME_RE.search(portal_text or "")
+        if m:
+            name = m.group(1).strip()
+            if len(name) >= 2 and len(name) <= 80:
+                return name
+        return _BILL_TO_FALLBACK
+
     async def _process_single_invoice(
         self,
         *,
         stripe_page: Any,
         account: EmailAccount,
         invoice_url: str,
+        bill_to_name: str = _BILL_TO_FALLBACK,
     ) -> RawEmail | None:
         try:
             await stripe_page.goto(
@@ -377,6 +396,7 @@ class CursorScraper(BaseScraper):
                 page_text = ""
 
         meta = self._extract_invoice_metadata(page_text)
+        meta["bill_to_name"] = bill_to_name
         return self._build_raw_email(
             account=account,
             invoice_url=invoice_url,
@@ -463,10 +483,11 @@ class CursorScraper(BaseScraper):
         )
         # Provide structured context so the LLM can distinguish buyer/seller
         # and currency without hallucinating from the raw Stripe HTML.
+        bill_to = meta.get("bill_to_name", account.username or "Unknown")
         body_text = (
             f"Cursor subscription invoice {invoice_id}\n"
             f"Provider: Cursor (cursor.com)\n"
-            f"Bill-to: {account.username}\n"
+            f"Bill-to: {bill_to}\n"
             f"Amount: {amount_text} USD\n"
             f"Date: {date_text}\n"
             f"URL: {invoice_url}\n"
