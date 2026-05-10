@@ -313,18 +313,20 @@ class CursorScraper(BaseScraper):
         return new_page
 
     async def _scroll_stripe_page_to_bottom(self, stripe_page: Any) -> None:
-        """Force Stripe's virtualised invoice rows to render by scrolling
-        to the document bottom."""
-        try:
-            await stripe_page.evaluate(
-                "() => window.scrollTo(0, document.body.scrollHeight)"
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Stripe portal scroll failed (non-fatal): %s", exc)
-        try:
-            await asyncio.sleep(0.5)
-        except Exception:  # pragma: no cover - defensive
-            pass
+        """Force Stripe's virtualised invoice rows to render by repeatedly
+        scrolling to the document bottom. Single scroll+0.5s is insufficient —
+        Stripe's lazy render needs multiple triggers."""
+        for _ in range(8):
+            try:
+                await stripe_page.evaluate(
+                    "() => window.scrollTo(0, document.body.scrollHeight)"
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Stripe portal scroll failed (non-fatal): %s", exc)
+            try:
+                await asyncio.sleep(1.0)
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     async def _extract_stripe_invoice_urls(self, stripe_page: Any) -> list[str]:
         html = await stripe_page.content()
