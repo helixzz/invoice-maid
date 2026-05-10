@@ -243,6 +243,7 @@ class CursorScraper(BaseScraper):
             wait_until="load",
             timeout=NAV_TIMEOUT_MS,
         )
+        await asyncio.sleep(3)  # React hydration — button may not exist at DOMContentLoaded
 
         if CURSOR_LOGIN_URL_FRAGMENT in str(page.url):
             self._emit_auth_required(
