@@ -419,7 +419,8 @@ class CursorScraper(BaseScraper):
         )
 
     async def _download_via_http(self, stripe_page: Any, invoice_url: str) -> bytes | None:
-        pdf_url = invoice_url.rstrip("/") + "/pdf"
+        base = invoice_url.split("?")[0]
+        pdf_url = base.rstrip("/") + "/pdf"
         try:
             response = await stripe_page.context.request.get(
                 pdf_url, timeout=HTTP_PDF_TIMEOUT_MS
