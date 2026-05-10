@@ -456,17 +456,20 @@ class CursorScraper(BaseScraper):
         filename = f"cursor-invoice-{invoice_id}.pdf"
         date_text = meta.get("date_text", "")
         amount_text = meta.get("amount_text", "")
-        subject = f"Cursor Invoice {invoice_id}"
-        if date_text or amount_text:
-            subject = (
-                f"Cursor Invoice {invoice_id} — {date_text} {amount_text}".strip()
-            )
+        # Keep the subject concise; the LLM sees the PDF for extraction.
+        subject = (
+            f"Cursor Invoice {invoice_id}"
+            f" — {amount_text} USD {date_text}".strip()
+        )
+        # Provide structured context so the LLM can distinguish buyer/seller
+        # and currency without hallucinating from the raw Stripe HTML.
         body_text = (
-            f"Cursor invoice {invoice_id}\n"
-            f"URL: {invoice_url}\n"
+            f"Cursor subscription invoice {invoice_id}\n"
+            f"Provider: Cursor (cursor.com)\n"
+            f"Bill-to: {account.username}\n"
+            f"Amount: {amount_text} USD\n"
             f"Date: {date_text}\n"
-            f"Amount: {amount_text}\n"
-            f"{meta.get('page_text', '')}"
+            f"URL: {invoice_url}\n"
         ).strip()
         return RawEmail(
             uid=f"cursor:{invoice_id}",
@@ -488,6 +491,8 @@ class CursorScraper(BaseScraper):
                 "_scraper": "cursor",
                 "_invoice_id": invoice_id,
                 "_invoice_url": invoice_url,
+                "_currency": "USD",
+                "_amount_pretty": f"{amount_text} USD",
                 "_account_id": str(account.id or ""),
             },
             is_hydrated=True,
