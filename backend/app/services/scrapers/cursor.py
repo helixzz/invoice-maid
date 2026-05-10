@@ -50,13 +50,13 @@ STRIPE_INVOICE_URL_RE = re.compile(
 
 # Wall-clock ceiling per scrape; the scheduler's global loop cannot be
 # blocked indefinitely by one hung account.
-SCRAPE_TIMEOUT_SECONDS = 180.0
+SCRAPE_TIMEOUT_SECONDS = 240.0
 
 NAV_TIMEOUT_MS = 90_000
 STRIPE_LOAD_TIMEOUT_MS = 60_000
 DOWNLOAD_TIMEOUT_MS = 30_000
 
-SEEN_URLS_CAP = 1000
+SEEN_URLS_CAP = 200
 
 SYNTHETIC_FROM_ADDR = "billing@cursor.com"
 
@@ -323,8 +323,8 @@ class CursorScraper(BaseScraper):
 
     async def _scroll_stripe_page_to_bottom(self, stripe_page: Any) -> None:
         """Force Stripe's virtualised invoice rows to render by repeatedly
-        scrolling to the document bottom. Single scroll+0.5s is insufficient —
-        Stripe's lazy render needs multiple triggers."""
+        scrolling to the document bottom and clicking any 'View more' links
+        to expand the full invoice history."""
         for _ in range(8):
             try:
                 await stripe_page.evaluate(
@@ -336,6 +336,19 @@ class CursorScraper(BaseScraper):
                 await asyncio.sleep(1.0)
             except Exception:  # pragma: no cover - defensive
                 pass
+        # Keep clicking 'View more' until all historical invoices load.
+        for _attempt in range(10):
+            try:
+                expand = stripe_page.locator(
+                    'a:has-text("View more"), button:has-text("View more")'
+                ).first
+                if await expand.count() == 0:
+                    break
+                await expand.click()
+                await asyncio.sleep(2.0)
+            except Exception as exc:
+                logger.debug("Stripe View-more click failed (non-fatal): %s", exc)
+                break
 
     async def _extract_stripe_invoice_urls(self, stripe_page: Any) -> list[str]:
         html = await stripe_page.content()
