@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -337,3 +338,29 @@ async def get_account_oauth_status(
     if await scanner.has_cached_token_async(account):
         return OAuthStatusResponse(status="authorized")
     return OAuthStatusResponse(status="none", detail="Authorization not started")
+
+
+class CursorAuthRequest(BaseModel):
+    playwright_storage_state: str
+
+
+@router.post("/{account_id}/cursor-auth")
+async def set_cursor_storage_state(
+    account_id: int,
+    body: CursorAuthRequest,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    account = await _get_account_or_404(db, account_id, _current_user)
+    if account.type != "cursor":
+        raise HTTPException(status_code=400, detail="Account is not a Cursor-type source")
+    if not body.playwright_storage_state.strip():
+        raise HTTPException(status_code=400, detail="storage_state must not be empty")
+    try:
+        json.loads(body.playwright_storage_state)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="storage_state must be valid JSON")
+    account.playwright_storage_state = body.playwright_storage_state
+    await db.commit()
+    logger.info("Cursor storage_state updated for account %s (id=%s)", account.name, account.id)
+    return {"status": "ok"}

@@ -84,6 +84,7 @@ export interface AccountCreate {
   port?: number | null
   username: string
   password?: string
+  playwright_storage_state?: string
 }
 
 export interface AccountUpdate {
@@ -93,6 +94,7 @@ export interface AccountUpdate {
   port?: number | null
   username?: string
   password?: string
+  playwright_storage_state?: string | null
   is_active?: boolean
 }
 

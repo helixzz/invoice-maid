@@ -222,6 +222,13 @@ export const api = {
     await apiClient.delete(`/accounts/${id}`)
   },
 
+  async setCursorStorageState(accountId: number, storageState: string): Promise<{status: string}> {
+    const res = await apiClient.post(`/accounts/${accountId}/cursor-auth`, {
+      playwright_storage_state: storageState,
+    })
+    return res.data
+  },
+
   async testConnection(id: number): Promise<ConnectionTestResponse> {
     const res = await apiClient.post(`/accounts/${id}/test-connection`)
     return res.data

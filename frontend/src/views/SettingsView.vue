@@ -251,7 +251,8 @@ const defaultAccountForm: AccountCreate = {
   port: 993,
   username: '',
   password: '',
-  outlook_account_type: 'personal'
+  outlook_account_type: 'personal',
+  playwright_storage_state: '',
 }
 
 const accountForm = ref<AccountCreate>({ ...defaultAccountForm })
@@ -503,6 +504,9 @@ const saveAccount = async () => {
       if (accountForm.value.type === 'outlook') {
         updateData.outlook_account_type = accountForm.value.outlook_account_type
       }
+      if (accountForm.value.type === 'cursor' && accountForm.value.playwright_storage_state) {
+        updateData.playwright_storage_state = accountForm.value.playwright_storage_state
+      }
       if (accountForm.value.password) {
         updateData.password = accountForm.value.password
       }
@@ -516,6 +520,9 @@ const saveAccount = async () => {
       const createData = { ...accountForm.value }
       if (createData.type !== 'outlook') {
         delete createData.outlook_account_type
+      }
+      if (createData.type !== 'cursor') {
+        delete createData.playwright_storage_state
       }
       const newAccount = await api.createAccount(createData)
       toastRef.value?.addToast('Account created successfully', 'success')
@@ -678,7 +685,7 @@ onMounted(() => {
                  class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
                >
                  <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-                 Add Email Account
+                 Add Invoice Source
                </button>
             </li>
             <li v-else v-for="account in accounts" :key="account.id" class="p-6 hover:bg-slate-50 transition-colors">
@@ -1194,7 +1201,7 @@ onMounted(() => {
               <div class="sm:flex sm:items-start">
                 <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
                   <h3 class="text-lg leading-6 font-medium text-slate-900" id="modal-title">
-                    {{ editingAccountId ? 'Edit Account' : 'Add Email Account' }}
+                    {{ editingAccountId ? 'Edit Account' : 'Add Invoice Source' }}
                   </h3>
                   <div class="mt-6 space-y-4">
                     <div>
@@ -1209,10 +1216,29 @@ onMounted(() => {
                         <option value="pop3">POP3</option>
                         <option value="outlook">Outlook (OAuth)</option>
                         <option value="qq">QQ Mail</option>
+                        <option value="cursor">Cursor (Web)</option>
                       </select>
                     </div>
 
-                    <template v-if="accountForm.type !== 'outlook'">
+                    <!-- Cursor-specific: storage_state JSON -->
+                    <template v-if="accountForm.type === 'cursor'">
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700">Playwright Storage State</label>
+                        <textarea
+                          v-model="accountForm.playwright_storage_state"
+                          rows="6"
+                          required
+                          class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border font-mono text-xs"
+                          placeholder='{"cookies": [...], "origins": [...]}'
+                        ></textarea>
+                        <p class="mt-1 text-xs text-slate-400">
+                          Paste the storage_state JSON captured via <code>cursor_login_local.py</code>.
+                          See <code>scripts/cursor_login_local.py</code> for instructions.
+                        </p>
+                      </div>
+                    </template>
+
+                    <template v-if="accountForm.type !== 'outlook' && accountForm.type !== 'cursor'">
                       <div class="grid grid-cols-3 gap-4">
                         <div class="col-span-2">
                           <label class="block text-sm font-medium text-slate-700">Host</label>

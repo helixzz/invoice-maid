@@ -701,3 +701,64 @@ async def test_update_cursor_account_clears_credentials_on_empty_string(
     assert account.secondary_password_encrypted is None
     assert account.totp_secret_encrypted is None
     assert account.playwright_storage_state is None
+
+
+async def test_cursor_auth_sets_storage_state(client, auth_headers, db, create_email_account) -> None:
+    """POST /accounts/{id}/cursor-auth updates playwright_storage_state for cursor accounts."""
+    from app.models import EmailAccount
+
+    account = await create_email_account(name="Cursor Test", type="cursor")
+    storage = '{"cookies": [{"name": "sid", "value": "abc"}]}'
+    response = await client.post(
+        f"/api/v1/accounts/{account.id}/cursor-auth",
+        headers=auth_headers,
+        json={"playwright_storage_state": storage},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    # Verify the DB was updated via the test db session.
+    await db.refresh(account)
+    assert account.playwright_storage_state == storage
+
+
+async def test_cursor_auth_rejects_non_cursor_account(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(name="IMAP Test", type="imap")
+    response = await client.post(
+        f"/api/v1/accounts/{account.id}/cursor-auth",
+        headers=auth_headers,
+        json={"playwright_storage_state": "{}"},
+    )
+    assert response.status_code == 400
+    assert "not a Cursor-type" in response.json()["detail"]
+
+
+async def test_cursor_auth_rejects_empty_storage_state(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(name="Cursor Test", type="cursor")
+    response = await client.post(
+        f"/api/v1/accounts/{account.id}/cursor-auth",
+        headers=auth_headers,
+        json={"playwright_storage_state": ""},
+    )
+    assert response.status_code == 400
+    assert "must not be empty" in response.json()["detail"]
+
+
+async def test_cursor_auth_rejects_invalid_json(client, auth_headers, create_email_account) -> None:
+    account = await create_email_account(name="Cursor Test", type="cursor")
+    response = await client.post(
+        f"/api/v1/accounts/{account.id}/cursor-auth",
+        headers=auth_headers,
+        json={"playwright_storage_state": "not-json"},
+    )
+    assert response.status_code == 400
+    assert "valid JSON" in response.json()["detail"]
+
+
+async def test_cursor_auth_404_for_other_users_account(client, auth_headers, db) -> None:
+    response = await client.post(
+        "/api/v1/accounts/99999/cursor-auth",
+        headers=auth_headers,
+        json={"playwright_storage_state": "{}"},
+    )
+    assert response.status_code == 404
