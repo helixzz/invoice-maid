@@ -38,6 +38,7 @@ export interface Invoice {
   invoice_date: string
   invoice_type: string
   invoice_category: InvoiceCategory
+  currency: string
   item_summary: string | null
   source_format: string
   extraction_method: string

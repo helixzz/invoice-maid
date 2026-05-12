@@ -247,8 +247,10 @@ const toggleAll = () => {
   }
 }
 
-const formatCurrency = (amount: number, category?: string) => {
-  const symbol = category === 'overseas_invoice' ? '$' : '¥'
+const CURRENCY_SYMBOLS: Record<string, string> = { USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥' }
+
+const formatCurrency = (amount: number, currency?: string) => {
+  const symbol = CURRENCY_SYMBOLS[currency || 'CNY'] || currency || ''
   return `${symbol}${amount.toFixed(2)}`
 }
 
@@ -664,7 +666,7 @@ onMounted(() => {
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ invoice.invoice_no }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ invoice.buyer }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ invoice.seller }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ formatCurrency(invoice.amount, invoice.invoice_category) }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ formatCurrency(invoice.amount, invoice.currency) }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(invoice.invoice_date) }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                   <CategoryBadge :category="invoice.invoice_category" />

@@ -157,6 +157,7 @@ class InvoiceResponse(BaseModel):
     invoice_date: str
     invoice_type: str
     invoice_category: str
+    currency: str = "CNY"
     item_summary: str | None
     source_format: str
     extraction_method: str
