@@ -238,11 +238,12 @@ export const api = {
   },
 
   // Scan
-  async triggerScan(options?: {full?: boolean, unread_only?: boolean, since?: string | null}): Promise<{status: string}> {
+  async triggerScan(options?: {full?: boolean, unread_only?: boolean, since?: string | null, email_account_id?: number | null}): Promise<{status: string}> {
     const body = {
       full: options?.full ?? false,
       unread_only: options?.unread_only ?? false,
       since: options?.since ?? null,
+      email_account_id: options?.email_account_id ?? null,
     }
     const res = await apiClient.post('/scan/trigger', body)
     return res.data

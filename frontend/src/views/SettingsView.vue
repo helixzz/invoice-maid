@@ -203,6 +203,7 @@ const {
 const scanLogs = ref<ScanLog[]>([])
 const loadingLogs = ref(false)
 const scanning = ref(false)
+const scanAccountId = ref<number>(0)  // 0 = all accounts
 const expandedLogId = ref<number | null>(null)
 const extractionLogs = ref<Record<number, ExtractionLog[]>>({})
 const extractionSummaries = ref<Record<number, ExtractionSummary>>({})
@@ -416,10 +417,12 @@ const triggerScan = async (full: boolean = false) => {
   scanning.value = true
   try {
     const since = resolveScanSince()
+    const accountId = scanAccountId.value === 0 ? null : scanAccountId.value
     const res = await api.triggerScan({
       full,
       unread_only: scanOptionsForm.value.unread_only,
       since,
+      email_account_id: accountId,
     })
     const label = full ? 'Full rescan' : 'Scan'
     const detailBits: string[] = []
@@ -751,7 +754,18 @@ onMounted(() => {
           <div class="sm:flex sm:items-center sm:justify-between">
             <div>
               <h3 class="text-lg leading-6 font-medium text-slate-900">Manual Scan</h3>
-              <p class="mt-1 text-sm text-slate-500">Trigger an immediate scan across all active email accounts.</p>
+              <p class="mt-1 text-sm text-slate-500">Trigger an immediate scan across all active email accounts or a specific account.</p>
+              <div class="mt-3 flex items-center gap-2 text-sm">
+                <label class="text-slate-700 font-medium">Account:</label>
+                <select
+                  v-model="scanAccountId"
+                  :disabled="scanning"
+                  class="rounded border-slate-300 text-sm focus:ring-blue-500 focus:border-blue-500 py-1 px-2"
+                >
+                  <option :value="0">All accounts</option>
+                  <option v-for="acc in accounts" :key="acc.id" :value="acc.id">{{ acc.name }} ({{ acc.type }})</option>
+                </select>
+              </div>
               <div class="mt-3 flex flex-col sm:flex-row sm:items-center gap-3 text-sm">
                 <label class="inline-flex items-center gap-2 text-slate-700">
                   <input

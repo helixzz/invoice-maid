@@ -98,9 +98,10 @@ const loadPreviewBlob = async (id: number) => {
   }
 }
 
-const formatCurrency = (amount: number | undefined) => {
+const formatCurrency = (amount: number | undefined, category?: string) => {
   if (amount === undefined) return '-'
-  return `¥${amount.toFixed(2)}`
+  const symbol = category === 'overseas_invoice' ? '$' : '¥'
+  return `${symbol}${amount.toFixed(2)}`
 }
 
 const formatDate = (dateString: string | undefined) => {
@@ -236,7 +237,7 @@ onMounted(() => {
           <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 pb-8 border-b border-slate-100">
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
               <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Total Amount</span>
-              <span v-if="!isEditing" class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount) }}</span>
+              <span v-if="!isEditing" class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount, invoice.invoice_category) }}</span>
               <input v-else v-model.number="editForm.amount" type="number" step="0.01" class="text-2xl font-bold text-blue-600 border border-slate-300 rounded px-2 py-1 text-center w-32 focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
