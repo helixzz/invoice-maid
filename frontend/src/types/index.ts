@@ -135,12 +135,24 @@ export interface StatsResponse {
   last_scan_found: number | null
   by_category?: CategoryCountPoint[]
   by_currency?: CurrencyBreakdown[]
+  monthly_spend_by_currency?: MonthlySpendByCurrency[]
 }
 
 export interface CurrencyBreakdown {
   currency: string
   total: number
   count: number
+}
+
+export interface MonthlySpendPoint {
+  month: string
+  total: number
+  count: number
+}
+
+export interface MonthlySpendByCurrency {
+  currency: string
+  monthly_spend: MonthlySpendPoint[]
 }
 
 export interface AISettingsResponse {

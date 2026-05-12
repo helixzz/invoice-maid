@@ -30,6 +30,7 @@ async def test_get_stats_empty_db(client, auth_headers) -> None:
         "by_category": [],
         "by_method": [],
         "by_currency": [],
+        "monthly_spend_by_currency": [],
         "avg_confidence": 0.0,
     }
 
@@ -100,6 +101,15 @@ async def test_get_stats_populated_db(client, auth_headers, db, create_email_acc
         "by_category": [{"category": "vat_invoice", "count": 3}],
         "by_method": [{"method": "regex", "count": 3}],
         "by_currency": [{"currency": "CNY", "total": 175.0, "count": 3}],
+        "monthly_spend_by_currency": [
+            {
+                "currency": "CNY",
+                "monthly_spend": [
+                    {"month": _previous_month_day(today).strftime("%Y-%m"), "total": 25.0, "count": 1},
+                    {"month": today.strftime("%Y-%m"), "total": 150.0, "count": 2},
+                ],
+            },
+        ],
         "avg_confidence": 0.8,
     }
 

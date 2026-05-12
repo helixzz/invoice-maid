@@ -29,6 +29,7 @@ class StatsResponse(BaseModel):
     by_category: list["CategoryCountPoint"]
     by_method: list["MethodCountPoint"]
     by_currency: list["CurrencyBreakdown"]
+    monthly_spend_by_currency: list["MonthlySpendByCurrency"]
     avg_confidence: float
 
 
@@ -65,6 +66,11 @@ class CurrencyBreakdown(BaseModel):
     count: int
 
 
+class MonthlySpendByCurrency(BaseModel):
+    currency: str
+    monthly_spend: list["MonthlySpendPoint"]
+
+
 def _month_bounds(today: date) -> tuple[date, date]:
     month_start = today.replace(day=1)
     next_month_start = (month_start + timedelta(days=32)).replace(day=1)
@@ -77,6 +83,19 @@ def _to_float(value: Decimal | float | int | None) -> float:
 
 def _rounded_float(value: Decimal | float | int | None, digits: int = 6) -> float:
     return round(_to_float(value), digits)
+
+
+def _group_monthly_by_currency(rows: list) -> list[MonthlySpendByCurrency]:
+    from collections import defaultdict
+    by_curr: dict[str, list[MonthlySpendPoint]] = defaultdict(list)
+    for row in rows:
+        by_curr[row.currency].append(
+            MonthlySpendPoint(month=row.month, total=_to_float(row.total), count=row.count)
+        )
+    return [
+        MonthlySpendByCurrency(currency=cur, monthly_spend=pts)
+        for cur, pts in sorted(by_curr.items())
+    ]
 
 
 @router.get("/stats", response_model=StatsResponse)
@@ -202,6 +221,19 @@ async def get_stats(
             .order_by(func.sum(Invoice.amount).desc())
         )
     ).all()
+    monthly_by_currency_rows = (
+        await db.execute(
+            select(
+                _currency_expr,
+                func.strftime("%Y-%m", Invoice.invoice_date).label("month"),
+                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
+                func.count(Invoice.id).label("count"),
+            )
+            .where(Invoice.user_id == user_id)
+            .group_by(_currency_expr, "month")
+            .order_by("month", _currency_expr)
+        )
+    ).all()
     avg_confidence = (
         await db.execute(
             select(func.avg(Invoice.confidence)).where(Invoice.user_id == user_id)
@@ -237,5 +269,6 @@ async def get_stats(
             CurrencyBreakdown(currency=row.currency, total=_to_float(row.total), count=row.count)
             for row in currency_rows
         ],
+        monthly_spend_by_currency=_group_monthly_by_currency(monthly_by_currency_rows),
         avg_confidence=_rounded_float(avg_confidence),
     )

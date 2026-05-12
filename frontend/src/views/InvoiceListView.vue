@@ -386,6 +386,27 @@ const categoryBreakdown = computed<{ category: InvoiceCategory; count: number }[
   return CATEGORY_ORDER.map(category => ({ category, count: counts[category] }))
 })
 
+const monthlySpendPivot = computed(() => {
+  const result: { month: string; [currency: string]: string | number }[] = []
+  const perCurrency = stats.value?.monthly_spend_by_currency ?? []
+  if (!perCurrency.length) return []
+  const allMonths = new Set<string>()
+  for (const gb of perCurrency) {
+    for (const pt of gb.monthly_spend) {
+      allMonths.add(pt.month)
+    }
+  }
+  for (const month of [...allMonths].sort()) {
+    const row = { month } as { month: string; [currency: string]: string | number }
+    for (const gb of perCurrency) {
+      const pt = gb.monthly_spend.find((p: { month: string }) => p.month === month)
+      row[gb.currency] = pt ? pt.total : 0
+    }
+    result.push(row)
+  }
+  return result
+})
+
 onMounted(() => {
   invoicesStore.setCategories([...selectedCategories.value])
   fetchStats()
@@ -444,6 +465,34 @@ onMounted(() => {
               {{ bucket.count === 0 ? '— (0)' : bucket.count }}
             </span>
           </div>
+        </div>
+      </div>
+
+      <div
+        v-if="stats?.monthly_spend_by_currency?.length"
+        class="bg-white p-4 rounded-xl shadow-sm border border-slate-200"
+      >
+        <p class="text-sm font-medium text-slate-500 mb-3">Monthly Spend by Currency</p>
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-slate-200 text-sm">
+            <thead>
+              <tr class="text-left text-xs text-slate-500 uppercase tracking-wider">
+                <th class="px-3 py-2">Month</th>
+                <th v-for="gb in stats.monthly_spend_by_currency" :key="gb.currency" class="px-3 py-2 text-right">
+                  {{ gb.currency === 'CNY' ? '¥ CNY' : gb.currency === 'USD' ? '$ USD' : gb.currency }}
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr v-for="mp in monthlySpendPivot" :key="mp.month">
+                <td class="px-3 py-2 font-medium text-slate-700">{{ mp.month }}</td>
+                <td v-for="gb in stats.monthly_spend_by_currency" :key="gb.currency" class="px-3 py-2 text-right text-slate-600">
+                  <span v-if="mp[gb.currency]">{{ formatCurrency(Number(mp[gb.currency]), gb.currency) }}</span>
+                  <span v-else class="text-slate-300">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
