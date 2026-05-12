@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -28,6 +28,7 @@ class StatsResponse(BaseModel):
     by_type: list["TypeCountPoint"]
     by_category: list["CategoryCountPoint"]
     by_method: list["MethodCountPoint"]
+    by_currency: list["CurrencyBreakdown"]
     avg_confidence: float
 
 
@@ -55,6 +56,12 @@ class CategoryCountPoint(BaseModel):
 
 class MethodCountPoint(BaseModel):
     method: str
+    count: int
+
+
+class CurrencyBreakdown(BaseModel):
+    currency: str
+    total: float
     count: int
 
 
@@ -179,6 +186,22 @@ async def get_stats(
             .order_by(func.count(Invoice.id).desc(), Invoice.extraction_method.asc())
         )
     ).all()
+    _currency_expr = case(
+        (Invoice.invoice_category == "overseas_invoice", "USD"),
+        else_="CNY",
+    ).label("currency")
+    currency_rows = (
+        await db.execute(
+            select(
+                _currency_expr,
+                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
+                func.count(Invoice.id).label("count"),
+            )
+            .where(Invoice.user_id == user_id)
+            .group_by(_currency_expr)
+            .order_by(func.sum(Invoice.amount).desc())
+        )
+    ).all()
     avg_confidence = (
         await db.execute(
             select(func.avg(Invoice.confidence)).where(Invoice.user_id == user_id)
@@ -210,5 +233,9 @@ async def get_stats(
             for row in category_rows
         ],
         by_method=[MethodCountPoint(method=row.method, count=row.count) for row in method_rows],
+        by_currency=[
+            CurrencyBreakdown(currency=row.currency, total=_to_float(row.total), count=row.count)
+            for row in currency_rows
+        ],
         avg_confidence=_rounded_float(avg_confidence),
     )

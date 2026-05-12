@@ -397,19 +397,24 @@ onMounted(() => {
 <template>
   <AppLayout>
     <div class="space-y-6">
-      <div v-if="!loadingStats && stats" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div v-if="!loadingStats && stats" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
           <p class="text-sm font-medium text-slate-500">Total Invoices</p>
           <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.total_invoices }}</p>
         </div>
-        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <p class="text-sm font-medium text-slate-500">Total Amount</p>
-          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ formatCurrency(stats.total_amount) }}</p>
+        <div
+          v-for="cb in (stats.by_currency || [])"
+          :key="cb.currency"
+          class="bg-white p-4 rounded-xl shadow-sm border border-slate-200"
+        >
+          <p class="text-sm font-medium text-slate-500">{{ cb.currency === 'CNY' ? '¥ CNY' : cb.currency === 'USD' ? '$ USD' : cb.currency }} Total</p>
+          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ formatCurrency(cb.total, cb.currency) }}</p>
+          <p class="text-xs text-slate-400 mt-1">{{ cb.count }} invoices</p>
         </div>
         <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
           <p class="text-sm font-medium text-slate-500">This Month</p>
           <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.invoices_this_month }}</p>
-          <p class="text-xs text-slate-400 mt-1">{{ formatCurrency(stats.amount_this_month) }}</p>
+          <p class="text-xs text-slate-400 mt-1">new invoices</p>
         </div>
         <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
           <p class="text-sm font-medium text-slate-500">Active Accounts</p>

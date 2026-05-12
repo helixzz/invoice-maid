@@ -29,6 +29,7 @@ async def test_get_stats_empty_db(client, auth_headers) -> None:
         "by_type": [],
         "by_category": [],
         "by_method": [],
+        "by_currency": [],
         "avg_confidence": 0.0,
     }
 
@@ -98,6 +99,7 @@ async def test_get_stats_populated_db(client, auth_headers, db, create_email_acc
         "by_type": [{"type": "增值税电子普通发票", "count": 3}],
         "by_category": [{"category": "vat_invoice", "count": 3}],
         "by_method": [{"method": "regex", "count": 3}],
+        "by_currency": [{"currency": "CNY", "total": 175.0, "count": 3}],
         "avg_confidence": 0.8,
     }
 

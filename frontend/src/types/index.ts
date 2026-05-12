@@ -132,6 +132,13 @@ export interface StatsResponse {
   last_scan_at: string | null
   last_scan_found: number | null
   by_category?: CategoryCountPoint[]
+  by_currency?: CurrencyBreakdown[]
+}
+
+export interface CurrencyBreakdown {
+  currency: string
+  total: number
+  count: number
 }
 
 export interface AISettingsResponse {
