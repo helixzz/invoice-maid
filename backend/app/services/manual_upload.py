@@ -36,6 +36,7 @@ from app.services.ai_service import AIService
 from app.services.email_classifier import is_scam_text
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import ParsedInvoice
+from app.services.invoice_parser import normalize_invoice_no
 from app.services.invoice_parser import parse as parse_invoice
 from app.services.search_service import store_embedding
 
@@ -417,6 +418,7 @@ async def process_uploaded_invoice(
             parse_format=parsed.source_format,
         )
 
+    parsed.invoice_no = normalize_invoice_no(parsed.invoice_no)
     existing_row = await db.execute(
         select(Invoice).where(
             Invoice.user_id == user_id,

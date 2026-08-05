@@ -281,7 +281,7 @@ async def test_process_uploaded_invoice_race_condition_returns_duplicate(
     # the service's initial SELECT but before its flush.
     existing_invoice = Invoice(
         user_id=1,
-        invoice_no="RACE-001",
+        invoice_no="RACE001",
         buyer="Pre-existing",
         seller="Pre-existing",
         amount=Decimal("1.00"),
@@ -348,7 +348,7 @@ async def test_process_uploaded_invoice_embedding_failure_does_not_abort(
     )
     assert result.outcome == "saved"
     assert result.invoice is not None
-    assert result.invoice.invoice_no == "EMBED-FAIL-001"
+    assert result.invoice.invoice_no == "EMBEDFAIL001"
 
 
 async def test_process_uploaded_invoice_embedding_success_stores_vector(

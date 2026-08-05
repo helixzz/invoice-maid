@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.25] - 2026-08-05
+
+### Fixed
+
+**Dual-format invoice numbers bypassed deduplication.** Vendors render the same invoice id with and without separators ("JUPOBR1U-0043" vs "JUPOBR1U0043"), so the same invoice imported via different channels (manual upload vs Outlook scan vs scraper) was saved twice — 45 duplicate pairs across OpenRouter, Cursor, and other Stripe-billed vendors. Both ingestion pipelines now canonicalize `invoice_no` (strip hyphens/spaces) before the duplicate check; migration `0018` dedupes existing rows (keeping the oldest of each pair) and rewrites remaining numbers to the canonical form.
+
 ## [1.3.24] - 2026-08-05
 
 ### Fixed

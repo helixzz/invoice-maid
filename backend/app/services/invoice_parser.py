@@ -66,6 +66,15 @@ def _has_cid_artifacts(text: str, threshold: int = 5) -> bool:
     return len(_CID_RE.findall(text)) > threshold
 
 
+def normalize_invoice_no(value: str | None) -> str:
+    """Canonical dedup key: vendors render the same invoice id with and
+    without separators ("JUPOBR1U-0043" vs "JUPOBR1U0043"), which lets
+    duplicates slip past UNIQUE(user_id, invoice_no)."""
+    if not value:
+        return ""
+    return value.replace("-", "").replace(" ", "")
+
+
 def detect_format(filename: str, content: bytes) -> Literal["pdf", "xml", "ofd"]:
     """Detect invoice format by filename extension and magic bytes."""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""

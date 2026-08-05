@@ -524,3 +524,11 @@ def test_parse_pdf_replaces_nul_bytes_with_hyphens(monkeypatch: pytest.MonkeyPat
     assert "\x00" not in result.raw_text
     assert "V8HP6PXG-0245" in result.raw_text
     assert "2627-5011" in result.raw_text
+
+
+def test_normalize_invoice_no_strips_separators() -> None:
+    assert parser.normalize_invoice_no("JUPOBR1U-0043") == "JUPOBR1U0043"
+    assert parser.normalize_invoice_no("V8HP6PXG 0245") == "V8HP6PXG0245"
+    assert parser.normalize_invoice_no("26312000004326763111") == "26312000004326763111"
+    assert parser.normalize_invoice_no(None) == ""
+    assert parser.normalize_invoice_no("") == ""
