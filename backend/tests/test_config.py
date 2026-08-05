@@ -85,4 +85,4 @@ def test_settings_outlook_client_id_defaults() -> None:
     )
 
     assert settings.OUTLOOK_PERSONAL_CLIENT_ID == "14d82eec-204b-4c2f-b7e8-296a70dab67e"
-    assert settings.OUTLOOK_AAD_CLIENT_ID == "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+    assert settings.OUTLOOK_AAD_CLIENT_ID == "14d82eec-204b-4c2f-b7e8-296a70dab67e"

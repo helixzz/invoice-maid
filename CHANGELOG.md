@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.24] - 2026-08-05
+
+### Fixed
+
+**Outlook work/school OAuth failed with AADSTS65002.** Microsoft no longer preauthorizes the Office first-party client (`d3590ed6-52b3-4102-aeff-aad2292ab01c`) for Microsoft Graph scopes on organizational tenants, so the device-code consent step failed after login. The organizational default `OUTLOOK_AAD_CLIENT_ID` now uses Microsoft Graph Command Line Tools (`14d82eec-204b-4c2f-b7e8-296a70dab67e`) — the same preauthorized public client the personal path already used. Override via `OUTLOOK_AAD_CLIENT_ID` to use your own app registration.
+
 ## [1.3.23] - 2026-08-05
 
 ### Fixed

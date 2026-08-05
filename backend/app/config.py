@@ -43,7 +43,10 @@ class Settings(BaseSettings):
     STRICT_VAT_ONLY: bool = False
     LOG_LEVEL: str = "INFO"
     OUTLOOK_PERSONAL_CLIENT_ID: str = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
-    OUTLOOK_AAD_CLIENT_ID: str = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+    # Microsoft Graph Command Line Tools — the Office first-party id
+    # (d3590ed6-...) is no longer preauthorized for Graph scopes on
+    # work/school tenants and fails with AADSTS65002.
+    OUTLOOK_AAD_CLIENT_ID: str = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
     sqlite_vec_available: bool = Field(default=False, validation_alias="__runtime_sqlite_vec_available__")
 
 
