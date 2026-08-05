@@ -19,8 +19,8 @@ const ALLOWED_MIME = new Set([
   'application/zip',
   'application/x-zip-compressed',
 ])
-const MAX_CONCURRENT_UPLOADS = 3
-const MAX_FILES_PER_BATCH = 25
+const MAX_CONCURRENT_UPLOADS = 20
+const MAX_FILES_PER_BATCH = 200
 
 type EntryStatus = 'queued' | 'uploading' | 'done' | 'error' | 'blocked'
 

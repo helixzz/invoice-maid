@@ -153,7 +153,7 @@ def _build_csv_content(invoices: list[Invoice]) -> str:
     response_model=InvoiceResponse,
     status_code=status.HTTP_201_CREATED,
 )
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def upload_invoice(
     request: Request,
     response: Response,
