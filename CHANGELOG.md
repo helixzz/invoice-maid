@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.23] - 2026-08-05
+
+### Fixed
+
+**NUL bytes in Stripe receipt PDFs broke invoice-number extraction.** Stripe receipt PDFs map the hyphen glyph to `\x00` in their ToUnicode table, so pdfplumber emitted `V8HP6PXG\x000245` for `V8HP6PXG-0245`. The LLM intermittently stopped reading at the NUL (extracting only the `V8HP6PXG` prefix), which collided with the first truncated save and produced spurious "duplicate invoice" rejections on upload; SQLite additionally truncated the stored `raw_text` at the first NUL. `parse_pdf` now replaces NUL bytes with hyphens before any downstream use. Removed the one mis-saved truncated row (true duplicate of an already-scraped invoice).
+
 ## [1.2.3] - 2026-05-10
 
 ### Theme

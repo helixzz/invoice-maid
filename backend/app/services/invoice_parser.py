@@ -290,6 +290,10 @@ def parse_pdf(content: bytes) -> ParsedInvoice:
     if not text or _has_cid_artifacts(text):
         logger.info("PDF parser falling back to PyMuPDF text extraction")
         text = _extract_text_pymupdf(content)
+    # Stripe receipts map the hyphen glyph to NUL (\x00) in their ToUnicode
+    # table; embedded NULs also truncate the value SQLite stores. Restore
+    # them as hyphens so "V8HP6PXG\x000245" becomes "V8HP6PXG-0245".
+    text = text.replace("\x00", "-")
     result.raw_text = text
 
     if qr_data:

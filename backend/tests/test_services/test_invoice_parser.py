@@ -507,3 +507,20 @@ def test_parse_dispatch_and_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
     assert wrapper.parse_pdf(b"x").invoice_no == "pdf"
     assert wrapper.parse_xml(b"x").invoice_no == "xml"
     assert wrapper.parse_ofd(b"x").invoice_no == "ofd"
+
+
+def test_parse_pdf_replaces_nul_bytes_with_hyphens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stripe receipts map hyphen glyphs to NUL; parse_pdf must restore them."""
+    monkeypatch.setattr(parser, "_decode_qr_from_pdf", lambda content: None)
+    monkeypatch.setattr(
+        parser,
+        "_extract_text_from_pdf",
+        lambda content: "Receipt\nInvoice number V8HP6PXG\x000245\nReceipt number 2627\x005011",
+    )
+    monkeypatch.setattr(parser, "_extract_text_pymupdf", lambda content: "")
+
+    result = parser.parse_pdf(b"pdf")
+
+    assert "\x00" not in result.raw_text
+    assert "V8HP6PXG-0245" in result.raw_text
+    assert "2627-5011" in result.raw_text
