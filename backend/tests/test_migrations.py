@@ -105,8 +105,8 @@ def test_0011_backfills_existing_rows_to_admin_when_users_row_present(
                 "INSERT INTO users (id, email, hashed_password, is_active, is_admin, "
                 "created_at, updated_at) VALUES "
                 "(1, 'admin@local', 'hash', 1, 1, '2026-04-21', '2026-04-21')"
+                )
             )
-        )
         conn.execute(
             sa.text(
                 "INSERT INTO email_accounts (id, name, type, username, "
@@ -1463,3 +1463,66 @@ def test_0017_downgrade_restores_saas_invoice_values(migration_db: Path) -> None
         ("RCPT-RT-1", "receipt"),
         ("SAAS-RT-1", "saas_invoice"),
     ]
+
+
+def test_0019_restores_official_hyphens_and_openai_legal_name(migration_db: Path) -> None:
+    _upgrade_to(migration_db, "0018_normalize_invoice_no")
+    _seed_user_and_invoice_with_category(migration_db, "TEMP", "overseas_invoice")
+    sync_url = f"sqlite:///{migration_db}"
+    engine = create_engine(sync_url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "UPDATE invoices SET invoice_no='JUPOBR1U0043', seller='OpenAI', "
+                "raw_text='Invoice number JUPOBR1U-0043 OpenAI OpCo, LLC' "
+                "WHERE id=(SELECT MIN(id) FROM invoices)"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "INSERT INTO invoices (user_id, invoice_no, buyer, seller, amount, "
+                "invoice_date, invoice_type, invoice_category, item_summary, file_path, "
+                "raw_text, email_uid, email_account_id, source_format, extraction_method, "
+                "confidence, is_manually_corrected, created_at) "
+                "SELECT user_id, 'JUPOBR1U-0043', buyer, seller, amount, invoice_date, "
+                "invoice_type, invoice_category, item_summary, file_path, raw_text, "
+                "email_uid || '-newer', email_account_id, source_format, "
+                "extraction_method, confidence, is_manually_corrected, created_at "
+                "FROM invoices ORDER BY id LIMIT 1"
+            )
+        )
+    engine.dispose()
+
+    _upgrade_to(migration_db, "0019_restore_invoice_number_format")
+
+    engine = create_engine(sync_url)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT invoice_no, seller FROM invoices ORDER BY id")
+        ).all()
+        index_sql = conn.execute(
+            sa.text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE name='uq_invoices_user_id_invoice_no_dedup_key'"
+            )
+        ).scalar_one()
+    engine.dispose()
+    assert rows == [("JUPOBR1U-0043", "OpenAI OpCo, LLC")]
+    assert "REPLACE(REPLACE(invoice_no" in index_sql
+
+    engine = create_engine(sync_url)
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO invoices (user_id, invoice_no, buyer, seller, amount, "
+                "invoice_date, invoice_type, invoice_category, item_summary, file_path, "
+                "raw_text, email_uid, email_account_id, source_format, extraction_method, "
+                "confidence, is_manually_corrected, created_at) "
+                "SELECT user_id, 'JUPOBR1U0043', buyer, seller, amount, invoice_date, "
+                "invoice_type, invoice_category, item_summary, file_path, raw_text, "
+                "email_uid || '-variant', email_account_id, source_format, "
+                "extraction_method, confidence, is_manually_corrected, created_at "
+                "FROM invoices ORDER BY id LIMIT 1"
+            )
+        )
+    engine.dispose()
