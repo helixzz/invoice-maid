@@ -26,8 +26,10 @@ from app.services.ai_service import AIService, _resolve_safelink
 from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders, is_scam_text
 from app.services.email_scanner import ScanOptions, ScannerFactory, _is_uid_newer
 from app.services.file_manager import FileManager
-from app.services.invoice_parser import normalize_invoice_no
+from app.services.invoice_parser import invoice_no_dedup_key
 from app.services.invoice_parser import parse as parse_invoice
+from app.services.invoice_parser import restore_legal_seller_name
+from app.models.invoice import invoice_no_dedup_expression
 from app.services.scrapers.factory import ScraperFactory
 from app.services.search_service import store_embedding
 from app.services import scan_progress as sp
@@ -613,11 +615,12 @@ async def _process_single_email(
                             )
                             continue
 
-                        parsed.invoice_no = normalize_invoice_no(parsed.invoice_no)
+                        parsed.seller = restore_legal_seller_name(parsed.seller, parsed.raw_text)
                         existing = await db.execute(
                             select(Invoice).where(
                                 Invoice.user_id == user_id,
-                                Invoice.invoice_no == parsed.invoice_no,
+                                invoice_no_dedup_expression()
+                                == invoice_no_dedup_key(parsed.invoice_no),
                             )
                         )
                         if existing.scalar_one_or_none():

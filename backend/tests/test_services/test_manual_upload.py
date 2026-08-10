@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.config import get_settings
 from app.models import EmailAccount, Invoice
 from app.schemas.invoice import InvoiceExtract
 from app.services import manual_upload as mu
-from app.services.ai_service import AIService
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import ParsedInvoice
 
@@ -272,8 +270,6 @@ async def test_process_uploaded_invoice_race_condition_returns_duplicate(
     NEW scan_log so extraction_log has a valid FK, and respond duplicate
     with the existing_invoice_id."""
     del seeded_manual_account
-    from sqlalchemy.exc import IntegrityError
-
     parsed = _parsed(invoice_no="RACE-001")
     monkeypatch.setattr(mu, "parse_invoice", lambda f, p: parsed)
 
@@ -348,7 +344,98 @@ async def test_process_uploaded_invoice_embedding_failure_does_not_abort(
     )
     assert result.outcome == "saved"
     assert result.invoice is not None
-    assert result.invoice.invoice_no == "EMBEDFAIL001"
+    assert result.invoice.invoice_no == "EMBED-FAIL-001"
+
+
+async def test_upload_preserves_official_hyphenated_invoice_no(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    del seeded_manual_account
+    monkeypatch.setattr(
+        mu,
+        "parse_invoice",
+        lambda filename, payload: _parsed(invoice_no="JUPOBR1U-0043"),
+    )
+
+    result = await mu.process_uploaded_invoice(
+        db=db,
+        ai=_mock_ai(),
+        file_mgr=FileManager(settings.STORAGE_PATH),
+        settings=settings,
+        filename="openrouter.pdf",
+        payload=b"pdf",
+        user_id=1,
+    )
+
+    assert result.outcome == "saved"
+    assert result.invoice is not None
+    assert result.invoice.invoice_no == "JUPOBR1U-0043"
+
+
+async def test_upload_hyphenless_variant_matches_hyphenated_existing_invoice(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    del seeded_manual_account
+    monkeypatch.setattr(
+        mu,
+        "parse_invoice",
+        lambda filename, payload: _parsed(
+            invoice_no=("JUPOBR1U-0043" if filename == "official.pdf" else "JUPOBR1U0043")
+        ),
+    )
+    file_mgr = FileManager(settings.STORAGE_PATH)
+    original = await mu.process_uploaded_invoice(
+        db=db,
+        ai=_mock_ai(),
+        file_mgr=file_mgr,
+        settings=settings,
+        filename="official.pdf",
+        payload=b"official",
+        user_id=1,
+    )
+
+    duplicate = await mu.process_uploaded_invoice(
+        db=db,
+        ai=_mock_ai(),
+        file_mgr=file_mgr,
+        settings=settings,
+        filename="variant.pdf",
+        payload=b"variant",
+        user_id=1,
+    )
+
+    assert original.invoice is not None
+    assert original.invoice.invoice_no == "JUPOBR1U-0043"
+    assert duplicate.outcome == "duplicate"
+    assert duplicate.existing_invoice_id == original.invoice.id
+
+
+async def test_upload_restores_openai_legal_seller_from_raw_text(
+    db, settings, seeded_manual_account, monkeypatch
+) -> None:
+    del seeded_manual_account
+    monkeypatch.setattr(
+        mu,
+        "parse_invoice",
+        lambda filename, payload: _parsed(
+            invoice_no="WHKUK2JG-0118",
+            seller="OpenAI",
+            raw_text="Receipt\nOpenAI OpCo, LLC Bill to\nMB Consulting",
+        ),
+    )
+
+    result = await mu.process_uploaded_invoice(
+        db=db,
+        ai=_mock_ai(_strong_llm_extract(seller="OpenAI")),
+        file_mgr=FileManager(settings.STORAGE_PATH),
+        settings=settings,
+        filename="openai.pdf",
+        payload=b"pdf",
+        user_id=1,
+    )
+
+    assert result.invoice is not None
+    assert result.invoice.seller == "OpenAI OpCo, LLC"
 
 
 async def test_process_uploaded_invoice_embedding_success_stores_vector(
@@ -768,4 +855,3 @@ async def test_process_uploaded_invoice_merge_skips_zero_amount_from_llm(
     assert result.outcome == "saved"
     assert result.invoice is not None
     assert result.invoice.amount == Decimal("0")
-

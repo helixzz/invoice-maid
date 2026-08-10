@@ -36,8 +36,10 @@ from app.services.ai_service import AIService
 from app.services.email_classifier import is_scam_text
 from app.services.file_manager import FileManager
 from app.services.invoice_parser import ParsedInvoice
-from app.services.invoice_parser import normalize_invoice_no
+from app.services.invoice_parser import invoice_no_dedup_key
 from app.services.invoice_parser import parse as parse_invoice
+from app.services.invoice_parser import restore_legal_seller_name
+from app.models.invoice import invoice_no_dedup_expression
 from app.services.search_service import store_embedding
 
 logger = logging.getLogger(__name__)
@@ -418,11 +420,11 @@ async def process_uploaded_invoice(
             parse_format=parsed.source_format,
         )
 
-    parsed.invoice_no = normalize_invoice_no(parsed.invoice_no)
+    parsed.seller = restore_legal_seller_name(parsed.seller, parsed.raw_text)
     existing_row = await db.execute(
         select(Invoice).where(
             Invoice.user_id == user_id,
-            Invoice.invoice_no == parsed.invoice_no,
+            invoice_no_dedup_expression() == invoice_no_dedup_key(parsed.invoice_no),
         )
     )
     existing_invoice = existing_row.scalar_one_or_none()
@@ -491,7 +493,7 @@ async def process_uploaded_invoice(
         dup_row = await db.execute(
             select(Invoice).where(
                 Invoice.user_id == user_id,
-                Invoice.invoice_no == parsed.invoice_no,
+                invoice_no_dedup_expression() == invoice_no_dedup_key(parsed.invoice_no),
             )
         )
         dup_invoice = dup_row.scalar_one_or_none()
