@@ -4,7 +4,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, ClassVar
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -52,3 +53,16 @@ class Invoice(Base):
     correction_logs: Mapped[list["CorrectionLog"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"
     )
+
+
+def invoice_no_dedup_expression() -> ColumnElement[str]:
+    """Return the SQL equivalent of invoice_no_dedup_key()."""
+    return func.replace(func.replace(Invoice.invoice_no, "-", ""), " ", "")
+
+
+Index(
+    "uq_invoices_user_id_invoice_no_dedup_key",
+    Invoice.user_id,
+    invoice_no_dedup_expression(),
+    unique=True,
+)

@@ -1,4 +1,4 @@
-# pyright: reportAny=false, reportExplicitAny=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnnecessaryCast=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnnecessaryCast=false
 from __future__ import annotations
 
 import base64
@@ -66,13 +66,18 @@ def _has_cid_artifacts(text: str, threshold: int = 5) -> bool:
     return len(_CID_RE.findall(text)) > threshold
 
 
-def normalize_invoice_no(value: str | None) -> str:
-    """Canonical dedup key: vendors render the same invoice id with and
-    without separators ("JUPOBR1U-0043" vs "JUPOBR1U0043"), which lets
-    duplicates slip past UNIQUE(user_id, invoice_no)."""
+def invoice_no_dedup_key(value: str | None) -> str:
+    """Return a separator-insensitive comparison key without changing display."""
     if not value:
         return ""
     return value.replace("-", "").replace(" ", "")
+
+
+def restore_legal_seller_name(seller: str | None, raw_text: str) -> str | None:
+    """Use an exact legal name when the source text proves the model truncated it."""
+    if seller == "OpenAI" and "OpenAI OpCo, LLC" in raw_text:
+        return "OpenAI OpCo, LLC"
+    return seller
 
 
 def detect_format(filename: str, content: bytes) -> Literal["pdf", "xml", "ofd"]:
