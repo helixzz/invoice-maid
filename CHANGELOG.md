@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.26] - 2026-08-10
+
+### Fixed
+
+**Official invoice numbers retain their vendor-issued separators.** v1.3.25
+correctly detected format variants as duplicates but incorrectly rewrote the
+stored/displayed value (`JUPOBR1U-0043` became `JUPOBR1U0043`). Storage and
+comparison are now separate concerns: `invoice_no` remains exactly as issued,
+while a unique SQLite expression index ignores hyphens and spaces only for
+deduplication. Migration 0019 restores the verified Stripe-style formats for
+OpenRouter, Cursor, OpenAI, and related invoices.
+
+**OpenAI legal seller name is restored deterministically.** When source PDF
+text explicitly contains `OpenAI OpCo, LLC`, an occasional model output of
+`OpenAI` is corrected to the proven legal name. Migration 0019 repairs the two
+existing affected rows.
+
 ## [1.3.25] - 2026-08-05
 
 ### Fixed

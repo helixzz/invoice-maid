@@ -1,5 +1,14 @@
 # Roadmap
 
+## v1.3.26 — Released
+
+**Theme:** Preserve official invoice identifiers while deduplicating formatting
+variants. Adds a format-insensitive database uniqueness index without changing
+display values, restores vendor-issued hyphens, and corrects proven OpenAI legal
+seller-name truncations. See [CHANGELOG.md](CHANGELOG.md#1326---2026-08-10).
+
+---
+
 ## v0.1.0 — Released
 
 First release. Full email-to-invoice pipeline with PDF/XML/OFD parsing, LLM-powered classification and extraction, FTS5 + semantic search, Vue 3 dashboard, and CI/release automation.
