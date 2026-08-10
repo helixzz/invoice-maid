@@ -9,7 +9,6 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-import aiofiles
 import filetype
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -21,11 +20,13 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import CurrentUser, assert_owned
 from app.models import CorrectionLog, Invoice
+from app.models.invoice import invoice_no_dedup_expression
+from app.services.invoice_parser import invoice_no_dedup_key
 from app.rate_limiter import limiter
 from app.schemas.invoice import InvoiceListResponse, InvoiceResponse
 from app.services.ai_service import AIService
 from app.services.file_manager import FileManager
-from app.services.invoice_csv import CSV_COLUMNS, CSV_UTF8_BOM, build_csv_content
+from app.services.invoice_csv import CSV_UTF8_BOM, build_csv_content
 from app.services.manual_upload import UploadResult, process_uploaded_invoice
 from app.services.search_service import SearchService
 
@@ -384,7 +385,8 @@ async def update_invoice(
         duplicate = await db.execute(
             select(Invoice.id).where(
                 Invoice.user_id == _current_user.id,
-                Invoice.invoice_no == update_data["invoice_no"],
+                invoice_no_dedup_expression()
+                == invoice_no_dedup_key(update_data["invoice_no"]),
                 Invoice.id != invoice_id,
             )
         )

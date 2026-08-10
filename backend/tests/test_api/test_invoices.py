@@ -185,6 +185,23 @@ async def test_update_invoice_rejects_duplicate_invoice_no(client, auth_headers,
     assert response.json() == {"detail": "Invoice number already exists"}
 
 
+async def test_update_invoice_rejects_format_variant_duplicate(
+    client, auth_headers, create_invoice
+) -> None:
+    kept = await create_invoice(invoice_no="JUPOBR1U-0043")
+    other = await create_invoice(invoice_no="JUPOBR1U-0044")
+
+    response = await client.put(
+        f"/api/v1/invoices/{other.id}",
+        headers=auth_headers,
+        json={"invoice_no": "JUPOBR1U0043"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Invoice number already exists"}
+    assert kept.invoice_no == "JUPOBR1U-0043"
+
+
 async def test_update_invoice_allows_unique_invoice_no_and_date(client, auth_headers, create_invoice, db) -> None:
     await create_invoice(invoice_no="INV-EDIT-UNIQUE-A")
     invoice = await create_invoice(invoice_no="INV-EDIT-UNIQUE-B")
