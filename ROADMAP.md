@@ -1,5 +1,14 @@
 # Roadmap
 
+## v1.3.27 — Released
+
+**Theme:** Reliable reusable invoice filters. Fixes the Saved View API route,
+persists category selections, preserves legacy views, and keeps the active-view
+label synchronized with manual filter edits. See
+[CHANGELOG.md](CHANGELOG.md#1327---2026-08-16).
+
+---
+
 ## v1.3.26 — Released
 
 **Theme:** Preserve official invoice identifiers while deduplicating formatting

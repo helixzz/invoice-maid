@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.27] - 2026-08-16
+
+### Fixed
+
+**Saved Views used the wrong API path.** The frontend called
+`/api/v1/invoices/views`, which collided with the dynamic invoice-detail route
+and returned 405 for creation and 422 for listing. Saved Views now use the
+actual `/api/v1/views` contract for create, list, and delete.
+
+Saved Views now also persist category filters, restore legacy views that lack a
+category field, expose Save View for category-only filters, clear all filters
+when returning to All Invoices, and release the active view label when filters
+are manually modified.
+
 ## [1.3.26] - 2026-08-10
 
 ### Fixed
