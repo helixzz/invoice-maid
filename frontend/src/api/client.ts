@@ -189,17 +189,17 @@ export const api = {
   },
 
   async getSavedViews(): Promise<SavedView[]> {
-    const res = await apiClient.get('/invoices/views')
+    const res = await apiClient.get('/views')
     return res.data
   },
 
   async createSavedView(name: string, filterJson: string): Promise<SavedView> {
-    const res = await apiClient.post('/invoices/views', { name, filter_json: filterJson })
+    const res = await apiClient.post('/views', { name, filter_json: filterJson })
     return res.data
   },
 
   async deleteSavedView(id: number): Promise<void> {
-    await apiClient.delete(`/invoices/views/${id}`)
+    await apiClient.delete(`/views/${id}`)
   },
 
   // Accounts

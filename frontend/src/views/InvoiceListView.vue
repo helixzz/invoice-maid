@@ -29,8 +29,7 @@ const categoryOptions = CATEGORY_ORDER.map(value => ({
   label: CATEGORY_LABELS[value],
 }))
 
-function parseCategoriesFromQuery(): InvoiceCategory[] {
-  const raw = route.query.category
+function toCategoryList(raw: unknown): InvoiceCategory[] {
   const list = Array.isArray(raw) ? raw : raw ? [raw] : []
   const result: InvoiceCategory[] = []
   for (const entry of list) {
@@ -39,6 +38,35 @@ function parseCategoriesFromQuery(): InvoiceCategory[] {
     }
   }
   return result
+}
+
+function parseCategoriesFromQuery(): InvoiceCategory[] {
+  return toCategoryList(route.query.category)
+}
+
+interface ViewFilters {
+  q: string
+  dateFrom: string
+  dateTo: string
+  categories: InvoiceCategory[]
+}
+
+// Views saved before categories existed have no `category` key at all;
+// toCategoryList turns that (and any stale value) into an empty filter.
+function parseViewFilters(view: SavedView): ViewFilters {
+  const filters = JSON.parse(view.filter_json)
+  return {
+    q: filters.q || '',
+    dateFrom: filters.date_from || '',
+    dateTo: filters.date_to || '',
+    categories: toCategoryList(filters.category),
+  }
+}
+
+// Order-insensitive: the same categories picked in a different order are the
+// same filter, so they must not count as a divergence.
+function filterSignature(filters: ViewFilters): string {
+  return JSON.stringify([filters.q, filters.dateFrom, filters.dateTo, [...filters.categories].sort()])
 }
 
 const selectedCategories = ref<InvoiceCategory[]>(parseCategoriesFromQuery())
@@ -64,26 +92,53 @@ const fetchSavedViews = async () => {
   }
 }
 
+const clearAllFilters = () => {
+  activeViewId.value = null
+  searchQuery.value = ''
+  dateFrom.value = ''
+  dateTo.value = ''
+  selectedCategories.value = []
+}
+
 const applySavedView = (viewId: number | '') => {
   if (!viewId) {
-    activeViewId.value = null
-    searchQuery.value = ''
-    dateFrom.value = ''
-    dateTo.value = ''
+    clearAllFilters()
     return
   }
 
   const view = savedViews.value.find(v => v.id === viewId)
   if (view) {
     try {
-      const filters = JSON.parse(view.filter_json)
-      searchQuery.value = filters.q || ''
-      dateFrom.value = filters.date_from || ''
-      dateTo.value = filters.date_to || ''
+      const filters = parseViewFilters(view)
+      searchQuery.value = filters.q
+      dateFrom.value = filters.dateFrom
+      dateTo.value = filters.dateTo
+      selectedCategories.value = filters.categories
       activeViewId.value = view.id
     } catch (e) {
       console.error('Failed to parse saved view filters', e)
     }
+  }
+}
+
+// Applying a view sets every filter from parseViewFilters, so a freshly
+// applied view always matches its own signature and survives this check;
+// only a later manual edit diverges and falls back to All Invoices.
+const releaseActiveViewIfDiverged = () => {
+  const view = savedViews.value.find(v => v.id === activeViewId.value)
+  if (!view) return
+  try {
+    const current: ViewFilters = {
+      q: searchQuery.value,
+      dateFrom: dateFrom.value,
+      dateTo: dateTo.value,
+      categories: selectedCategories.value,
+    }
+    if (filterSignature(current) !== filterSignature(parseViewFilters(view))) {
+      activeViewId.value = null
+    }
+  } catch (e) {
+    console.error('Failed to parse saved view filters', e)
   }
 }
 
@@ -94,7 +149,8 @@ const saveCurrentView = async () => {
   const filterJson = JSON.stringify({
     q: searchQuery.value,
     date_from: dateFrom.value,
-    date_to: dateTo.value
+    date_to: dateTo.value,
+    category: [...selectedCategories.value],
   })
 
   try {
@@ -185,9 +241,13 @@ const debouncedSearch = useDebounceFn(() => {
   fetchInvoices()
 }, 300)
 
-watch(searchQuery, debouncedSearch)
+watch(searchQuery, () => {
+  releaseActiveViewIfDiverged()
+  debouncedSearch()
+})
 
 watch([dateFrom, dateTo, size], () => {
+  releaseActiveViewIfDiverged()
   page.value = 1
   fetchInvoices()
 })
@@ -206,6 +266,7 @@ watch(selectedCategories, (next, prev) => {
   if (prev && next.length === prev.length && next.every((v, i) => v === prev[i])) {
     return
   }
+  releaseActiveViewIfDiverged()
   invoicesStore.setCategories(next)
   syncCategoryQuery(next)
   page.value = 1
@@ -370,6 +431,10 @@ const clearDates = () => {
   dateTo.value = ''
 }
 
+const hasActiveFilters = computed(
+  () => Boolean(searchQuery.value || dateFrom.value || dateTo.value) || selectedCategories.value.length > 0,
+)
+
 const categoryBreakdown = computed<{ category: InvoiceCategory; count: number }[]>(() => {
   const counts: Record<InvoiceCategory, number> = {
     vat_invoice: 0,
@@ -525,6 +590,7 @@ onMounted(() => {
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 w-full">
           <div class="flex items-center gap-3 w-full sm:w-auto">
             <select
+              data-test-id="saved-view-select"
               :value="activeViewId || ''"
               @change="e => applySavedView(Number((e.target as HTMLSelectElement).value) || '')"
               class="block w-full sm:w-48 pl-3 pr-8 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white transition-colors"
@@ -533,7 +599,7 @@ onMounted(() => {
               <option v-for="view in savedViews" :key="view.id" :value="view.id">{{ view.name }}</option>
             </select>
             <button
-              v-if="searchQuery || dateFrom || dateTo"
+              v-if="hasActiveFilters"
               @click="showSaveViewModal = true"
               class="text-sm font-medium text-blue-600 hover:text-blue-800 whitespace-nowrap"
             >
@@ -698,8 +764,8 @@ onMounted(() => {
                     <p class="text-base font-medium text-slate-900">No invoices match your search</p>
                     <p class="text-sm mt-1 text-slate-500 max-w-sm mb-4">Try adjusting your search terms or clearing the date filters to see more results.</p>
                     <button
-                      v-if="searchQuery || dateFrom || dateTo"
-                      @click="searchQuery = ''; clearDates()"
+                      v-if="hasActiveFilters"
+                      @click="clearAllFilters"
                       class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 transition-colors"
                     >
                       Clear Filters
@@ -832,6 +898,7 @@ onMounted(() => {
                     <ul class="list-disc pl-5 space-y-1">
                       <li v-if="searchQuery">Search: "{{ searchQuery }}"</li>
                       <li v-if="dateFrom || dateTo">Date: {{ dateFrom || 'Any' }} to {{ dateTo || 'Any' }}</li>
+                      <li v-if="selectedCategories.length">Categories: {{ selectedCategories.map(c => CATEGORY_LABELS[c]).join(', ') }}</li>
                     </ul>
                   </div>
                 </div>
