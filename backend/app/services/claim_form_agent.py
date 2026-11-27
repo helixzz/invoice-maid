@@ -77,16 +77,25 @@ WECHAT_URL_PATH_HINTS = ("/fpwx/", "/wx/", "wxinvoice", "weixin")
 
 CAPTCHA_FIELD_HINTS = ("验证码", "captcha", "verify", "vcode", "图形码", "校验码")
 
-ENTRY_BUTTON_SELECTORS = (
-    'button:has-text("发送邮箱")',
-    'a:has-text("发送邮箱")',
-    'button:has-text("重发邮箱")',
-    'button:has-text("立即开票")',
-    'button:has-text("去开票")',
-    'button:has-text("申请开票")',
-    'button:has-text("开发票")',
-    'a:has-text("立即开票")',
-    'a:has-text("去开票")',
+ENTRY_BUTTON_TEXTS = (
+    "发送邮箱",
+    "重发邮箱",
+    "立即开票",
+    "去开票",
+    "申请开票",
+    "开发票",
+)
+
+SUBMIT_BUTTON_TEXTS = (
+    "确认开票",
+    "提交开票",
+    "申请开票",
+    "立即开票",
+    "确认发送",
+    "提交",
+    "发送",
+    "确定",
+    "确认",
 )
 
 _INVOICE_NO_RE = re.compile(r"发票号码[：:\s]*(\d{20}|\d{8})\b")
@@ -330,6 +339,21 @@ async def _extract_visible_fields(page: Any) -> list[FormFieldInfo]:  # pragma: 
     return [FormFieldInfo(**f) for f in raw_fields]
 
 
+async def _find_clickable_by_texts(page: Any, labels: tuple[str, ...]) -> tuple[Any | None, str]:  # pragma: no cover - real browser helper
+    """Locate a visible clickable element matching any label regardless of tag (button/a/div/span)."""
+    for label in labels:
+        for loc in (
+            page.locator(f'button:has-text("{label}"), a:has-text("{label}")').first,
+            page.get_by_text(label, exact=True).last,
+        ):
+            try:
+                if await loc.count() > 0 and await loc.is_visible():
+                    return loc, label
+            except Exception:
+                continue
+    return None, ""
+
+
 async def _default_playwright_runner(  # pragma: no cover - real headless browser path
     qr_url: str,
     profile: InvoiceProfile,
@@ -344,6 +368,7 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
         )
 
     steps_taken: list[str] = []
+    sticky_issued_no = ""
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -374,6 +399,8 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
             for step_idx in range(3):
                 body_text = (await page.inner_text("body")) or ""
                 issued_no = extract_issued_invoice_no(body_text)
+                if issued_no and not sticky_issued_no:
+                    sticky_issued_no = issued_no
 
                 if is_wechat_auth_blocked(page.url, body_text):
                     shot = await page.screenshot(full_page=True)
@@ -399,7 +426,7 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
                         kind="needs_attention",
                         detail=attention,
                         screenshot_bytes=shot,
-                        detected_invoice_no=issued_no,
+                        detected_invoice_no=sticky_issued_no,
                         page_text_excerpt=build_page_excerpt(body_text),
                         steps_taken=steps_taken,
                     )
@@ -409,51 +436,50 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
                         await page.locator(selector).first.fill(value)
                     steps_taken.append(f"填写 {len(fills)} 个表单字段")
 
-                    submit_btn = page.locator(
-                        'button:has-text("提交"), button:has-text("确认开票"), button:has-text("申请开票"), '
-                        'button:has-text("立即开票"), button:has-text("确定"), button:has-text("发送"), '
-                        'button[type="submit"], a:has-text("提交"), a:has-text("确定")'
-                    ).first
-                    if await submit_btn.count() == 0:
+                    submit_btn, submit_label = await _find_clickable_by_texts(page, SUBMIT_BUTTON_TEXTS)
+                    if submit_btn is None:
+                        fallback_btn = page.locator('button[type="submit"]').first
+                        if await fallback_btn.count() > 0:
+                            submit_btn = fallback_btn
+                            submit_label = "submit"
+                    if submit_btn is None:
                         shot = await page.screenshot(full_page=True)
                         return BrowserClaimOutcome(
                             kind="needs_attention",
                             detail="表单已填写但未找到提交按钮，请查看截图确认。",
                             screenshot_bytes=shot,
-                            detected_invoice_no=issued_no,
+                            detected_invoice_no=sticky_issued_no,
                             page_text_excerpt=build_page_excerpt(body_text),
                             steps_taken=steps_taken,
                         )
 
                     await submit_btn.click()
-                    steps_taken.append("点击提交按钮")
+                    steps_taken.append(f"点击「{submit_label}」")
                     await page.wait_for_timeout(3000)
                     post_text = (await page.inner_text("body")) or ""
                     status_kind, detail = evaluate_post_submit_text(post_text)
                     shot = await page.screenshot(full_page=True) if status_kind != "submitted" else None
-                    if issued_no and status_kind == "submitted":
-                        detail = f"该订单已开具发票（号码 {issued_no}），已自动重发至收票邮箱（{profile.email}）！"
+                    final_no = sticky_issued_no or extract_issued_invoice_no(post_text)
+                    if final_no and status_kind == "submitted":
+                        detail = f"该订单已开具发票（号码 {final_no}），已自动重发至收票邮箱（{profile.email}）！"
                     return BrowserClaimOutcome(
                         kind=status_kind,
                         detail=detail,
                         screenshot_bytes=shot,
-                        detected_invoice_no=issued_no or extract_issued_invoice_no(post_text),
+                        detected_invoice_no=final_no,
                         page_text_excerpt=build_page_excerpt(post_text),
                         steps_taken=steps_taken,
                     )
 
-                # No visible input fields yet -> look for an entry / resend-email button to advance
+                # No visible input fields yet -> look for any visible entry / resend-email control (div/span/button/a)
                 clicked_entry = False
                 if step_idx < 2:
-                    for btn_sel in ENTRY_BUTTON_SELECTORS:
-                        loc = page.locator(btn_sel).first
-                        if await loc.count() > 0:
-                            btn_label = ((await loc.inner_text()) or btn_sel).strip()[:20]
-                            await loc.click()
-                            steps_taken.append(f"点击「{btn_label}」")
-                            await page.wait_for_timeout(2000)
-                            clicked_entry = True
-                            break
+                    entry_loc, entry_label = await _find_clickable_by_texts(page, ENTRY_BUTTON_TEXTS)
+                    if entry_loc is not None:
+                        await entry_loc.click()
+                        steps_taken.append(f"点击「{entry_label}」")
+                        await page.wait_for_timeout(2000)
+                        clicked_entry = True
                 if not clicked_entry:
                     shot = await page.screenshot(full_page=True)
                     kind, detail = diagnose_non_form_page(
@@ -466,7 +492,7 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
                         kind=kind,
                         detail=detail,
                         screenshot_bytes=shot,
-                        detected_invoice_no=issued_no,
+                        detected_invoice_no=sticky_issued_no,
                         page_text_excerpt=build_page_excerpt(body_text),
                         steps_taken=steps_taken,
                     )
@@ -483,7 +509,7 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
                 kind=kind,
                 detail=detail,
                 screenshot_bytes=shot,
-                detected_invoice_no=extract_issued_invoice_no(final_text),
+                detected_invoice_no=sticky_issued_no or extract_issued_invoice_no(final_text),
                 page_text_excerpt=build_page_excerpt(final_text),
                 steps_taken=steps_taken,
             )

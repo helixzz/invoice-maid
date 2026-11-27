@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.2.1] - 2026-11-27
+
+### Fixed
+
+- **Mobile H5 invoice buttons rendered as `<div>`/`<span>` (such as Meituan's `<div class="button-wrap">发送邮箱</div>`) were missed by `button:has-text(...)` / `a:has-text(...)` selectors.** Replaced tag-bound selectors in `claim_form_agent.py` with `_find_clickable_by_texts` (combining `button`/`a` matching with tag-agnostic visible `page.get_by_text(label, exact=True).last`) and preserved the detected `invoice_no` across multi-step navigation.
+
 ## [2.2.0] - 2026-11-27
 
 ### Added

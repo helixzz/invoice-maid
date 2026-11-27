@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.2.1 — Released
+
+**Theme:** Tag-agnostic H5 click handling for QR claim pages. Fixes clicking `<div>`/`<span>` action buttons like Meituan's `发送邮箱` and preserves detected invoice numbers across multi-step navigation. See [CHANGELOG.md](CHANGELOG.md#221---2026-11-27).
+
+---
+
 ## v2.2.0 — Released
 
 **Theme:** Multi-step QR Claim Agent & Telegram Visual Feedback. Sends real page screenshots via Telegram `sendPhoto` on failures, auto-collapses profile-picker inline keyboards after selection, supports multi-step button clicking (`发送邮箱` / `立即开票`), detects already-issued invoices & WeChat-auth restrictions, and adds VLM screenshot diagnosis. See [CHANGELOG.md](CHANGELOG.md#220---2026-11-27).

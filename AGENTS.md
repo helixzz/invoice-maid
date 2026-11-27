@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v2.2.0 — Smarter multi-step QR claim agent (auto-clicks entry / "发送邮箱" buttons, detects already-issued invoices & WeChat-auth blocks, VLM screenshot diagnosis), Telegram failure screenshot delivery (`sendPhoto`), and auto-collapsing profile-picker keyboards.**
+**v2.2.1 — Tag-agnostic H5 button clicking (`div`/`span`/`button`/`a`) for multi-step QR invoice claiming (e.g. Meituan "发送邮箱"), Telegram failure screenshots, and auto-collapsing profile keyboards.**
 
 ## STRUCTURE
 
