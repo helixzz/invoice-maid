@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.1] - 2026-11-27
+
+### Fixed
+
+- **HTML-escaped & semicolon-mangled presigned invoice download URLs returned 403.** Presigned S3/OSS links in HTML invoice emails (such as JD Cloud digital invoices containing `&amp;` or `?AWSAccessKeyId=...;Expires=...&Signature=...`) failed with HTTP 403 Forbidden because `_extract_urls` extracted raw HTML strings without `html.unescape` and left semicolon-mangled query separators intact. Both `_extract_urls` and `_download_linked_invoice` now normalize URLs via `_clean_extracted_url`.
+- **Silent link-download failures left no audit trail.** When the LLM classified an email as an invoice and requested a link download (`should_download=True`), a failed download with no fallback attachments previously emitted zero `ExtractionLog` entries. It now logs `outcome="download_failed"` with `download_outcome="failed"` and the failing URL so operators can inspect it in Scan Operations.
+
 ## [1.4.0] - 2026-11-27
 
 ### Added

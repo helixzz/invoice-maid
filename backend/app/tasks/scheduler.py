@@ -30,7 +30,7 @@ from app.services.email_classifier import (
     _parse_trusted_senders,
     is_scam_text,
 )
-from app.services.email_scanner import ScanOptions, ScannerFactory, _is_uid_newer
+from app.services.email_scanner import ScanOptions, ScannerFactory, _clean_extracted_url, _is_uid_newer
 from app.services.failed_email_queue import (
     enqueue_failed_email,
     fetch_due_failed_emails,
@@ -140,6 +140,7 @@ def _guess_filename_from_link(url: str, content_type: str | None) -> str:
 
 
 async def _download_linked_invoice(url: str) -> tuple[str, bytes] | None:
+    url = _clean_extracted_url(url)
     if _is_blocked_download_url(url):
         logger.info("Blocked non-invoice URL (tracker/beacon/unsubscribe): %s", url)
         return None
@@ -472,6 +473,21 @@ async def _process_single_email(
                     downloaded = await _download_linked_invoice(url)
                     if downloaded is not None:
                         raw_items.append(downloaded)
+                    elif not raw_items:
+                        db.add(
+                            _record_extraction_log(
+                                user_id=user_id,
+                                scan_log_id=log_id,
+                                email_uid=email_data.uid,
+                                email_subject=email_data.subject,
+                                attachment_filename=None,
+                                outcome="download_failed",
+                                classification_tier=classification_tier,
+                                download_outcome="failed",
+                                error_detail=f"Failed to download invoice link: {url[:300]}",
+                            )
+                        )
+                        await db.commit()
 
                 raw_items = _prioritize_raw_items_with_hints(
                     raw_items,

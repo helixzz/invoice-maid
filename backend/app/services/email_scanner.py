@@ -254,13 +254,28 @@ def _is_qq_imap(account: EmailAccount | None, host: str | None = None) -> bool:
     return resolved_host in QQ_IMAP_HOSTS
 
 
+_SEMICOLON_QUERY_PARAM_RE = re.compile(r";([A-Za-z][A-Za-z0-9_]*=)")
+
+
+def _clean_extracted_url(url: str) -> str:
+    """Unescape HTML entities (e.g. ``&amp;``) and repair semicolon-mangled query params
+    such as ``?AWSAccessKeyId=...;Expires=...`` seen in JD Cloud S3 invoice emails."""
+    cleaned = unescape(url)
+    if "?" in cleaned:
+        base, query = cleaned.split("?", 1)
+        query = _SEMICOLON_QUERY_PARAM_RE.sub(r"&\1", query)
+        cleaned = f"{base}?{query}"
+    return cleaned
+
+
 def _extract_urls(*body_parts: str) -> list[str]:
     seen: set[str] = set()
     urls: list[str] = []
     for match in URL_PATTERN.findall(" ".join(body_parts)):
-        if match not in seen:
-            seen.add(match)
-            urls.append(match)
+        cleaned = _clean_extracted_url(match)
+        if cleaned not in seen:
+            seen.add(cleaned)
+            urls.append(cleaned)
     return urls
 
 

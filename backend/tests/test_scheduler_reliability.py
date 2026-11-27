@@ -300,6 +300,86 @@ async def test_non_system_email_error_logs_without_enqueuing_retry(
     assert queued is None
 
 
+@pytest.mark.asyncio
+async def test_clean_extracted_url_repairs_jd_presigned_links_and_logs_download_failed(
+    db, settings, create_email_account, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.email_scanner import _clean_extracted_url, _extract_urls
+
+    raw_html = (
+        '<a href="https://eicore-invoice-26.s3.cn-north-1.jdcloud-oss.com/digital.pdf'
+        '?AWSAccessKeyId=AK123&amp;Expires=2742515364&amp;Signature=abc%3D">PDF</a> '
+        'https://eicore-invoice-26.s3.cn-north-1.jdcloud-oss.com/digital2.pdf'
+        '?AWSAccessKeyId=AK123;Expires=2742515364&Signature=def%3D '
+        'https://plain.example.com/no-query'
+    )
+    urls = _extract_urls(raw_html)
+    assert urls[0].endswith("?AWSAccessKeyId=AK123&Expires=2742515364&Signature=abc%3D")
+    assert urls[1].endswith("?AWSAccessKeyId=AK123&Expires=2742515364&Signature=def%3D")
+    assert _clean_extracted_url("https://plain.example.com/no-query") == "https://plain.example.com/no-query"
+
+    # Failed download with no fallback attachments records download_failed ExtractionLog
+    account = await create_email_account()
+    raw = _make_email(
+        uid="dl-fail-1",
+        subject="您的京东订单电子发票已开具",
+        body_text="请点击下载",
+        body_links=["https://example.com/inv.pdf"],
+        attachments=[],
+    )
+
+    class LinkAI:
+        async def analyze_email(self, *args, **kwargs):
+            return SimpleNamespace(
+                is_invoice_related=True,
+                should_download=True,
+                best_download_url="https://example.com/inv.pdf",
+                url_is_safelink=False,
+                extraction_hints=SimpleNamespace(likely_formats=[]),
+            )
+
+    monkeypatch.setattr(scheduler_mod, "_download_linked_invoice", AsyncMock(return_value=None))
+    monkeypatch.setattr(scheduler_mod, "get_db", lambda: _fresh_session(db))
+
+    res = await scheduler_mod._process_single_email(
+        email_data=raw,
+        classifier=scheduler_mod.EmailClassifier(),
+        ai=LinkAI(),
+        file_mgr=scheduler_mod.FileManager(settings.STORAGE_PATH),
+        settings=settings,
+        log_id=1,
+        account_id=account.id,
+        user_id=account.user_id,
+    )
+    assert res.invoices_added == 0
+    logs = (await db.execute(select(ExtractionLog).where(ExtractionLog.email_uid == "dl-fail-1"))).scalars().all()
+    assert len(logs) == 1
+    assert logs[0].outcome == "download_failed"
+    assert logs[0].download_outcome == "failed"
+
+    # When fallback attachment already exists, failed link download does not emit download_failed
+    raw_with_att = _make_email(
+        uid="dl-fail-with-att",
+        subject="Invoice with attachment and broken link",
+        body_text="text",
+        body_links=["https://example.com/inv.pdf"],
+        attachments=[RawAttachment(filename="inv.pdf", payload=b"%PDF-1.4", content_type="application/pdf")],
+    )
+    monkeypatch.setattr(scheduler_mod, "parse_invoice", lambda _fn, _data: ParsedInvoice(confidence=0.0, raw_text=""))
+    await scheduler_mod._process_single_email(
+        email_data=raw_with_att,
+        classifier=scheduler_mod.EmailClassifier(),
+        ai=LinkAI(),
+        file_mgr=scheduler_mod.FileManager(settings.STORAGE_PATH),
+        settings=settings,
+        log_id=1,
+        account_id=account.id,
+        user_id=account.user_id,
+    )
+    logs2 = (await db.execute(select(ExtractionLog).where(ExtractionLog.email_uid == "dl-fail-with-att"))).scalars().all()
+    assert all(l.outcome != "download_failed" for l in logs2)
+
+
 async def _fresh_session(db):
     from sqlalchemy.ext.asyncio import async_sessionmaker
 

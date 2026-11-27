@@ -1,5 +1,11 @@
 # Roadmap
 
+## v1.4.1 — Released
+
+**Theme:** Presigned invoice link repair & download-failure observability. Fixes 403 download failures on HTML-escaped / semicolon-mangled S3 presigned invoice URLs (e.g. JD digital invoices) and persists `download_failed` `ExtractionLog` entries whenever link download fails with no fallback attachments. See [CHANGELOG.md](CHANGELOG.md#141---2026-11-27).
+
+---
+
 ## v1.4.0 — Released
 
 **Theme:** Production reliability overhaul, Magpie multi-tier model routing, Outlook 429 resilience, Telegram IM alerts, true multi-currency, multimodal VLM PDF fallback, and reimbursement workflow closed loop. Introduces ordered LLM fallback chains, circuit breaking, persistent failed-email retry queue with watermark protection, Outlook `Retry-After` backoff & pre-hydration noise filtering, Telegram error/summary alerts, `invoices.currency` + VLM vision extraction, unified ingestion pipeline, modular Settings UI, and reimbursement status/tags/notes with zero-dependency Excel (`.xlsx`) and Reimbursement Pack ZIP exports. See [CHANGELOG.md](CHANGELOG.md#140---2026-11-27).
