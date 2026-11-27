@@ -32,7 +32,9 @@ from app.api import (
     classifier_settings_router,
     download_router,
     invoice_router,
+    maid_router,
     notification_settings_router,
+    profile_router,
     scan_router,
     stats_router,
     test_helper_router,
@@ -125,6 +127,10 @@ async def lifespan(app: FastAPI):
         await bootstrap_admin_user(db, settings)
         await _scan_orphan_user_directories(db, settings)
 
+    from app.services.telegram_agent_bot import (
+        start_telegram_agent_listener,
+        stop_telegram_agent_listener,
+    )
     from app.tasks.scheduler import start_scheduler, stop_scheduler
 
     scheduler_started = False
@@ -135,11 +141,13 @@ async def lifespan(app: FastAPI):
         )
     else:
         start_scheduler(settings)
+        start_telegram_agent_listener()
         scheduler_started = True
     try:
         yield
     finally:
         if scheduler_started:
+            stop_telegram_agent_listener()
             stop_scheduler()
         await engine.dispose()
 
@@ -177,6 +185,8 @@ app.include_router(account_router, prefix="/api/v1")
 app.include_router(ai_settings_router, prefix="/api/v1")
 app.include_router(classifier_settings_router, prefix="/api/v1")
 app.include_router(notification_settings_router, prefix="/api/v1")
+app.include_router(profile_router, prefix="/api/v1")
+app.include_router(maid_router, prefix="/api/v1")
 app.include_router(scan_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(view_router, prefix="/api/v1")

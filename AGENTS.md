@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v1.4.1 — Hardened production architecture, multi-currency, VLM fallback, Telegram IM alerts, reimbursement workflow, and HTML/presigned URL download repair.** 799+ backend tests with 100% line & branch coverage, 23 frontend unit tests, 6 Playwright E2E specs.
+**v2.0.0 — Agent Loop Invoice Maid (`MaidAgentRunner`), offline QR receipt auto-claiming with multi-profile headers, long-term memory rules, Web UI chat drawer & workspace, and conflict-free independent Telegram Agent Bot.** 808+ backend tests with 100% line & branch coverage, 23 frontend unit tests, 6 Playwright E2E specs.
 
 ## STRUCTURE
 

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
     TELEGRAM_NOTIFY_ON_ERROR: bool = True
     TELEGRAM_NOTIFY_ON_SCAN_SUMMARY: bool = True
+    TELEGRAM_AGENT_ENABLED: bool = False
+    TELEGRAM_AGENT_BOT_TOKEN: str = ""
+    TELEGRAM_AGENT_ALLOWED_CHAT_IDS: str = ""
+    MAID_HEARTBEAT_MINUTES: int = 10
     ENABLE_TEST_HELPERS: bool = False
     ALLOW_REGISTRATION: bool = False
     OUTLOOK_DELTA_ENABLED: bool = True

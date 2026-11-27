@@ -228,6 +228,10 @@ export interface NotificationSettingsResponse {
   telegram_chat_id: string
   telegram_notify_on_error: boolean
   telegram_notify_on_scan_summary: boolean
+  telegram_agent_enabled: boolean
+  telegram_agent_bot_token_masked: string
+  telegram_agent_allowed_chat_ids: string
+  telegram_agent_token_conflict: boolean
   source: 'database' | 'environment'
 }
 
@@ -237,6 +241,82 @@ export interface NotificationSettingsUpdate {
   telegram_chat_id?: string
   telegram_notify_on_error?: boolean
   telegram_notify_on_scan_summary?: boolean
+  telegram_agent_enabled?: boolean
+  telegram_agent_bot_token?: string
+  telegram_agent_allowed_chat_ids?: string
+}
+
+export interface InvoiceProfile {
+  id: number
+  name: string
+  title: string
+  tax_id: string
+  invoice_type_pref: string
+  email: string
+  phone: string
+  address: string
+  bank_name: string
+  bank_account: string
+  is_default: boolean
+  created_at: string
+}
+
+export interface InvoiceProfileCreate {
+  name: string
+  title: string
+  tax_id?: string
+  invoice_type_pref?: string
+  email?: string
+  phone?: string
+  address?: string
+  bank_name?: string
+  bank_account?: string
+  is_default?: boolean
+}
+
+export interface MaidMessageItem {
+  id: number
+  role: 'user' | 'assistant' | 'tool'
+  content: string
+  tool_events: { tool: string; args: Record<string, unknown>; result: Record<string, unknown> }[]
+  created_at: string
+}
+
+export interface MaidMemoryItem {
+  id: number
+  category: string
+  rule_text: string
+  match_pattern: string
+  action_json: string
+  is_active: boolean
+  created_at: string
+}
+
+export interface InvoiceClaimTaskItem {
+  id: number
+  profile_id: number | null
+  source_channel: string
+  qr_url: string
+  merchant_name: string
+  expected_amount: number | null
+  expected_currency: string
+  receipt_date: string | null
+  receipt_summary: string
+  status: string
+  attention_reason: string
+  has_screenshot: boolean
+  matched_invoice_id: number | null
+  attempts: number
+  logs: { at: string; event: string; detail: string }[]
+  created_at: string
+  updated_at: string
+}
+
+export interface ClaimIntakeResponse {
+  task: InvoiceClaimTaskItem
+  needs_profile_choice: boolean
+  profiles: { id: number; name: string; title: string; tax_id: string }[]
+  message: string
 }
 
 export interface NotificationTestResponse {

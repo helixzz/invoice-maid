@@ -17,6 +17,12 @@ import type {
   NotificationSettingsResponse,
   NotificationSettingsUpdate,
   NotificationTestResponse,
+  InvoiceProfile,
+  InvoiceProfileCreate,
+  MaidMessageItem,
+  MaidMemoryItem,
+  InvoiceClaimTaskItem,
+  ClaimIntakeResponse,
   ReimbursementStatus,
   ExtractionLog,
   ExtractionSummary,
@@ -362,6 +368,94 @@ export const api = {
 
   async testNotification(): Promise<NotificationTestResponse> {
     const res = await apiClient.post('/settings/notifications/test')
+    return res.data
+  },
+
+  // Invoice Profiles (v2.0)
+  async getProfiles(): Promise<InvoiceProfile[]> {
+    const res = await apiClient.get('/profiles')
+    return res.data
+  },
+
+  async createProfile(data: InvoiceProfileCreate): Promise<InvoiceProfile> {
+    const res = await apiClient.post('/profiles', data)
+    return res.data
+  },
+
+  async updateProfile(id: number, data: Partial<InvoiceProfileCreate>): Promise<InvoiceProfile> {
+    const res = await apiClient.put(`/profiles/${id}`, data)
+    return res.data
+  },
+
+  async deleteProfile(id: number): Promise<void> {
+    await apiClient.delete(`/profiles/${id}`)
+  },
+
+  // Maid Agent & QR Claims (v2.0)
+  async maidChat(message: string, sessionId = 'default'): Promise<{ reply: string; tool_events: any[]; session_id: string }> {
+    const res = await apiClient.post('/maid/chat', { message, session_id: sessionId })
+    return res.data
+  },
+
+  async getMaidHistory(sessionId = 'default'): Promise<MaidMessageItem[]> {
+    const res = await apiClient.get('/maid/history', { params: { session_id: sessionId } })
+    return res.data
+  },
+
+  async clearMaidHistory(sessionId = 'default'): Promise<void> {
+    await apiClient.delete('/maid/history', { params: { session_id: sessionId } })
+  },
+
+  async getMaidMemories(): Promise<MaidMemoryItem[]> {
+    const res = await apiClient.get('/maid/memories')
+    return res.data
+  },
+
+  async createMaidMemory(data: { category: string; rule_text: string; match_pattern?: string; action_json?: string }): Promise<MaidMemoryItem> {
+    const res = await apiClient.post('/maid/memories', data)
+    return res.data
+  },
+
+  async deleteMaidMemory(id: number): Promise<void> {
+    await apiClient.delete(`/maid/memories/${id}`)
+  },
+
+  async getClaimTasks(): Promise<InvoiceClaimTaskItem[]> {
+    const res = await apiClient.get('/maid/claims')
+    return res.data
+  },
+
+  async createClaimFromPhoto(file: File): Promise<ClaimIntakeResponse> {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await apiClient.post('/maid/claims/from-photo', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return res.data
+  },
+
+  async createClaimFromUrl(qrUrl: string): Promise<ClaimIntakeResponse> {
+    const res = await apiClient.post('/maid/claims/from-url', { qr_url: qrUrl })
+    return res.data
+  },
+
+  async selectClaimProfile(taskId: number, profileId: number): Promise<ClaimIntakeResponse> {
+    const res = await apiClient.post(`/maid/claims/${taskId}/select-profile`, { profile_id: profileId })
+    return res.data
+  },
+
+  async retryClaimTask(taskId: number, captchaInput = ''): Promise<ClaimIntakeResponse> {
+    const res = await apiClient.post(`/maid/claims/${taskId}/retry`, { captcha_input: captchaInput })
+    return res.data
+  },
+
+  async cancelClaimTask(taskId: number): Promise<InvoiceClaimTaskItem> {
+    const res = await apiClient.post(`/maid/claims/${taskId}/cancel`)
+    return res.data
+  },
+
+  async triggerMaidHeartbeat(): Promise<{ processed_queued: number; matched_claims: number }> {
+    const res = await apiClient.post('/maid/heartbeat')
     return res.data
   },
 

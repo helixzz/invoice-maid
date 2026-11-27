@@ -42,7 +42,9 @@ import app.api.auth as auth_api
 import app.api.downloads as downloads_api
 import app.api.email_accounts as accounts_api
 import app.api.invoices as invoices_api
+import app.api.maid as maid_api
 import app.api.notification_settings as notification_settings_api
+import app.api.profiles as profiles_api
 import app.api.scan as scan_api
 import app.api.test_helpers as test_helpers_api
 import app.deps as deps_module
@@ -54,6 +56,8 @@ import app.services.ai_service as ai_service_module
 import app.services.email_scanner as email_scanner_module
 import app.services.scan_progress as scan_progress_module
 import app.services.settings_resolver as settings_resolver_module
+import app.services.maid_agent as maid_agent_module
+import app.services.telegram_agent_bot as telegram_agent_bot_module
 import app.services.telegram_notifier as telegram_notifier_module
 import app.tasks.scheduler as scheduler_module
 from app.config import Settings
@@ -77,7 +81,9 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None
         downloads_api,
         accounts_api,
         invoices_api,
+        maid_api,
         notification_settings_api,
+        profiles_api,
         scan_api,
         test_helpers_api,
         deps_module,
@@ -86,6 +92,8 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None
         ai_service_module,
         email_scanner_module,
         settings_resolver_module,
+        maid_agent_module,
+        telegram_agent_bot_module,
         telegram_notifier_module,
         scheduler_module,
     ):

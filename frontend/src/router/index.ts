@@ -5,6 +5,7 @@ import RegisterView from '@/views/RegisterView.vue'
 import InvoiceListView from '@/views/InvoiceListView.vue'
 import InvoiceDetailView from '@/views/InvoiceDetailView.vue'
 import InvoiceUploadView from '@/views/InvoiceUploadView.vue'
+import MaidWorkspaceView from '@/views/MaidWorkspaceView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import AdminView from '@/views/AdminView.vue'
 
@@ -41,6 +42,12 @@ const router = createRouter({
       path: '/upload',
       name: 'upload',
       component: InvoiceUploadView,
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/maid',
+      name: 'maid',
+      component: MaidWorkspaceView,
       meta: { requiresAuth: true }
     },
     {

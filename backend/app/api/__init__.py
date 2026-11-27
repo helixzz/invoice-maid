@@ -7,7 +7,9 @@ from app.api.classifier_settings import router as classifier_settings_router
 from app.api.downloads import router as download_router
 from app.api.email_accounts import router as account_router
 from app.api.invoices import router as invoice_router
+from app.api.maid import router as maid_router
 from app.api.notification_settings import router as notification_settings_router
+from app.api.profiles import router as profile_router
 from app.api.scan import router as scan_router
 from app.api.stats import router as stats_router
 from app.api.test_helpers import router as test_helper_router
@@ -21,7 +23,9 @@ __all__ = [
     "classifier_settings_router",
     "download_router",
     "invoice_router",
+    "maid_router",
     "notification_settings_router",
+    "profile_router",
     "scan_router",
     "stats_router",
     "test_helper_router",

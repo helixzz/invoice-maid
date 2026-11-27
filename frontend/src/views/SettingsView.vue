@@ -6,6 +6,7 @@ import Toast from '@/components/Toast.vue'
 import ScanProgressBar from '@/components/ScanProgressBar.vue'
 import AISettingsPanel from '@/components/settings/AISettingsPanel.vue'
 import ClassifierSettingsPanel from '@/components/settings/ClassifierSettingsPanel.vue'
+import InvoiceProfilesPanel from '@/components/settings/InvoiceProfilesPanel.vue'
 import NotificationSettingsPanel from '@/components/settings/NotificationSettingsPanel.vue'
 import { useScanProgress } from '@/composables/useScanProgress'
 import { api } from '@/api/client'
@@ -511,6 +512,13 @@ onMounted(() => {
             <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
             IM 通知
           </button>
+          <button
+            @click="activeTab = 'profiles'"
+            :class="[activeTab === 'profiles' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center']"
+          >
+            <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+            发票抬头
+          </button>
         </nav>
       </div>
 
@@ -890,6 +898,11 @@ onMounted(() => {
       <!-- IM Notifications Tab -->
       <div v-if="activeTab === 'notifications'" class="space-y-6">
         <NotificationSettingsPanel @toast="handlePanelToast" />
+      </div>
+
+      <!-- Invoice Profiles Tab -->
+      <div v-if="activeTab === 'profiles'" class="space-y-6">
+        <InvoiceProfilesPanel @toast="handlePanelToast" />
       </div>
 
     </div>

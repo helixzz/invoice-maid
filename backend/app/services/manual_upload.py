@@ -264,6 +264,9 @@ async def process_uploaded_invoice(
         confidence=parsed.confidence,
     )
     db.add(invoice)
+    from app.services.maid_agent import apply_maid_memories_to_invoice
+
+    await apply_maid_memories_to_invoice(db, invoice)
     try:
         await db.flush()
     except IntegrityError:  # pragma: no cover

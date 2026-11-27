@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import MaidChatDrawer from '@/components/MaidChatDrawer.vue'
 
 const authStore = useAuthStore()
 
@@ -96,6 +97,13 @@ const submitChangePassword = async () => {
                 :class="[$route.path.startsWith('/upload') ? 'border-blue-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300']"
               >
                 Upload
+              </router-link>
+              <router-link
+                to="/maid"
+                class="inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+                :class="[$route.path.startsWith('/maid') ? 'border-blue-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300']"
+              >
+                发票女仆
               </router-link>
               <router-link
                 to="/settings"
@@ -255,5 +263,7 @@ const submitChangePassword = async () => {
         </form>
       </div>
     </div>
+
+    <MaidChatDrawer v-if="authStore.isAuthenticated" />
   </div>
 </template>

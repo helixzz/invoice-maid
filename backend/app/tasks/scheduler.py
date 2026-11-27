@@ -629,6 +629,10 @@ async def _process_single_email(
                             await db.commit()
                             continue
 
+                        from app.services.maid_agent import apply_maid_memories_to_invoice
+
+                        await apply_maid_memories_to_invoice(db, invoice)
+
                         db.add(
                             _record_extraction_log(
                                 user_id=user_id,
@@ -997,6 +1001,21 @@ async def cleanup_extraction_logs() -> int:
     return 0  # pragma: no cover
 
 
+async def maid_heartbeat_job() -> dict[str, int]:
+    """Periodic Maid Agent Loop heartbeat executing queued claims and matching submitted ones."""
+    from app.services.maid_agent import run_maid_heartbeat
+
+    settings = get_settings()
+    async for db in get_db():
+        try:
+            return await run_maid_heartbeat(db, settings=settings)
+        except Exception:  # pragma: no cover
+            await db.rollback()
+            logger.exception("Maid heartbeat failed")
+            return {"processed_queued": 0, "matched_claims": 0}
+    return {"processed_queued": 0, "matched_claims": 0}  # pragma: no cover
+
+
 def start_scheduler(settings: Settings) -> None:
     global _scheduler
     existing_scheduler = _scheduler
@@ -1025,6 +1044,14 @@ def start_scheduler(settings: Settings) -> None:
         "interval",
         hours=24,
         id="extraction_log_cleanup",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        maid_heartbeat_job,
+        "interval",
+        minutes=max(1, settings.MAID_HEARTBEAT_MINUTES),
+        id="maid_heartbeat",
         replace_existing=True,
         misfire_grace_time=300,
     )

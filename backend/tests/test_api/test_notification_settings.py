@@ -27,6 +27,10 @@ async def test_notification_settings_crud_and_encryption(client, auth_headers, d
         "telegram_chat_id": "",
         "telegram_notify_on_error": True,
         "telegram_notify_on_scan_summary": True,
+        "telegram_agent_enabled": False,
+        "telegram_agent_bot_token_masked": "",
+        "telegram_agent_allowed_chat_ids": "",
+        "telegram_agent_token_conflict": False,
         "source": "environment",
     }
 

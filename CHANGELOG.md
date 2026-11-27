@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.0.0] - 2026-11-27
+
+### Theme
+
+**Invoice Maid evolves into a continuous Agent Loop assistant.** Adds an IM-agnostic tool-calling `MaidAgentRunner`, offline QR-code receipt photo auto-claiming (multi-profile selection + Playwright auto-fill/auto-submit + heartbeat email matching), long-term memory automation rules, a Web UI chat drawer & Maid Workspace, and a conflict-free independent Telegram Agent Bot listener.
+
+### Added
+
+- **Database & Migrations (`0023_v2_maid_agent_and_claims`)**:
+  - `invoice_profiles` — multi-profile billing header store (company/personal title, tax ID, preferred invoice type, receiving email, phone, address, bank details, default toggle).
+  - `maid_memories` — persistent long-term user rules automatically applied to newly ingested invoices (reimbursement status & tags) and injected into Maid conversations.
+  - `invoice_claim_tasks` — state machine tracking offline QR-code invoice claiming (`awaiting_profile` → `filling` → `submitted` / `needs_attention` → `completed`).
+  - `maid_messages` — persistent multi-session Agent conversation history.
+- **IM-agnostic Agent Loop (`app/services/maid_agent.py`)**:
+  - Multi-step tool-calling `MaidAgentRunner` powered by `AIService.chat_with_tools` across the configured Magpie/OpenAI fallback chain with circuit-breaker protection.
+  - 9 tenant-scoped tools: `search_invoices`, `get_spend_summary`, `update_reimbursement`, `list_invoice_profiles`, `list_claim_tasks`, `select_claim_profile`, `retry_claim_task`, `list_memories`, and `save_memory_rule`.
+  - Periodic `maid_heartbeat` APScheduler job (`MAID_HEARTBEAT_MINUTES=10`) that runs queued claim tasks, matches `submitted` claims against incoming invoices to close the loop automatically, and sends Telegram completion alerts.
+- **Offline QR Receipt Auto-Claiming (`app/services/qr_receipt_decoder.py`, `app/services/claim_form_agent.py`)**:
+  - Decodes QR URLs from receipt photos via Pillow + pyzbar (with grayscale fallback) and extracts merchant/amount metadata via VLM.
+  - Single-profile users get immediate auto-fill & auto-submit; multi-profile users are prompted to choose a profile (via Web UI buttons or Telegram Inline Keyboard).
+  - Auto-submits forms without confirmation prompts; escalates to `needs_attention` with a saved screenshot (or copyable header card for WeChat-only QR links) ONLY when encountering CAPTCHAs, WeChat-only restrictions, or unexpected form errors.
+- **Conflict-free Independent Telegram Agent Bot (`app/services/telegram_agent_bot.py`)**:
+  - Dedicated `telegram_agent_bot_token` + `telegram_agent_allowed_chat_ids` configuration in Settings.
+  - Built-in conflict guard refuses to poll `getUpdates` (and returns HTTP 400 on save) if the agent token duplicates the shared one-way notification / Hermes Agent token, preventing Telegram `409 Conflict`.
+- **APIs & Frontend**:
+  - New routers: `/api/v1/profiles` and `/api/v1/maid/*` (`chat`, `history`, `memories`, `claims`, `heartbeat`).
+  - New Web UI views & components: global floating `MaidChatDrawer.vue`, `/maid` `MaidWorkspaceView.vue`, Settings `InvoiceProfilesPanel.vue`, and independent Agent Bot config section in `NotificationSettingsPanel.vue`.
+
 ## [1.4.1] - 2026-11-27
 
 ### Fixed

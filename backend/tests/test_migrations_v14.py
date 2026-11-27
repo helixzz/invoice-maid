@@ -25,7 +25,7 @@ def test_migrations_0020_to_0022_upgrade_and_downgrade(tmp_path: Path, monkeypat
         conn = sqlite3.connect(db_file)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            assert "failed_emails" in tables
+            assert {"failed_emails", "invoice_profiles", "maid_memories", "invoice_claim_tasks", "maid_messages"}.issubset(tables)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
             assert {"currency", "reimbursement_status", "tags", "notes"}.issubset(cols)
         finally:
@@ -38,6 +38,7 @@ def test_migrations_0020_to_0022_upgrade_and_downgrade(tmp_path: Path, monkeypat
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             assert "failed_emails" not in tables
+            assert "invoice_profiles" not in tables
             cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
             assert "currency" not in cols
             assert "reimbursement_status" not in cols

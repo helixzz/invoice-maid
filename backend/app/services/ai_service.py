@@ -405,6 +405,46 @@ class AIService:
         await self._set_cache(db, cache_key, "extract_vision", result.model_dump_json())
         return result
 
+    async def chat_with_tools(
+        self,
+        db: AsyncSession,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        """Raw OpenAI-compatible chat completion with tool calling across the fallback chain."""
+        runtime_settings = await self._resolve_runtime_settings(db)
+        self._circuit_breaker.check()
+        _, raw_client = self._get_clients(runtime_settings)
+        chain = parse_model_chain(
+            str(runtime_settings["llm_model"]),
+            str(runtime_settings.get("llm_fallback_models", "")),
+        )
+        errors: list[str] = []
+        last_exc: Exception | None = None
+        for idx, model in enumerate(chain):
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                }
+                if tools:
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "auto"
+                resp = await raw_client.chat.completions.create(**kwargs)
+                self._circuit_breaker.record_success()
+                return resp.choices[0].message
+            except Exception as exc:
+                last_exc = exc
+                reason = _unwrap_exception_message(exc)
+                errors.append(f"{model}: {reason}")
+                if idx + 1 < len(chain):
+                    logger.warning("Agent model %s failed (%s); falling back to %s", model, reason[:200], chain[idx + 1])
+
+        summary = "; ".join(errors)[:500]
+        if last_exc is not None and _is_upstream_service_error(last_exc):
+            self._circuit_breaker.record_failure(summary)
+        raise LLMUnavailableError(f"All agent LLM models failed: {summary}") from last_exc
+
     async def embed_text(self, text: str, db: AsyncSession | None = None) -> list[float]:
         runtime_settings = await self._resolve_runtime_settings(db)
         _, raw_client = self._get_clients(runtime_settings, for_embedding=True)

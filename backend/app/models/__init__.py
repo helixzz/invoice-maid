@@ -6,7 +6,11 @@ from app.models.email_account import EmailAccount
 from app.models.extraction_log import ExtractionLog
 from app.models.failed_email import FailedEmail
 from app.models.invoice import Invoice
+from app.models.invoice_claim_task import InvoiceClaimTask
+from app.models.invoice_profile import InvoiceProfile
 from app.models.llm_cache import LLMCache
+from app.models.maid_memory import MaidMemory
+from app.models.maid_message import MaidMessage
 from app.models.scan_log import ScanLog
 from app.models.saved_view import SavedView
 from app.models.user import User
@@ -21,7 +25,11 @@ __all__ = [
     "ExtractionLog",
     "FailedEmail",
     "Invoice",
+    "InvoiceClaimTask",
+    "InvoiceProfile",
     "LLMCache",
+    "MaidMemory",
+    "MaidMessage",
     "SavedView",
     "ScanLog",
     "User",

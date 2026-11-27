@@ -380,6 +380,13 @@ async def test_clean_extracted_url_repairs_jd_presigned_links_and_logs_download_
     assert all(l.outcome != "download_failed" for l in logs2)
 
 
+@pytest.mark.asyncio
+async def test_maid_heartbeat_job_executes_cleanly(db, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scheduler_mod, "get_db", lambda: _fresh_session(db))
+    result = await scheduler_mod.maid_heartbeat_job()
+    assert result == {"processed_queued": 0, "matched_claims": 0}
+
+
 async def _fresh_session(db):
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
