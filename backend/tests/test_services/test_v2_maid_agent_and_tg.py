@@ -300,11 +300,16 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
     sent_calls: list[tuple[str, dict]] = []
 
     class FakeHttpClient:
+        def __init__(self, *, return_msg_id: bool = True):
+            self.return_msg_id = return_msg_id
+
         async def post(self, url: str, json: dict | None = None, data: dict | None = None, files: dict | None = None):
             method = url.rsplit("/", 1)[-1]
             sent_calls.append((method, json if json is not None else {"data": data, "has_files": bool(files)}))
             if method == "getFile":
                 return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"result": {"file_path": "photos/p1.jpg"}})
+            if method == "sendMessage" and self.return_msg_id:
+                return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"ok": True, "result": {"message_id": 500}})
             return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"ok": True})
 
         async def get(self, url: str):
@@ -350,7 +355,7 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
         runner=StubRunner(),
     ) == "text_handled"
 
-    # 4) Photo upload with 2 profiles -> sends inline keyboard
+    # 4) Photo upload with 2 profiles -> sends instant ack then edits in-place with inline keyboard
     monkeypatch.setattr(
         maid_mod,
         "analyze_receipt_photo",
@@ -364,10 +369,32 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
         client=client,
     ) == "photo_handled"
     last_method, last_payload = sent_calls[-1]
-    assert last_method == "sendMessage"
+    assert last_method == "editMessageText"
     assert "inline_keyboard" in last_payload["reply_markup"]
     cb_data = last_payload["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     task_id = int(cb_data.split(":")[1])
+
+    # Also test fallback when progress sendMessage returns no message_id (or edit fails)
+    no_id_client = FakeHttpClient(return_msg_id=False)
+    assert await handle_telegram_update(
+        db,
+        update={"message": {"chat": {"id": 1001}, "photo": [{"file_id": "f-noid"}]}},
+        bot_token="tok",
+        allowed_chat_ids=["1001"],
+        client=no_id_client,
+    ) == "photo_handled"
+    assert sent_calls[-1][0] == "sendMessage"
+    assert "inline_keyboard" in sent_calls[-1][1]["reply_markup"]
+
+    # Cover typing / progress send & edit exception swallowing + on_progress callback execution
+    class AllFailClient(FakeHttpClient):
+        async def post(self, url: str, json: dict | None = None, data: dict | None = None, files: dict | None = None):
+            raise RuntimeError("tg fail")
+
+    await tg_bot_mod._tg_send_typing(AllFailClient(), "tok", "1001")
+    assert await tg_bot_mod._tg_send_progress(AllFailClient(), "tok", "1001", "hi") is None
+    assert await tg_bot_mod._tg_update_progress(AllFailClient(), "tok", "1001", 10, "hi") is False
+    assert await tg_bot_mod._tg_update_progress(client, "tok", "1001", None, "hi") is False
 
     # 5) Callback selects profile -> collapses inline keyboard & executes claim with screenshot sent via sendPhoto
     async def shot_browser(_u, _p, _c):
@@ -431,7 +458,7 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
         client=client,
     ) == "claim_cancelled"
 
-    # Photo upload with single profile -> auto-submits without inline keyboard
+    # Photo upload with single profile -> auto-submits without inline keyboard (also covers no-id branch & on_progress)
     await db.delete(p2)
     await db.commit()
     assert await handle_telegram_update(
@@ -443,6 +470,34 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
         browser_runner=ok_browser,
     ) == "photo_handled"
     assert "reply_markup" not in sent_calls[-1][1]
+
+    # Exercise live progress callbacks inside handle_telegram_update + no_id_client single profile & callback
+    orig_exec = tg_bot_mod.execute_claim_task
+
+    async def exec_calling_progress(db, **kwargs):
+        cb = kwargs.get("on_progress")
+        if cb is not None:
+            await cb("step 1 progress")
+        return await orig_exec(db, **kwargs)
+
+    monkeypatch.setattr(tg_bot_mod, "execute_claim_task", exec_calling_progress)
+    monkeypatch.setattr(maid_mod, "execute_claim_task", exec_calling_progress)
+    assert await handle_telegram_update(
+        db,
+        update={"message": {"chat": {"id": 1001}, "photo": [{"file_id": "f-prog"}]}},
+        bot_token="tok",
+        allowed_chat_ids=["1001"],
+        client=no_id_client,
+        browser_runner=ok_browser,
+    ) == "photo_handled"
+    assert await handle_telegram_update(
+        db,
+        update={"callback_query": {"id": "cb-prog", "data": f"claim_profile:{task_id}:{p1.id}", "message": {"chat": {"id": 1001}, "message_id": 99, "text": "t"}}},
+        bot_token="tok",
+        allowed_chat_ids=["1001"],
+        client=no_id_client,
+        browser_runner=ok_browser,
+    ) == "claim_submitted"
     assert await handle_telegram_update(
         db,
         update={"callback_query": {"id": "cb4", "data": "claim_profile:99999:99999", "message": {"chat": {"id": 1001}}}},

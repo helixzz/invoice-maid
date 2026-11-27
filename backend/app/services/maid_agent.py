@@ -244,6 +244,7 @@ async def create_claim_from_receipt_photo(
     source_chat_id: str = "",
     explicit_qr_url: str = "",
     browser_runner: BrowserRunner | None = None,
+    on_progress: Any = None,
 ) -> PhotoClaimIntakeResult:
     """Intake an offline receipt photo (or direct QR URL), decode QR/metadata, and either
     prompt for profile selection (when multiple profiles exist) or auto-submit immediately."""
@@ -326,6 +327,7 @@ async def create_claim_from_receipt_photo(
         ai=ai,
         file_mgr=file_mgr,
         browser_runner=browser_runner,
+        on_progress=on_progress,
     )
     return PhotoClaimIntakeResult(
         task=task,

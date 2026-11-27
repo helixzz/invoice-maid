@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v2.3.0 — Set-of-Mark Multimodal Vision Browser Agent (`vision_browser_agent.py`) powered by VLM (`auto/gemini-4-neon`) to visually understand and operate any invoice H5 page without brittle hardcoded selectors, with deterministic fallback.**
+**v2.3.1 — Instant Telegram photo receipt ack + live in-place step progress updates (`sendChatAction` + `editMessageText`), powered by Set-of-Mark VLM browser agent.**
 
 ## STRUCTURE
 

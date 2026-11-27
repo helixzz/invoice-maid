@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.3.1 — Released
+
+**Theme:** Instant Telegram acknowledgement & live in-place progress. Eliminates silent wait times after sending receipt photos by immediately acknowledging receipt and updating one live status message through QR decoding, page navigation, VLM visual steps, and completion. See [CHANGELOG.md](CHANGELOG.md#231---2026-11-27).
+
+---
+
 ## v2.3.0 — Released
 
 **Theme:** Multimodal Vision Browser Agent (Set-of-Mark). Replaces hardcoded button keyword matching with an iterative VLM-guided browser loop (`vision_browser_agent.py`) that visually annotates interactive controls, understands arbitrary invoice portals (Meituan, Nuonuo, Baiwang, overseas portals, etc.), fills forms, clicks entry/resend buttons, and explains failures naturally. See [CHANGELOG.md](CHANGELOG.md#230---2026-11-27).

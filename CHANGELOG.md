@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.3.1] - 2026-11-27
+
+### Added
+
+- **Instant receipt acknowledgement & live step-by-step progress in Telegram**:
+  - Immediately sends `typing` action and a live progress message (`📷 收到小票照片！米尔正在识别二维码和小票内容…`) upon receiving a photo so users never wait in silence.
+  - Edits that single progress message in place as the agent transitions through QR decoding, profile selection (attaching the Inline Keyboard directly onto it), page loading, VLM visual analysis, form filling, and button clicking.
+  - Also sends `typing` indicators immediately on regular text chat turns.
+
 ## [2.3.0] - 2026-11-27
 
 ### Added

@@ -361,6 +361,7 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
     *,
     db: AsyncSession | None = None,
     ai: Any = None,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> BrowserClaimOutcome:
     try:
         from playwright.async_api import async_playwright
@@ -383,6 +384,11 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
         )
         page = await context.new_page()
         try:
+            if on_progress is not None:
+                try:
+                    await on_progress("🌐 正在打开开票网页并等待加载…")
+                except Exception:
+                    pass
             resp = await page.goto(qr_url, wait_until="load", timeout=30_000)
             steps_taken.append("打开开票链接")
             if resp is not None:
@@ -409,6 +415,7 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
                     ai=ai,
                     profile=profile,
                     captcha_input=captcha_input,
+                    on_progress=on_progress,
                 )
                 if vision_res is not None:
                     detail = str(vision_res.get("detail") or "")
@@ -615,6 +622,7 @@ async def execute_claim_task(
     file_mgr: Any = None,
     captcha_input: str = "",
     browser_runner: BrowserRunner | None = None,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> InvoiceClaimTask:
     """Execute one attempt of a QR invoice claim task with multi-step exploration & escalation."""
     now = datetime.now(timezone.utc)
@@ -652,6 +660,7 @@ async def execute_claim_task(
             captcha_input,
             db=db,
             ai=ai,
+            on_progress=on_progress,
         )
 
     if outcome.screenshot_bytes:

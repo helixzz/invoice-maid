@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import logging
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -244,6 +244,15 @@ _SOM_CLEAR_SCRIPT = """() => {
 }"""
 
 
+async def _emit_progress(on_progress: Callable[[str], Awaitable[None]] | None, text: str) -> None:  # pragma: no cover - real browser progress callback
+    if on_progress is None:
+        return
+    try:
+        await on_progress(text)
+    except Exception:
+        pass
+
+
 async def run_vision_claim_loop(  # pragma: no cover - real Playwright execution path
     page: Any,
     *,
@@ -252,6 +261,7 @@ async def run_vision_claim_loop(  # pragma: no cover - real Playwright execution
     profile: InvoiceProfile,
     captcha_input: str = "",
     max_steps: int = MAX_VISION_STEPS,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict[str, Any] | None:
     """Drive a live Playwright ``page`` using the Set-of-Mark Vision Agent Loop.
 
@@ -262,6 +272,7 @@ async def run_vision_claim_loop(  # pragma: no cover - real Playwright execution
     sticky_invoice_no = ""
 
     for step in range(max_steps):
+        await _emit_progress(on_progress, f"👀 第 {step + 1} 步：正在查看页面内容并分析下一步…")
         raw_elements = await page.evaluate(_SOM_TAG_SCRIPT)
         elements = [InteractiveElement(**item) for item in raw_elements]
         annotated_shot = await page.screenshot(full_page=True)
@@ -308,6 +319,7 @@ async def run_vision_claim_loop(  # pragma: no cover - real Playwright execution
             }
 
         # Execute fill_and_click or click
+        action_notes: list[str] = []
         if decision.fills:
             filled_count = 0
             for f in decision.fills:
@@ -316,17 +328,24 @@ async def run_vision_claim_loop(  # pragma: no cover - real Playwright execution
                     await loc.fill(f.value)
                     filled_count += 1
             if filled_count:
-                steps_taken.append(f"填写 {filled_count} 个字段")
+                note = f"填写 {filled_count} 个字段"
+                steps_taken.append(note)
+                action_notes.append(note)
 
         if decision.click_element_id is not None:
             click_loc = page.locator(f'[data-miri-id="{decision.click_element_id}"]').first
             if await click_loc.count() > 0:
                 clicked_label = ((await click_loc.inner_text()) or f"#{decision.click_element_id}").strip()[:20]
                 await click_loc.click()
-                steps_taken.append(f"点击「{clicked_label}」")
+                note = f"点击「{clicked_label}」"
+                steps_taken.append(note)
+                action_notes.append(note)
+                await _emit_progress(on_progress, f"⚡ 第 {step + 1} 步：{'并'.join(action_notes)}，等待页面响应…")
                 await page.wait_for_timeout(2500)
             else:
                 steps_taken.append(f"元素 #{decision.click_element_id} 未找到")
+        elif action_notes:
+            await _emit_progress(on_progress, f"✍️ 第 {step + 1} 步：{'、'.join(action_notes)}…")
 
     clean_shot = await page.screenshot(full_page=True)
     final_text = (await page.inner_text("body")) or ""

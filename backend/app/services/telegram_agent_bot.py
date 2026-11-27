@@ -102,6 +102,58 @@ async def _tg_api_call(
     return resp.json()
 
 
+async def _tg_send_typing(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+) -> None:
+    try:
+        await _tg_api_call(client, bot_token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    except Exception:
+        pass
+
+
+async def _tg_send_progress(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    text: str,
+) -> int | None:
+    """Send an initial live status message and return its Telegram message_id."""
+    try:
+        res = await _tg_api_call(client, bot_token, "sendMessage", {"chat_id": chat_id, "text": text})
+        raw_id = (res.get("result") or {}).get("message_id")
+        return int(raw_id) if raw_id is not None else None
+    except Exception:
+        return None
+
+
+async def _tg_update_progress(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    message_id: int | None,
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> bool:
+    """Edit the live progress message in place. Returns False if editing was not possible."""
+    if not message_id:
+        return False
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text[:4000],
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    try:
+        await _tg_api_call(client, bot_token, "editMessageText", payload)
+        return True
+    except Exception:
+        return False
+
+
 async def _tg_send_photo(
     client: httpx.AsyncClient,
     bot_token: str,
@@ -280,12 +332,24 @@ async def handle_telegram_update(
                 orig_text,
                 f"✅ 已选择抬头：{profile.name}（{profile.title}）",
             )
-            await _tg_api_call(
+            await _tg_send_typing(client, bot_token, chat_id)
+            progress_msg_id = await _tg_send_progress(
                 client,
                 bot_token,
-                "sendMessage",
-                {"chat_id": chat_id, "text": f"收到！正在使用「{profile.name}」自动处理开票，请稍候…"},
+                chat_id,
+                f"⏳ 收到！正在使用「{profile.name}」打开开票页面，请稍候…",
             )
+
+            async def _on_claim_progress(step_text: str) -> None:
+                await _tg_send_typing(client, bot_token, chat_id)
+                await _tg_update_progress(
+                    client,
+                    bot_token,
+                    chat_id,
+                    progress_msg_id,
+                    f"「{profile.name}」处理中：\n{step_text}",
+                )
+
             task = await execute_claim_task(
                 db,
                 task=task,
@@ -294,7 +358,11 @@ async def handle_telegram_update(
                 ai=AIService(settings),
                 file_mgr=FileManager(settings.STORAGE_PATH),
                 browser_runner=browser_runner,
+                on_progress=_on_claim_progress,
             )
+            if progress_msg_id:
+                done_label = "✅ 已完成处理" if task.status in ("submitted", "completed") else "⚠️ 自动处理已暂停，详情如下："
+                await _tg_update_progress(client, bot_token, chat_id, progress_msg_id, f"「{profile.name}」{done_label}")
             await _send_claim_outcome_to_telegram(client, bot_token, chat_id, task, profile, settings)
             return f"claim_{task.status}"
 
@@ -312,6 +380,18 @@ async def handle_telegram_update(
 
     photos = msg.get("photo")
     if isinstance(photos, list) and photos:
+        await _tg_send_typing(client, bot_token, chat_id)
+        progress_msg_id = await _tg_send_progress(
+            client,
+            bot_token,
+            chat_id,
+            "📷 收到小票照片！米尔正在识别二维码和小票内容，请稍候…",
+        )
+
+        async def _on_photo_progress(step_text: str) -> None:
+            await _tg_send_typing(client, bot_token, chat_id)
+            await _tg_update_progress(client, bot_token, chat_id, progress_msg_id, step_text)
+
         file_id = str(photos[-1].get("file_id") or "")
         img_bytes = await _download_tg_file(client, bot_token, file_id)
         intake = await create_claim_from_receipt_photo(
@@ -323,6 +403,7 @@ async def handle_telegram_update(
             source_channel="telegram",
             source_chat_id=chat_id,
             browser_runner=browser_runner,
+            on_progress=_on_photo_progress,
         )
         if intake.needs_profile_choice:
             keyboard = [
@@ -330,18 +411,26 @@ async def handle_telegram_update(
                 for p in intake.profiles
             ]
             keyboard.append([{"text": "❌ 取消", "callback_data": f"claim_cancel:{intake.task.id}"}])
-            await _tg_api_call(
+            markup = {"inline_keyboard": keyboard}
+            edited = await _tg_update_progress(
                 client,
                 bot_token,
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": intake.message,
-                    "reply_markup": {"inline_keyboard": keyboard},
-                },
+                chat_id,
+                progress_msg_id,
+                intake.message,
+                reply_markup=markup,
             )
+            if not edited:
+                await _tg_api_call(
+                    client,
+                    bot_token,
+                    "sendMessage",
+                    {"chat_id": chat_id, "text": intake.message, "reply_markup": markup},
+                )
         else:
             chosen_profile = intake.profiles[0] if len(intake.profiles) == 1 else None
+            if progress_msg_id:
+                await _tg_update_progress(client, bot_token, chat_id, progress_msg_id, "📷 小票识别完成，处理结果如下：")
             await _send_claim_outcome_to_telegram(
                 client,
                 bot_token,
@@ -357,6 +446,7 @@ async def handle_telegram_update(
     if not text:
         return "ignored"
 
+    await _tg_send_typing(client, bot_token, chat_id)
     result = await agent.chat(db, user_id=user_id, user_message=text, session_id=f"tg:{chat_id}")
     await _tg_api_call(
         client,
