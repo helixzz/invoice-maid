@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.0.1 — Released
+
+**Theme:** 2026 transparent Maid avatar & UI icon refresh. Replaces the favicon, README icon, and Maid Chat Drawer avatar with the anti-aliased transparent-background `invoice-maid-2026.png` artwork. See [CHANGELOG.md](CHANGELOG.md#201---2026-11-27).
+
+---
+
 ## v2.0.0 — Released
 
 **Theme:** Continuous Agent Loop Invoice Maid & Offline QR Receipt Auto-Claiming. Introduces IM-agnostic tool-calling `MaidAgentRunner`, multi-profile billing headers (`invoice_profiles`), long-term memory auto-rules (`maid_memories`), QR photo decoding + Playwright auto-fill/auto-submit with heartbeat invoice matching (`invoice_claim_tasks`), Web UI floating chat drawer & `/maid` workspace, and a conflict-free independent Telegram Agent Bot listener with built-in Hermes token conflict guard. See [CHANGELOG.md](CHANGELOG.md#200---2026-11-27).

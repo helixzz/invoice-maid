@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.0.1] - 2026-11-27
+
+### Changed
+
+- **Refreshed 2026 Maid branding & transparent avatar assets**:
+  - Removed exterior white corners from `assets/images/invoice-maid-2026.png` with anti-aliased edge smoothing & de-fringing so it renders cleanly on both light and dark surfaces (and as a Telegram Bot avatar).
+  - Updated `assets/images/invoice-maid-icon.png` (512×512) and `frontend/public/favicon.png` (256×256) with the new transparent avatar.
+  - Updated `MaidChatDrawer.vue` floating button and drawer header to display the new avatar icon.
+
 ## [2.0.0] - 2026-11-27
 
 ### Theme

@@ -156,10 +156,10 @@ const clearChat = async () => {
     <!-- Floating Trigger Button -->
     <button
       @click="open = !open"
-      class="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full shadow-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-all"
+      class="fixed bottom-6 right-6 z-40 flex items-center gap-2 pl-2.5 pr-4 py-2 rounded-full shadow-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-all"
       title="呼出发票女仆对话"
     >
-      <span>🧾</span>
+      <img src="/favicon.png" alt="" class="w-7 h-7 rounded-full bg-white/90" />
       <span>发票女仆</span>
     </button>
 
@@ -169,9 +169,12 @@ const clearChat = async () => {
       class="fixed bottom-20 right-6 z-40 w-[390px] max-w-[calc(100vw-2rem)] h-[560px] max-h-[calc(100vh-7rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
     >
       <div class="px-4 py-3 bg-slate-900 text-white flex items-center justify-between">
-        <div>
-          <div class="text-sm font-semibold">Invoice Maid 发票女仆 v2.0</div>
-          <div class="text-xs text-slate-300">查账 · 报销归类 · 拍码自动开票</div>
+        <div class="flex items-center gap-2.5">
+          <img src="/favicon.png" alt="" class="w-8 h-8 rounded-full bg-white/90" />
+          <div>
+            <div class="text-sm font-semibold">Invoice Maid 发票女仆 v2.0</div>
+            <div class="text-xs text-slate-300">查账 · 报销归类 · 拍码自动开票</div>
+          </div>
         </div>
         <div class="flex items-center gap-2">
           <button @click="clearChat" class="text-xs text-slate-300 hover:text-white px-2 py-1 rounded">清空</button>
