@@ -14,11 +14,11 @@ export const CATEGORY_LABELS: Record<InvoiceCategory, string> = {
 }
 
 export const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
-  vat_invoice: 'bg-blue-50 text-blue-700 border-blue-200',
-  overseas_invoice: 'bg-violet-50 text-violet-700 border-violet-200',
-  receipt: 'bg-amber-50 text-amber-700 border-amber-200',
-  proforma: 'bg-yellow-50 text-yellow-800 border-yellow-200',
-  other: 'bg-slate-100 text-slate-700 border-slate-200',
+  vat_invoice: 'bg-mint-50 text-mint-800 border-mint-200',
+  overseas_invoice: 'bg-[#F3EFFA] text-[#5B4583] border-[#DDD3F0]',
+  receipt: 'bg-[#FDF5E6] text-[#8B5E22] border-[#EEDAB6]',
+  proforma: 'bg-[#FBF3EC] text-[#8C4D30] border-[#EDD5C2]',
+  other: 'bg-cream-300/70 text-ink-700 border-cream-500',
 }
 
 export const CATEGORY_ORDER: InvoiceCategory[] = [
@@ -43,10 +43,10 @@ export const REIMBURSEMENT_LABELS: Record<ReimbursementStatus, string> = {
 }
 
 export const REIMBURSEMENT_COLORS: Record<ReimbursementStatus, string> = {
-  unreimbursed: 'bg-rose-50 text-rose-700 border-rose-200',
-  pending: 'bg-amber-50 text-amber-700 border-amber-200',
-  reimbursed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  not_applicable: 'bg-slate-100 text-slate-600 border-slate-200',
+  unreimbursed: 'bg-cinnabar-50 text-cinnabar-600 border-cinnabar-200',
+  pending: 'bg-[#FDF5E6] text-[#9A631B] border-[#EBD2A3]',
+  reimbursed: 'bg-mint-50 text-mint-700 border-mint-300',
+  not_applicable: 'bg-cream-300/60 text-ink-500 border-cream-500',
 }
 
 export const REIMBURSEMENT_ORDER: ReimbursementStatus[] = [

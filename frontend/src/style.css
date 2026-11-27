@@ -1,3 +1,82 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --bg-canvas: #FAF3EA;
+  --bg-paper: #FFFBF5;
+  --bg-sidebar: #F4E9DC;
+  --border-warm: #EAE0D3;
+  --border-warm-strong: #DDD0C0;
+  --mint-badge: #CCE4C0;
+  --mint-primary: #3D7358;
+  --mint-hover: #2F5E47;
+  --ink-primary: #482418;
+  --ink-secondary: #634235;
+  --ink-muted: #7E5E4F;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    font-family: "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: #CCE4C0;
+    color: #244937;
+  }
+}
+
+@layer components {
+  .paper-dots {
+    background-color: #FAF3EA;
+    background-image: radial-gradient(rgba(132, 84, 72, 0.13) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+
+  .ledger-card {
+    @apply bg-cream-100 border border-cream-400 rounded-2xl shadow-paper;
+  }
+
+  .btn-mint {
+    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-white bg-mint-600 hover:bg-mint-700 active:scale-[0.99] transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-cream {
+    @apply inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium text-ink-700 bg-cream-100 border border-cream-500 hover:bg-cream-300/70 transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-danger-warm {
+    @apply inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium text-white bg-cinnabar-600 hover:bg-cinnabar-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .input-warm {
+    @apply block w-full rounded-xl border border-cream-500 bg-cream-50 px-3.5 py-2 text-sm text-ink-900 placeholder:text-ink-300 focus:border-mint-500 focus:outline-none focus:ring-2 focus:ring-mint-200 transition-colors;
+  }
+
+  .num-mono {
+    @apply font-mono;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stamp-badge {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold rounded-md border;
+  }
+
+  .receipt-zig {
+    background-image: linear-gradient(135deg, #FFFBF5 25%, transparent 25%),
+      linear-gradient(225deg, #FFFBF5 25%, transparent 25%);
+    background-position: 0 0;
+    background-size: 14px 14px;
+    background-repeat: repeat-x;
+    height: 8px;
+  }
+
+  .receipt-dashed {
+    border-top: 1px dashed #DDD0C0;
+  }
+}

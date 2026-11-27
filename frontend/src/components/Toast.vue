@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref } from 'vue'
 
 export interface ToastMessage {
   id: number
@@ -12,7 +12,7 @@ let nextId = 0
 
 const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info', duration?: number) => {
   const id = nextId++
-  const defaultDuration = type === 'error' ? 10000 : type === 'success' ? 5000 : 7000
+  const defaultDuration = type === 'error' ? 9000 : type === 'success' ? 4500 : 6000
   toasts.value.push({ id, message, type })
   setTimeout(() => {
     removeToast(id)
@@ -30,45 +30,21 @@ defineExpose({ addToast })
 </script>
 
 <template>
-  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-3" style="min-width: 440px; max-width: min(600px, calc(100vw - 2rem))">
-    <transition-group name="toast" tag="div">
+  <div class="fixed top-16 right-5 z-50 flex flex-col gap-2.5 w-[360px] max-w-[calc(100vw-2rem)]">
+    <transition-group name="toast" tag="div" class="space-y-2.5">
       <div
         v-for="toast in toasts"
         :key="toast.id"
-        class="w-full bg-white shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden"
+        class="w-full bg-cream-100 shadow-paper-lg rounded-xl border border-cream-400 pointer-events-auto overflow-hidden"
         :class="{
-          'border-l-4 border-green-500': toast.type === 'success',
-          'border-l-4 border-red-500': toast.type === 'error',
-          'border-l-4 border-blue-500': toast.type === 'info',
+          'border-l-4 border-l-mint-600': toast.type === 'success',
+          'border-l-4 border-l-cinnabar-600': toast.type === 'error',
+          'border-l-4 border-l-ink-400': toast.type === 'info',
         }"
       >
-        <div class="p-4">
-          <div class="flex items-start">
-            <div class="flex-shrink-0">
-              <svg v-if="toast.type === 'success'" class="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <svg v-else-if="toast.type === 'error'" class="h-6 w-6 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <svg v-else class="h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div class="ml-3 w-0 flex-1 pt-0.5">
-              <p class="text-sm font-medium text-slate-900 leading-snug">
-                {{ toast.message }}
-              </p>
-            </div>
-            <div class="ml-4 flex-shrink-0 flex">
-              <button @click="removeToast(toast.id)" class="bg-white rounded-md inline-flex text-slate-400 hover:text-slate-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                <span class="sr-only">Close</span>
-                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
-                </svg>
-              </button>
-            </div>
-          </div>
+        <div class="px-4 py-3 flex items-start gap-3">
+          <p class="text-sm text-ink-900 flex-1 leading-snug">{{ toast.message }}</p>
+          <button @click="removeToast(toast.id)" class="text-ink-400 hover:text-ink-900 text-base leading-none">×</button>
         </div>
       </div>
     </transition-group>
@@ -78,14 +54,11 @@ defineExpose({ addToast })
 <style scoped>
 .toast-enter-active,
 .toast-leave-active {
-  transition: all 0.3s ease;
+  transition: all 0.25s ease;
 }
-.toast-enter-from {
-  opacity: 0;
-  transform: translateY(30px);
-}
+.toast-enter-from,
 .toast-leave-to {
   opacity: 0;
-  transform: translateX(30px);
+  transform: translateY(-8px);
 }
 </style>

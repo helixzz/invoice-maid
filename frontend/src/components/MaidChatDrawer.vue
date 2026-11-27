@@ -12,6 +12,12 @@ const pendingClaimChoice = ref<ClaimIntakeResponse | null>(null)
 const listRef = ref<HTMLElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
+const quickPrompts = [
+  '本月未报销统计',
+  '查看开票队列',
+  '查看预存抬头',
+]
+
 const scrollToBottom = async () => {
   await nextTick()
   if (listRef.value) {
@@ -32,10 +38,10 @@ watch(open, (val) => {
   if (val) loadHistory()
 })
 
-const sendMessage = async () => {
-  const text = inputText.value.trim()
+const sendMessage = async (overrideText?: string) => {
+  const text = (overrideText ?? inputText.value).trim()
   if (!text || sending.value) return
-  inputText.value = ''
+  if (!overrideText) inputText.value = ''
   messages.value.push({
     id: Date.now(),
     role: 'user',
@@ -58,7 +64,7 @@ const sendMessage = async () => {
     messages.value.push({
       id: Date.now() + 1,
       role: 'assistant',
-      content: `抱歉，处理请求时遇到问题：${err?.response?.data?.detail || err?.message || '请稍后重试'}`,
+      content: `处理请求时出错：${err?.response?.data?.detail || err?.message || '请稍后重试'}`,
       tool_events: [],
       created_at: new Date().toISOString(),
     })
@@ -81,7 +87,7 @@ const handlePhotoSelected = async (e: Event) => {
   messages.value.push({
     id: Date.now(),
     role: 'user',
-    content: `📷 上传开票二维码照片：${file.name}`,
+    content: `上传开票二维码：${file.name}`,
     tool_events: [],
     created_at: new Date().toISOString(),
   })
@@ -116,7 +122,7 @@ const pickProfileForClaim = async (taskId: number, profileId: number, profileNam
   messages.value.push({
     id: Date.now(),
     role: 'user',
-    content: `选择抬头：${profileName}`,
+    content: `使用抬头：${profileName}`,
     tool_events: [],
     created_at: new Date().toISOString(),
   })
@@ -134,7 +140,7 @@ const pickProfileForClaim = async (taskId: number, profileId: number, profileNam
     messages.value.push({
       id: Date.now() + 1,
       role: 'assistant',
-      content: `提交开票失败：${err?.response?.data?.detail || '请前往工作台查看'}`,
+      content: `提交失败：${err?.response?.data?.detail || '可在米尔工作台查看详情'}`,
       tool_events: [],
       created_at: new Date().toISOString(),
     })
@@ -153,41 +159,52 @@ const clearChat = async () => {
 
 <template>
   <div>
-    <!-- Floating Trigger Button -->
+    <!-- Floating Trigger -->
     <button
       @click="open = !open"
-      class="fixed bottom-6 right-6 z-40 flex items-center gap-2 pl-2.5 pr-4 py-2 rounded-full shadow-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-all"
-      title="呼出发票女仆对话"
+      class="fixed bottom-16 lg:bottom-6 right-5 z-40 flex items-center gap-2 pl-2 pr-4 py-1.5 rounded-full shadow-paper-lg bg-cream-100 hover:bg-mint-50 border border-mint-300 text-ink-900 text-sm font-medium transition-all"
+      title="打开米尔对话框"
     >
-      <img src="/favicon.png" alt="" class="w-7 h-7 rounded-full bg-white/90" />
-      <span>发票女仆</span>
+      <img src="/favicon.png" alt="Miri" class="w-8 h-8 rounded-full" />
+      <span>米尔 Miri</span>
     </button>
 
-    <!-- Slide-over Chat Drawer -->
+    <!-- Warm Mint-Cream Companion Drawer -->
     <div
       v-if="open"
-      class="fixed bottom-20 right-6 z-40 w-[390px] max-w-[calc(100vw-2rem)] h-[560px] max-h-[calc(100vh-7rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
+      class="fixed bottom-32 lg:bottom-20 right-5 z-40 w-[390px] max-w-[calc(100vw-2rem)] h-[540px] max-h-[calc(100vh-8rem)] bg-cream-100 rounded-2xl shadow-paper-lg border border-cream-500 flex flex-col overflow-hidden"
     >
-      <div class="px-4 py-3 bg-slate-900 text-white flex items-center justify-between">
+      <div class="px-4 py-3 bg-gradient-to-r from-mint-100 via-mint-50 to-cream-100 border-b border-cream-400 flex items-center justify-between">
         <div class="flex items-center gap-2.5">
-          <img src="/favicon.png" alt="" class="w-8 h-8 rounded-full bg-white/90" />
+          <img src="/favicon.png" alt="Miri" class="w-9 h-9 rounded-full ring-2 ring-cream-100" />
           <div>
-            <div class="text-sm font-semibold">Invoice Maid 发票女仆 v2.0</div>
-            <div class="text-xs text-slate-300">查账 · 报销归类 · 拍码自动开票</div>
+            <div class="text-sm font-bold text-ink-900 flex items-center gap-1.5">
+              <span>米尔 Miri</span>
+              <span class="px-1.5 py-0.5 text-[10px] rounded-full bg-mint-200/80 text-mint-800 font-medium">在线</span>
+            </div>
+            <div class="text-xs text-ink-500">查账 · 报销 · 拍码开票</div>
           </div>
         </div>
-        <div class="flex items-center gap-2">
-          <button @click="clearChat" class="text-xs text-slate-300 hover:text-white px-2 py-1 rounded">清空</button>
-          <button @click="open = false" class="text-slate-300 hover:text-white text-lg leading-none px-1">×</button>
+        <div class="flex items-center gap-1.5">
+          <button @click="clearChat" class="text-xs text-ink-500 hover:text-ink-900 px-2 py-1 rounded-lg hover:bg-cream-300/60">清空</button>
+          <button @click="open = false" class="text-ink-500 hover:text-ink-900 text-lg leading-none px-1.5 py-0.5 rounded-lg hover:bg-cream-300/60">×</button>
         </div>
       </div>
 
-      <div ref="listRef" class="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
-        <div v-if="messages.length === 0" class="text-xs text-slate-500 bg-white border border-slate-200 rounded-xl p-3 space-y-1.5">
-          <div class="font-medium text-slate-700">你可以直接告诉我：</div>
-          <div>• 「查一下 11 月未报销的美元发票有多少」</div>
-          <div>• 「记住：大药房的发票默认标为无需报销」</div>
-          <div>• 点击左下角 📷 上传线下消费小票二维码，我帮你自动填表申请开票！</div>
+      <div ref="listRef" class="flex-1 overflow-y-auto p-4 space-y-3 bg-cream-200/50">
+        <div v-if="messages.length === 0" class="text-xs text-ink-700 bg-cream-100 border border-cream-400 rounded-xl p-3.5 space-y-2">
+          <div>需要查发票、改报销状态，或者拍张开票二维码交给我填表吗？</div>
+          <div class="flex flex-wrap gap-1.5 pt-1">
+            <button
+              v-for="q in quickPrompts"
+              :key="q"
+              type="button"
+              @click="sendMessage(q)"
+              class="px-2.5 py-1 rounded-lg bg-mint-50 border border-mint-200 text-mint-800 hover:bg-mint-100 transition-colors"
+            >
+              {{ q }}
+            </button>
+          </div>
         </div>
 
         <div
@@ -197,8 +214,10 @@ const clearChat = async () => {
           :class="m.role === 'user' ? 'items-end' : 'items-start'"
         >
           <div
-            class="max-w-[85%] rounded-xl px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words"
-            :class="m.role === 'user' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-800'"
+            class="max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed"
+            :class="m.role === 'user'
+              ? 'bg-mint-600 text-white rounded-br-sm'
+              : 'bg-cream-100 border border-cream-400 text-ink-900 rounded-bl-sm shadow-sm'"
           >
             {{ m.content }}
           </div>
@@ -206,54 +225,54 @@ const clearChat = async () => {
             <span
               v-for="(ev, idx) in m.tool_events"
               :key="idx"
-              class="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-mono"
+              class="text-[11px] px-2 py-0.5 rounded-full bg-cream-300 text-ink-500 font-mono"
             >
-              ⚡ {{ ev.tool }}
+              {{ ev.tool }}
             </span>
           </div>
         </div>
 
-        <!-- Inline Profile Picker when multiple profiles exist -->
-        <div v-if="pendingClaimChoice" class="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-2">
-          <div class="text-xs font-semibold text-blue-900">请选择本次开票抬头：</div>
+        <!-- Inline Profile Picker -->
+        <div v-if="pendingClaimChoice" class="bg-mint-50 border border-mint-200 rounded-xl p-3 space-y-2">
+          <div class="text-xs font-semibold text-mint-800">请选择开票抬头：</div>
           <div class="flex flex-wrap gap-2">
             <button
               v-for="p in pendingClaimChoice.profiles"
               :key="p.id"
               @click="pickProfileForClaim(pendingClaimChoice.task.id, p.id, p.name)"
-              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-white border border-blue-300 text-blue-700 hover:bg-blue-600 hover:text-white transition-colors"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-cream-100 border border-mint-300 text-mint-800 hover:bg-mint-600 hover:text-white transition-colors"
             >
-              🏢 {{ p.name }}
+              {{ p.name }}
             </button>
           </div>
         </div>
 
-        <div v-if="sending || uploadingPhoto" class="text-xs text-slate-400 animate-pulse">
-          {{ uploadingPhoto ? '正在识别二维码与小票...' : '女仆思考与执行中...' }}
+        <div v-if="sending || uploadingPhoto" class="text-xs text-ink-400 animate-pulse">
+          {{ uploadingPhoto ? '正在识别二维码…' : '米尔整理中…' }}
         </div>
       </div>
 
-      <form @submit.prevent="sendMessage" class="p-3 border-t border-slate-200 bg-white flex items-center gap-2">
+      <form @submit.prevent="sendMessage()" class="p-3 border-t border-cream-400 bg-cream-100 flex items-center gap-2">
         <input ref="fileInputRef" type="file" accept="image/*" class="hidden" @change="handlePhotoSelected" />
         <button
           type="button"
           @click="onPickPhoto"
           :disabled="uploadingPhoto || sending"
-          class="p-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 text-sm"
-          title="拍照/上传开票二维码"
+          class="btn-cream px-2.5 py-2 text-xs whitespace-nowrap"
+          title="拍码开票"
         >
-          📷
+          拍码开票
         </button>
         <input
           v-model="inputText"
           type="text"
-          placeholder="给发票女仆发指令..."
-          class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          placeholder="和米尔说说，如「查京东的票」…"
+          class="input-warm flex-1 py-2"
         />
         <button
           type="submit"
           :disabled="sending || !inputText.trim()"
-          class="px-3.5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          class="btn-mint px-3.5 py-2"
         >
           发送
         </button>

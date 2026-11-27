@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.1.0 — Released
+
+**Theme:** Warm Stationery Ledger WebUI Redesign & Miri (米尔) Brand Identity. Introduces a cohesive cream-and-sage-mint design system (`docs/VI-DESIGN-SYSTEM.md`), desktop stationery sidebar + mobile bottom tab bar, 50/50 invoice verification workbench, floating batch dock, grouped vertical Settings menu, and concise Chinese copy across all views and agent prompts. See [CHANGELOG.md](CHANGELOG.md#210---2026-11-27).
+
+---
+
 ## v2.0.1 — Released
 
 **Theme:** 2026 transparent Maid avatar & UI icon refresh. Replaces the favicon, README icon, and Maid Chat Drawer avatar with the anti-aliased transparent-background `invoice-maid-2026.png` artwork. See [CHANGELOG.md](CHANGELOG.md#201---2026-11-27).

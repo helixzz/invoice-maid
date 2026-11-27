@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.1.0] - 2026-11-27
+
+### Theme
+
+**Full WebUI visual & IA redesign — "Warm Stationery Ledger" featuring Miri (米尔).** Replaces the legacy Bootstrap-like slate/blue styling across every page with a bespoke warm cream-and-sage-mint stationery design system derived directly from the 2026 Miri avatar (`docs/VI-DESIGN-SYSTEM.md`), with concise Chinese copy free of verbose filler text.
+
+### Changed
+
+- **Brand & Design System (`frontend/tailwind.config.js`, `frontend/src/style.css`, `docs/VI-DESIGN-SYSTEM.md`)**:
+  - Named the assistant **米尔 (Miri)** across Web UI and backend agent prompts.
+  - Introduced semantic brand palettes (`cream-*`, `mint-*`, `ink-*`, `peach-*`, `cinnabar-*`), warm paper cards (`ledger-card`), serrated receipt dividers (`receipt-zig`, `receipt-dashed`), stamp-style reimbursement badges (`stamp-badge`), and `tabular-nums` monospaced numbers (`num-mono`).
+- **Global Navigation & Companion Drawer (`AppLayout.vue`, `MaidChatDrawer.vue`)**:
+  - Replaced the plain top navbar with a 236px warm stationery desktop sidebar, a slim sticky status header, and a 4-item mobile bottom navigation bar.
+  - Restyled the floating Miri chat drawer with a soft mint-cream header, clean quick prompts, and inline QR claim profile selection.
+- **Redesigned All Views**:
+  - `LoginView.vue` / `RegisterView.vue` — dotted cream paper background with a dual-column stationery welcome card and serrated receipt edge.
+  - `InvoiceListView.vue` — compact multi-currency ledger summary cards, collapsible monthly/category analytics drawer, index-tab Saved Views, clean 8-column table with right-aligned monospaced amounts & stamp badges, and a floating bottom batch-action dock.
+  - `InvoiceDetailView.vue` — desktop 50/50 side-by-side verification workbench (sticky PDF preview on the left, warm receipt card with instant 1-click reimbursement stamp buttons on the right).
+  - `InvoiceUploadView.vue` — warm paper dropzone with quick routing to `/maid` for offline QR receipts.
+  - `MaidWorkspaceView.vue` — clean segmented tabs for claim tracking & memory rules with screenshot + CAPTCHA retry controls.
+  - `SettingsView.vue` & panels — reorganized 6 crowded horizontal tabs into a clean 2-group vertical sidebar menu (`采集与开票` / `智能与通知`) with `?tab=` deep-linking.
+  - `AdminView.vue`, `CategoryBadge.vue`, `MultiSelectChips.vue`, `ConfirmDialog.vue`, `Toast.vue`, `ScanProgressBar.vue` — harmonized with the Miri design system.
+
 ## [2.0.1] - 2026-11-27
 
 ### Changed

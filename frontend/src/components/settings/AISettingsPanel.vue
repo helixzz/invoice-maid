@@ -35,7 +35,7 @@ const fetchSettings = async () => {
     }
     await fetchModels(true)
   } catch {
-    emit('toast', '加载 AI 配置失败', 'error')
+    emit('toast', '加载模型配置失败', 'error')
   } finally {
     loading.value = false
   }
@@ -75,10 +75,10 @@ const saveSettings = async () => {
       payload.llm_embed_api_key = form.value.llm_embed_api_key.trim()
     }
     await api.updateAISettings(payload)
-    emit('toast', 'AI 模型配置已保存', 'success')
+    emit('toast', '模型与路由配置已保存', 'success')
     await fetchSettings()
   } catch (err: any) {
-    emit('toast', err?.response?.data?.detail || '保存 AI 配置失败', 'error')
+    emit('toast', err?.response?.data?.detail || '保存模型配置失败', 'error')
   } finally {
     saving.value = false
   }
@@ -90,9 +90,9 @@ const testConnection = async () => {
   try {
     const res = await api.testAIConnection()
     testResult.value = res
-    emit('toast', res.ok ? 'AI 连接测试通过' : 'AI 连接测试存在异常', res.ok ? 'success' : 'error')
+    emit('toast', res.ok ? '模型连通性测试通过' : '模型连通性测试存在异常', res.ok ? 'success' : 'error')
   } catch {
-    emit('toast', 'AI 连接测试请求失败', 'error')
+    emit('toast', '连通性测试请求失败', 'error')
   } finally {
     testing.value = false
   }
@@ -102,61 +102,63 @@ onMounted(fetchSettings)
 </script>
 
 <template>
-  <div class="bg-white shadow-sm rounded-xl border border-slate-200 overflow-hidden">
-    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+  <div class="ledger-card overflow-hidden">
+    <div class="px-6 py-5 border-b border-cream-400 bg-cream-300/35 flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h3 class="text-lg font-medium leading-6 text-slate-900">AI 模型与路由配置</h3>
-        <p class="mt-1 text-sm text-slate-500">支持 OpenAI 兼容网关（如本机 Magpie 自动路由）、多级备选模型降级、多模态视觉兜底及独立 Embedding 网关。</p>
+        <h3 class="font-display text-lg font-bold text-ink-900">模型与路由</h3>
+        <p class="mt-1 text-sm text-ink-500">配置 OpenAI 兼容接口、备选降级模型、票面视觉识别与语义检索网关。</p>
       </div>
       <span
         v-if="aiSettings"
-        class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-        :class="aiSettings.source === 'database' ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-700'"
+        class="stamp-badge"
+        :class="aiSettings.source === 'database'
+          ? 'bg-mint-50 text-mint-800 border-mint-200'
+          : 'bg-cream-300/80 text-ink-700 border-cream-500'"
       >
-        {{ aiSettings.source === 'database' ? 'Database' : 'Environment' }}
+        {{ aiSettings.source === 'database' ? '已保存配置' : '默认环境变量' }}
       </span>
     </div>
 
-    <div v-if="loading" class="p-8 text-center text-slate-500 text-sm">正在加载配置...</div>
+    <div v-if="loading" class="p-8 text-center text-ink-500 text-sm">正在读取模型配置…</div>
     <form v-else @submit.prevent="saveSettings" class="p-6 space-y-5">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">LLM Base URL</label>
+          <label class="block text-xs font-semibold text-ink-700 mb-1.5">接口地址 (Base URL)</label>
           <input
             v-model="form.llm_base_url"
             type="text"
             placeholder="http://127.0.0.1:3425/v1"
-            class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border focus:ring-blue-500 focus:border-blue-500"
+            class="input-warm num-mono text-xs sm:text-sm"
           />
         </div>
         <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">LLM API Key</label>
+          <label class="block text-xs font-semibold text-ink-700 mb-1.5">访问密钥 (API Key)</label>
           <input
             v-model="form.llm_api_key"
             type="password"
             :placeholder="aiSettings?.llm_api_key_masked || '留空表示保持不变'"
-            class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border focus:ring-blue-500 focus:border-blue-500"
+            class="input-warm"
           />
         </div>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <div class="flex items-center justify-between mb-1">
-            <label class="block text-sm font-medium text-slate-700">主模型 (Chat Model)</label>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-xs font-semibold text-ink-700">主识别模型</label>
             <button
               type="button"
               @click="fetchModels(false)"
               :disabled="fetchingModels"
-              class="text-xs text-blue-600 hover:text-blue-800"
+              class="text-xs font-medium text-mint-700 hover:text-mint-800 disabled:opacity-50"
             >
-              {{ fetchingModels ? '获取中...' : '刷新模型列表' }}
+              {{ fetchingModels ? '刷新中…' : '刷新模型列表' }}
             </button>
           </div>
           <select
             v-if="availableModels.length > 0 && !modelsFetchFailed"
             v-model="form.llm_model"
-            class="block w-full py-2 px-3 border border-slate-300 bg-white rounded-md sm:text-sm"
+            class="input-warm"
           >
             <option v-if="form.llm_model && !availableModels.includes(form.llm_model)" :value="form.llm_model">
               {{ form.llm_model }}
@@ -167,95 +169,114 @@ onMounted(fetchSettings)
             v-else
             v-model="form.llm_model"
             type="text"
-            placeholder="auto/gemini-4-hydrogen"
-            class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+            placeholder="输入模型名称"
+            class="input-warm num-mono"
           />
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">多模态视觉兜底模型 (Vision Model)</label>
+          <label class="block text-xs font-semibold text-ink-700 mb-1.5">视觉识别模型（用于图片与扫描件）</label>
           <input
             v-model="form.llm_vision_model"
             type="text"
-            placeholder="auto/gemini-4-neon（留空则复用主模型链）"
-            class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+            placeholder="留空则沿用主模型链"
+            class="input-warm num-mono"
           />
         </div>
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-slate-700 mb-1">多级备选模型链 (Fallback Models，逗号分隔)</label>
+        <label class="block text-xs font-semibold text-ink-700 mb-1.5">备选降级模型（多个以英文逗号分隔）</label>
         <input
           v-model="form.llm_fallback_models"
           type="text"
-          placeholder="auto/gpt-6-luna, modelverse/deepseek-v4.1-flash-1017, auto/gemini-4-neon"
-          class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+          placeholder="model-a, model-b, model-c"
+          class="input-warm num-mono"
         />
-        <p class="mt-1 text-xs text-slate-500">主模型故障或返回 5xx/429 时按顺序自动切换，全部失败时触发熔断保护。</p>
+        <p class="mt-1.5 text-xs text-ink-400">主模型限流或不可用时按顺序自动切换，全部失败时启用熔断保护。</p>
       </div>
 
-      <div class="border-t border-slate-200 pt-4">
-        <h4 class="text-sm font-semibold text-slate-800 mb-3">向量 Embedding 独立网关（可选，留空回退至主 LLM 网关）</h4>
+      <div class="receipt-dashed pt-5 space-y-4">
+        <div>
+          <h4 class="text-sm font-semibold text-ink-900">语义检索向量网关（可选）</h4>
+          <p class="text-xs text-ink-400 mt-0.5">地址或密钥留空时默认复用上方主接口；模型留空则关闭向量检索。</p>
+        </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">Embedding Base URL</label>
+            <label class="block text-xs font-semibold text-ink-700 mb-1.5">向量接口地址</label>
             <input
               v-model="form.llm_embed_base_url"
               type="text"
-              placeholder="留空则复用 LLM Base URL"
-              class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+              placeholder="留空则复用主接口地址"
+              class="input-warm num-mono text-xs sm:text-sm"
             />
           </div>
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">Embedding API Key</label>
+            <label class="block text-xs font-semibold text-ink-700 mb-1.5">向量访问密钥</label>
             <input
               v-model="form.llm_embed_api_key"
               type="password"
-              :placeholder="aiSettings?.llm_embed_api_key_masked || '留空则复用 LLM API Key'"
-              class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+              :placeholder="aiSettings?.llm_embed_api_key_masked || '留空则复用主密钥'"
+              class="input-warm"
             />
           </div>
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">Embedding 模型（留空则禁用语义向量）</label>
+            <label class="block text-xs font-semibold text-ink-700 mb-1.5">向量模型名称</label>
             <input
               v-model="form.llm_embed_model"
               type="text"
               placeholder="text-embedding-3-small"
-              class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+              class="input-warm num-mono"
             />
           </div>
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">Embedding 维度 (Embed Dim)</label>
+            <label class="block text-xs font-semibold text-ink-700 mb-1.5">向量维度</label>
             <input
               v-model.number="form.embed_dim"
               type="number"
               placeholder="1536"
-              class="block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border"
+              class="input-warm num-mono"
             />
           </div>
         </div>
       </div>
 
-      <div v-if="testResult" class="rounded-lg p-3 text-xs border" :class="testResult.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'">
-        <div>Chat ({{ testResult.chat.model }}): {{ testResult.chat.ok ? '✅ OK' : '❌ 失败' }} — {{ testResult.chat.detail }}</div>
-        <div class="mt-1">Embed ({{ testResult.embed.model || 'disabled' }}): {{ testResult.embed.ok ? '✅ OK' : '❌ 失败' }} — {{ testResult.embed.detail }}</div>
+      <div
+        v-if="testResult"
+        class="rounded-xl p-3.5 text-xs border space-y-1"
+        :class="testResult.ok
+          ? 'bg-mint-50 border-mint-200 text-mint-800'
+          : 'bg-cinnabar-50 border-cinnabar-200 text-cinnabar-700'"
+      >
+        <div class="flex items-center gap-1.5">
+          <span class="font-semibold">对话模型</span>
+          <span class="num-mono">({{ testResult.chat.model }})</span>：
+          <span>{{ testResult.chat.ok ? '正常' : '失败' }}</span>
+          <span v-if="testResult.chat.detail" class="text-ink-500">— {{ testResult.chat.detail }}</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="font-semibold">向量模型</span>
+          <span class="num-mono">({{ testResult.embed.model || '未启用' }})</span>：
+          <span>{{ testResult.embed.ok ? '正常' : '失败' }}</span>
+          <span v-if="testResult.embed.detail" class="text-ink-500">— {{ testResult.embed.detail }}</span>
+        </div>
       </div>
 
-      <div class="flex items-center justify-end space-x-3 pt-2">
+      <div class="flex items-center justify-end gap-2.5 pt-2">
         <button
           type="button"
           @click="testConnection"
           :disabled="testing"
-          class="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50"
+          class="btn-cream"
         >
-          {{ testing ? '测试中...' : '测试连接' }}
+          {{ testing ? '测试中…' : '测试连接' }}
         </button>
         <button
           type="submit"
           :disabled="saving"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          class="btn-mint"
         >
-          {{ saving ? '保存中...' : '保存 AI 配置' }}
+          {{ saving ? '保存中…' : '保存配置' }}
         </button>
       </div>
     </form>

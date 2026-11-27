@@ -103,6 +103,7 @@ const selectedReimbursementStatuses = ref<ReimbursementStatus[]>([])
 
 const stats = ref<StatsResponse | null>(null)
 const loadingStats = ref(true)
+const showDetailedStats = ref(false)
 
 const savedViews = ref<SavedView[]>([])
 const loadingViews = ref(false)
@@ -177,7 +178,7 @@ const releaseActiveViewIfDiverged = () => {
 
 const saveCurrentView = async () => {
   if (!newViewName.value.trim()) return
-  
+
   isSavingView.value = true
   const filterJson = JSON.stringify({
     q: searchQuery.value,
@@ -188,14 +189,14 @@ const saveCurrentView = async () => {
   })
 
   try {
-    const view = await api.createSavedView(newViewName.value, filterJson)
+    const view = await api.createSavedView(newViewName.value.trim(), filterJson)
     savedViews.value.push(view)
     activeViewId.value = view.id
     showSaveViewModal.value = false
     newViewName.value = ''
   } catch (error) {
     console.error('Failed to save view', error)
-    alert('Failed to save view')
+    alert('保存视图失败')
   } finally {
     isSavingView.value = false
   }
@@ -224,7 +225,7 @@ const exportCSV = async () => {
       category: selectedCategories.value.length > 0 ? [...selectedCategories.value] : undefined,
       reimbursement_status: selectedReimbursementStatuses.value.length > 0 ? [...selectedReimbursementStatuses.value] : undefined,
     })
-    
+
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -235,7 +236,7 @@ const exportCSV = async () => {
     document.body.removeChild(a)
   } catch (error) {
     console.error('Failed to export CSV', error)
-    alert('Failed to export CSV')
+    alert('导出 CSV 失败')
   } finally {
     isExporting.value = false
   }
@@ -261,7 +262,7 @@ const exportXLSX = async () => {
     document.body.removeChild(a)
   } catch (error) {
     console.error('Failed to export Excel', error)
-    alert('Failed to export Excel')
+    alert('导出 Excel 失败')
   } finally {
     isExporting.value = false
   }
@@ -430,14 +431,56 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   AUD: 'A$',
 }
 
+const CURRENCY_NAMES: Record<string, string> = {
+  CNY: '人民币账本汇总',
+  USD: '美元账本汇总',
+  EUR: '欧元账本汇总',
+  GBP: '英镑账本汇总',
+  JPY: '日元账本汇总',
+  HKD: '港币账本汇总',
+  SGD: '新加坡元账本汇总',
+  CAD: '加元账本汇总',
+  AUD: '澳元账本汇总',
+}
+
+const currencyTitle = (currency: string) => CURRENCY_NAMES[currency] || `${currency} 账本汇总`
+
+const currencyBadgeClass = (currency: string) => {
+  if (currency === 'CNY') return 'bg-mint-50 text-mint-800 border-mint-200'
+  if (currency === 'USD') return 'bg-[#F3EFFA] text-[#5B4583] border-[#DDD3F0]'
+  if (currency === 'EUR' || currency === 'GBP') return 'bg-[#FDF5E6] text-[#8B5E22] border-[#EEDAB6]'
+  return 'bg-cream-300/70 text-ink-700 border-cream-500'
+}
+
 const formatCurrency = (amount: number, currency?: string) => {
-  const symbol = CURRENCY_SYMBOLS[currency || 'CNY'] || currency || ''
-  return `${symbol}${amount.toFixed(2)}`
+  const code = currency || 'CNY'
+  const symbol = CURRENCY_SYMBOLS[code] || code
+  const formatted = amount.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return `${symbol} ${formatted}`
 }
 
 const formatDate = (dateString: string) => {
-  if (!dateString) return '-'
+  if (!dateString) return '—'
   return dateString.split('T')[0]
+}
+
+const copiedInvoiceNo = ref<string | null>(null)
+const copyInvoiceNo = async (invoiceNo: string) => {
+  if (!invoiceNo) return
+  try {
+    await navigator.clipboard.writeText(invoiceNo)
+    copiedInvoiceNo.value = invoiceNo
+    window.setTimeout(() => {
+      if (copiedInvoiceNo.value === invoiceNo) {
+        copiedInvoiceNo.value = null
+      }
+    }, 1500)
+  } catch {
+    // Clipboard may be unavailable in non-secure contexts
+  }
 }
 
 const viewInvoice = (id: number) => {
@@ -451,22 +494,22 @@ const downloadInvoice = async (id: number) => {
         'Authorization': `Bearer ${authStore.token}`
       }
     })
-    
+
     if (!response.ok) throw new Error('Failed to download invoice')
-    
+
     const invoice = invoicesStore.invoices.find(i => i.id === id)
     const ext = invoice ? api.invoiceExtension(invoice.source_format) : '.pdf'
-    const fallbackFilename = invoice 
-      ? `${invoice.buyer || 'buyer'}_${invoice.seller || 'seller'}_${invoice.invoice_no || 'invoice'}${ext}` 
+    const fallbackFilename = invoice
+      ? `${invoice.buyer || 'buyer'}_${invoice.seller || 'seller'}_${invoice.invoice_no || 'invoice'}${ext}`
       : `invoice_${id}${ext}`
-    
+
     const filename = api.extractFilename(response, fallbackFilename)
-    
+
     const blob = await response.blob()
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    
+
     a.download = filename
     document.body.appendChild(a)
     a.click()
@@ -509,7 +552,7 @@ const confirmBatchDelete = () => {
 
 const executeBatchDelete = async () => {
   if (invoicesStore.selectedIds.length === 0) return
-  
+
   deletingBatch.value = true
   try {
     await api.batchDelete(invoicesStore.selectedIds)
@@ -526,7 +569,7 @@ const executeBatchDelete = async () => {
 const downloadingBatch = ref(false)
 const batchDownload = async () => {
   if (invoicesStore.selectedIds.length === 0) return
-  
+
   downloadingBatch.value = true
   try {
     const blob = await api.batchDownload(invoicesStore.selectedIds)
@@ -574,6 +617,16 @@ const categoryBreakdown = computed<{ category: InvoiceCategory; count: number }[
   return CATEGORY_ORDER.map(category => ({ category, count: counts[category] }))
 })
 
+const toggleCategoryBucket = (category: InvoiceCategory) => {
+  const next = new Set(selectedCategories.value)
+  if (next.has(category)) {
+    next.delete(category)
+  } else {
+    next.add(category)
+  }
+  selectedCategories.value = [...next]
+}
+
 const monthlySpendPivot = computed(() => {
   const result: { month: string; [currency: string]: string | number }[] = []
   const perCurrency = stats.value?.monthly_spend_by_currency ?? []
@@ -595,6 +648,27 @@ const monthlySpendPivot = computed(() => {
   return result
 })
 
+const hasDetailedStats = computed(() => {
+  if (!stats.value) return false
+  return (
+    stats.value.total_invoices > 0 ||
+    Boolean(stats.value.by_category?.length) ||
+    Boolean(stats.value.monthly_spend_by_currency?.length)
+  )
+})
+
+const selectedCurrencyTotals = computed(() => {
+  if (invoicesStore.selectedIds.length === 0) return []
+  const selectedSet = new Set(invoicesStore.selectedIds)
+  const totals = new Map<string, number>()
+  for (const inv of invoicesStore.invoices) {
+    if (!selectedSet.has(inv.id)) continue
+    const code = inv.currency || 'CNY'
+    totals.set(code, (totals.get(code) || 0) + Number(inv.amount || 0))
+  }
+  return [...totals.entries()].map(([currency, total]) => ({ currency, total }))
+})
+
 onMounted(() => {
   invoicesStore.setCategories([...selectedCategories.value])
   fetchStats()
@@ -605,481 +679,827 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <div class="space-y-6">
-      <div v-if="!loadingStats && stats" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <p class="text-sm font-medium text-slate-500">Total Invoices</p>
-          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.total_invoices }}</p>
-        </div>
+    <div class="space-y-4" :class="invoicesStore.selectedIds.length > 0 ? 'pb-24' : ''">
+      <!-- Top Compact Multi-Currency Ledger Ribbon -->
+      <section v-if="!loadingStats && stats" class="space-y-3">
         <div
-          v-for="cb in (stats.by_currency || [])"
-          :key="cb.currency"
-          class="bg-white p-4 rounded-xl shadow-sm border border-slate-200"
+          class="grid grid-cols-1 md:grid-cols-2 gap-4"
+          :class="(stats.by_currency?.length || 0) >= 2 ? 'xl:grid-cols-3' : 'xl:grid-cols-2'"
         >
-          <p class="text-sm font-medium text-slate-500">{{ cb.currency === 'CNY' ? '¥ CNY' : cb.currency === 'USD' ? '$ USD' : cb.currency }} Total</p>
-          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ formatCurrency(cb.total, cb.currency) }}</p>
-          <p class="text-xs text-slate-400 mt-1">{{ cb.count }} invoices</p>
-        </div>
-        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <p class="text-sm font-medium text-slate-500">This Month</p>
-          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.invoices_this_month }}</p>
-          <p class="text-xs text-slate-400 mt-1">new invoices</p>
-        </div>
-        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <p class="text-sm font-medium text-slate-500">Active Accounts</p>
-          <p class="mt-1 text-2xl font-semibold text-slate-900">{{ stats.active_accounts }}</p>
-          <p class="text-xs text-slate-400 mt-1" v-if="stats.last_scan_at">Last scan: {{ formatDate(stats.last_scan_at) }}</p>
-        </div>
-      </div>
-
-      <div
-        v-if="!loadingStats && stats && (stats.total_invoices > 0 || (stats.by_category && stats.by_category.length > 0))"
-        class="bg-white p-4 rounded-xl shadow-sm border border-slate-200"
-        data-test-id="stats-by-category"
-      >
-        <p class="text-sm font-medium text-slate-500 mb-3">By Category</p>
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <!-- Real Multi-Currency Summary Cards -->
           <div
-            v-for="bucket in categoryBreakdown"
-            :key="bucket.category"
-            class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"
-            :data-test-id="`stats-category-${bucket.category}`"
+            v-for="cb in (stats.by_currency || [])"
+            :key="cb.currency"
+            class="ledger-card px-5 py-4 flex flex-col justify-between"
           >
-            <CategoryBadge :category="bucket.category" />
-            <span
-              class="text-sm font-semibold"
-              :class="bucket.count === 0 ? 'text-slate-400' : 'text-slate-900'"
-            >
-              {{ bucket.count === 0 ? '— (0)' : bucket.count }}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div
-        v-if="stats?.monthly_spend_by_currency?.length"
-        class="bg-white p-4 rounded-xl shadow-sm border border-slate-200"
-      >
-        <p class="text-sm font-medium text-slate-500 mb-3">Monthly Spend by Currency</p>
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-slate-200 text-sm">
-            <thead>
-              <tr class="text-left text-xs text-slate-500 uppercase tracking-wider">
-                <th class="px-3 py-2">Month</th>
-                <th v-for="gb in stats.monthly_spend_by_currency" :key="gb.currency" class="px-3 py-2 text-right">
-                  {{ gb.currency === 'CNY' ? '¥ CNY' : gb.currency === 'USD' ? '$ USD' : gb.currency }}
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100">
-              <tr v-for="mp in monthlySpendPivot" :key="mp.month">
-                <td class="px-3 py-2 font-medium text-slate-700">{{ mp.month }}</td>
-                <td v-for="gb in stats.monthly_spend_by_currency" :key="gb.currency" class="px-3 py-2 text-right text-slate-600">
-                  <span v-if="mp[gb.currency]">{{ formatCurrency(Number(mp[gb.currency]), gb.currency) }}</span>
-                  <span v-else class="text-slate-300">—</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div v-if="!loadingStats && stats?.total_invoices === 0 && stats?.active_accounts === 0" class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-8 border border-blue-100 shadow-sm text-center">
-        <div class="mx-auto w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-sm mb-4">
-          <svg class="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
-        </div>
-        <h2 class="text-2xl font-bold text-slate-900 mb-2">Welcome to Invoice Maid</h2>
-        <p class="text-slate-600 max-w-md mx-auto mb-6">To get started, configure an email account. Invoice Maid will automatically scan it for invoices and extract the data.</p>
-        <button @click="router.push('/settings')" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors">
-          Go to Settings
-          <svg class="ml-2 -mr-1 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
-        </button>
-      </div>
-
-      <div v-else-if="!loadingStats && stats?.total_invoices === 0 && stats?.active_accounts > 0" class="bg-white rounded-xl p-8 border border-slate-200 shadow-sm text-center">
-        <div class="mx-auto w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center border border-slate-100 mb-4">
-          <svg class="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-        </div>
-        <h2 class="text-xl font-semibold text-slate-900 mb-2">No Invoices Found Yet</h2>
-        <p class="text-slate-500 max-w-md mx-auto mb-6">Accounts are configured, but no invoices have been extracted. You can wait for the next scheduled scan or trigger one manually.</p>
-        <div class="flex items-center justify-center gap-4">
-          <button @click="router.push('/settings')" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 transition-colors">
-            Manage Scans
-          </button>
-        </div>
-      </div>
-
-      <div v-else class="flex flex-col gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 w-full">
-          <div class="flex items-center gap-3 w-full sm:w-auto">
-            <select
-              data-test-id="saved-view-select"
-              :value="activeViewId || ''"
-              @change="e => applySavedView(Number((e.target as HTMLSelectElement).value) || '')"
-              class="block w-full sm:w-48 pl-3 pr-8 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white transition-colors"
-            >
-              <option value="">All Invoices</option>
-              <option v-for="view in savedViews" :key="view.id" :value="view.id">{{ view.name }}</option>
-            </select>
-            <button
-              v-if="hasActiveFilters"
-              @click="showSaveViewModal = true"
-              class="text-sm font-medium text-blue-600 hover:text-blue-800 whitespace-nowrap"
-            >
-              Save View
-            </button>
-            <button
-              v-if="activeViewId"
-              @click="deleteSavedView(activeViewId)"
-              class="p-2 text-slate-400 hover:text-red-600 transition-colors rounded-full hover:bg-red-50"
-              title="Delete View"
-            >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-            </button>
-          </div>
-
-          <div class="flex items-center justify-end gap-2 w-full sm:w-auto">
-            <button
-              @click="exportXLSX"
-              :disabled="isExporting"
-              class="inline-flex items-center px-3.5 py-2 border border-emerald-300 shadow-sm text-sm font-medium rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 focus:outline-none disabled:opacity-50 transition-colors"
-            >
-              导出 Excel
-            </button>
-            <button
-              @click="exportCSV"
-              :disabled="isExporting"
-              class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
-            >
-              <svg v-if="isExporting" class="animate-spin -ml-1 mr-2 h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-              <svg v-else class="-ml-1 mr-2 h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-              {{ isExporting ? 'Exporting...' : 'Export CSV' }}
-            </button>
-          </div>
-        </div>
-
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div class="relative w-full sm:w-96">
-            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <svg class="h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
-              </svg>
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-medium text-ink-500">{{ currencyTitle(cb.currency) }}</span>
+              <span
+                class="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold num-mono"
+                :class="currencyBadgeClass(cb.currency)"
+              >
+                {{ cb.currency }} · {{ cb.count }} 张
+              </span>
             </div>
-            <input
-              type="text"
-              v-model="searchQuery"
-              class="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-500 focus:outline-none focus:placeholder-slate-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
-              placeholder="Search invoices..."
-            />
+            <div class="mt-2.5 text-2xl sm:text-[26px] font-bold tracking-tight text-ink-900 num-mono leading-tight">
+              {{ formatCurrency(cb.total, cb.currency) }}
+            </div>
+            <div class="mt-3 pt-2.5 receipt-dashed flex items-center justify-between text-xs text-ink-400">
+              <span>原币种精准记账</span>
+              <span class="num-mono text-ink-500">
+                占比 {{ stats.total_invoices ? Math.round((cb.count / stats.total_invoices) * 100) : 0 }}%
+              </span>
+            </div>
           </div>
 
-          <div class="flex items-center gap-2 w-full sm:w-auto">
-            <input
-              type="date"
-              v-model="dateFrom"
-              class="block w-full sm:w-auto pl-3 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
-            />
-            <span class="text-slate-500">-</span>
-            <input
-              type="date"
-              v-model="dateTo"
-              class="block w-full sm:w-auto pl-3 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-colors"
-            />
-            <button
-              v-if="dateFrom || dateTo"
-              @click="clearDates"
-              class="p-2 text-slate-400 hover:text-slate-600 transition-colors rounded-full hover:bg-slate-100"
-              title="Clear dates"
-            >
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            </button>
+          <!-- Total & This Month & Sync Overview Card -->
+          <div class="ledger-card px-5 py-4 bg-gradient-to-br from-cream-100 via-cream-100 to-peach-50/70 flex flex-col justify-between">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-medium text-ink-500">账本概览</span>
+              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-cream-500 bg-cream-50 text-[11px] font-medium text-ink-700 num-mono">
+                <span class="w-1.5 h-1.5 rounded-full" :class="stats.active_accounts > 0 ? 'bg-mint-500' : 'bg-ink-300'"></span>
+                邮箱 {{ stats.active_accounts }} 个
+              </span>
+            </div>
+
+            <div class="mt-2.5 flex items-baseline gap-6">
+              <div>
+                <div class="text-2xl sm:text-[26px] font-bold text-ink-900 num-mono leading-tight">
+                  {{ stats.total_invoices }}
+                  <span class="text-xs font-normal text-ink-500 ml-0.5">张总票据</span>
+                </div>
+              </div>
+              <div class="border-l border-cream-400 pl-4">
+                <div class="text-lg font-bold text-mint-700 num-mono leading-tight">
+                  +{{ stats.invoices_this_month }}
+                  <span class="text-xs font-normal text-ink-500 ml-0.5">本月新增</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-3 pt-2.5 receipt-dashed flex items-center justify-between gap-2 text-xs">
+              <span class="text-ink-400 num-mono truncate">
+                {{ stats.last_scan_at ? `上次扫描 ${formatDate(stats.last_scan_at)}` : '尚未执行邮箱扫描' }}
+              </span>
+              <button
+                v-if="hasDetailedStats"
+                type="button"
+                @click="showDetailedStats = !showDetailedStats"
+                class="inline-flex items-center gap-1 font-medium text-mint-700 hover:text-mint-900 whitespace-nowrap transition-colors"
+                :aria-expanded="showDetailedStats"
+              >
+                <span>{{ showDetailedStats ? '收起月度与分类统计' : '展开月度与分类统计' }}</span>
+                <svg
+                  class="w-3.5 h-3.5 transition-transform duration-200"
+                  :class="showDetailedStats ? 'rotate-180' : ''"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="pt-2 border-t border-slate-100 space-y-2" data-test-id="category-filter">
-          <MultiSelectChips
-            v-model="selectedCategories"
-            :options="categoryOptions"
-            label="Category"
-          />
-          <MultiSelectChips
-            v-model="selectedReimbursementStatuses"
-            :options="reimbursementOptions"
-            label="报销状态"
-          />
-        </div>
-      </div>
+        <!-- Collapsible Monthly & Category Stats Drawer (Collapsed by default) -->
+        <div
+          v-show="showDetailedStats && hasDetailedStats"
+          class="space-y-3"
+        >
+          <div
+            v-if="stats.total_invoices > 0 || (stats.by_category && stats.by_category.length > 0)"
+            class="ledger-card p-4"
+            data-test-id="stats-by-category"
+          >
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-xs font-semibold text-ink-500">按分类统计</span>
+              <span class="text-[11px] text-ink-400">点击分类可快速筛选</span>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+              <button
+                v-for="bucket in categoryBreakdown"
+                :key="bucket.category"
+                type="button"
+                @click="toggleCategoryBucket(bucket.category)"
+                class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border transition-colors text-left"
+                :class="selectedCategories.includes(bucket.category)
+                  ? 'border-mint-500 bg-mint-50/70'
+                  : 'border-cream-400 bg-cream-50 hover:bg-cream-200/70'"
+                :data-test-id="`stats-category-${bucket.category}`"
+              >
+                <CategoryBadge :category="bucket.category" />
+                <span
+                  class="text-sm font-semibold num-mono"
+                  :class="bucket.count === 0 ? 'text-ink-300' : 'text-ink-900'"
+                >
+                  {{ bucket.count === 0 ? '— (0)' : bucket.count }}
+                </span>
+              </button>
+            </div>
+          </div>
 
-      <!-- Batch Actions -->
-      <div v-if="invoicesStore.selectedIds.length > 0" class="flex flex-wrap items-center justify-between gap-3 bg-blue-50 p-4 rounded-xl border border-blue-100 transition-all duration-300">
-        <div class="flex items-center gap-4">
-          <span class="text-sm text-blue-800 font-medium">
-            {{ invoicesStore.selectedIds.length }} selected
-          </span>
-          <button @click="invoicesStore.clearSelection" class="text-sm text-blue-600 hover:text-blue-800 hover:underline transition-colors">
-            Clear selection
-          </button>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            @click="batchSetReimbursement('reimbursed')"
-            :disabled="updatingReimbursement"
-            class="inline-flex items-center px-3 py-2 border border-emerald-200 text-sm font-medium rounded-lg text-emerald-700 bg-white hover:bg-emerald-50 disabled:opacity-50"
+          <div
+            v-if="stats.monthly_spend_by_currency?.length"
+            class="ledger-card p-4"
           >
-            标为已报销
-          </button>
-          <button
-            @click="batchSetReimbursement('pending')"
-            :disabled="updatingReimbursement"
-            class="inline-flex items-center px-3 py-2 border border-amber-200 text-sm font-medium rounded-lg text-amber-700 bg-white hover:bg-amber-50 disabled:opacity-50"
-          >
-            标为报销中
-          </button>
-          <button
-            @click="downloadReimbursementPack"
-            :disabled="downloadingReimbursementPack"
-            class="inline-flex items-center px-3.5 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
-          >
-            {{ downloadingReimbursementPack ? '打包中...' : '导出报销包 (ZIP)' }}
-          </button>
-          <button
-            @click="confirmBatchDelete"
-            :disabled="deletingBatch"
-            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <svg v-if="deletingBatch" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <svg v-else class="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-            Delete
-          </button>
-          <button
-            @click="batchDownload"
-            :disabled="downloadingBatch"
-            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <svg v-if="downloadingBatch" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <svg v-else class="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-            Download
-          </button>
-        </div>
-      </div>
-
-      <!-- Table -->
-      <div class="bg-white shadow-sm rounded-xl border border-slate-200 overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-slate-200">
-            <thead class="bg-slate-50">
-              <tr>
-                <th scope="col" class="px-6 py-3 text-left">
-                  <input
-                    type="checkbox"
-                    :checked="isAllSelected"
-                    :indeterminate="isIndeterminate"
-                    @change="toggleAll"
-                    class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-300 rounded transition-colors"
-                  />
-                </th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Invoice No</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Buyer</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Seller</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Amount</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Category</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">报销状态</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Type</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Summary</th>
-                <th scope="col" class="relative px-6 py-3">
-                  <span class="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-slate-200">
-              <tr v-if="invoicesStore.loading" v-for="i in 5" :key="i" class="animate-pulse">
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-4"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-24"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-32"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-32"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-16"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-24"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-20"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-20"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap"><div class="h-4 bg-slate-200 rounded w-40"></div></td>
-                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <div class="h-4 bg-slate-200 rounded w-16 inline-block"></div>
-                </td>
-              </tr>
-              
-              <tr v-else-if="invoicesStore.invoices.length === 0">
-                <td colspan="11" class="px-6 py-16 text-center text-slate-500">
-                  <div class="flex flex-col items-center justify-center">
-                    <svg class="w-12 h-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    <p class="text-base font-medium text-slate-900">No invoices match your search</p>
-                    <p class="text-sm mt-1 text-slate-500 max-w-sm mb-4">Try adjusting your search terms or clearing the date filters to see more results.</p>
-                    <button
-                      v-if="hasActiveFilters"
-                      @click="clearAllFilters"
-                      class="inline-flex items-center px-4 py-2 border border-slate-300 shadow-sm text-sm font-medium rounded-lg text-slate-700 bg-white hover:bg-slate-50 transition-colors"
+            <p class="text-xs font-semibold text-ink-500 mb-3">月度分币种明细</p>
+            <div class="overflow-x-auto">
+              <table class="min-w-full divide-y divide-cream-400 text-sm">
+                <thead>
+                  <tr class="bg-cream-300/60 text-left text-xs font-semibold text-ink-500">
+                    <th class="px-3 py-2 rounded-l-lg">月份</th>
+                    <th
+                      v-for="(gb, idx) in stats.monthly_spend_by_currency"
+                      :key="gb.currency"
+                      class="px-3 py-2 text-right num-mono"
+                      :class="idx === stats.monthly_spend_by_currency.length - 1 ? 'rounded-r-lg' : ''"
                     >
-                      Clear Filters
-                    </button>
-                  </div>
-                </td>
-              </tr>
+                      {{ gb.currency }}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-cream-400/70">
+                  <tr v-for="mp in monthlySpendPivot" :key="mp.month" class="hover:bg-cream-200/60 transition-colors">
+                    <td class="px-3 py-2 font-medium text-ink-700 num-mono">{{ mp.month }}</td>
+                    <td
+                      v-for="gb in stats.monthly_spend_by_currency"
+                      :key="gb.currency"
+                      class="px-3 py-2 text-right num-mono text-ink-900"
+                    >
+                      <span v-if="mp[gb.currency]">{{ formatCurrency(Number(mp[gb.currency]), gb.currency) }}</span>
+                      <span v-else class="text-ink-300">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
 
-              <tr v-else v-for="invoice in invoicesStore.invoices" :key="invoice.id" class="hover:bg-slate-50 transition-colors" :data-test-id="`invoice-row-${invoice.id}`">
-                <td class="px-6 py-4 whitespace-nowrap">
+      <!-- Empty State: No email accounts configured -->
+      <div
+        v-if="!loadingStats && stats?.total_invoices === 0 && stats?.active_accounts === 0"
+        class="ledger-card paper-dots p-10 text-center"
+      >
+        <div class="mx-auto w-14 h-14 bg-cream-100 rounded-2xl border border-cream-400 flex items-center justify-center shadow-paper mb-4">
+          <svg class="w-7 h-7 text-mint-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <h2 class="font-display text-xl font-bold text-ink-900 mb-2">尚未配置收票邮箱</h2>
+        <p class="text-sm text-ink-500 max-w-md mx-auto mb-6">连接邮箱账号后将自动定时扫描并解析电子发票，也可直接手动上传归档。</p>
+        <div class="flex items-center justify-center gap-3">
+          <button @click="router.push('/settings')" class="btn-mint">
+            前往系统设置
+          </button>
+          <button @click="router.push('/upload')" class="btn-cream">
+            上传票据
+          </button>
+        </div>
+      </div>
+
+      <!-- Empty State: Accounts configured but no invoices yet -->
+      <div
+        v-else-if="!loadingStats && stats?.total_invoices === 0 && stats?.active_accounts > 0"
+        class="ledger-card paper-dots p-10 text-center"
+      >
+        <div class="mx-auto w-14 h-14 bg-cream-100 rounded-2xl border border-cream-400 flex items-center justify-center shadow-paper mb-4">
+          <svg class="w-7 h-7 text-ink-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <h2 class="font-display text-xl font-bold text-ink-900 mb-2">暂无发票记录</h2>
+        <p class="text-sm text-ink-500 max-w-md mx-auto mb-6">已配置邮箱账号，可前往立即触发一次扫描，或直接上传本地电子发票。</p>
+        <div class="flex items-center justify-center gap-3">
+          <button @click="router.push('/settings')" class="btn-mint">
+            管理扫描
+          </button>
+          <button @click="router.push('/upload')" class="btn-cream">
+            上传票据
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Ledger Workspace: Saved Views Tabs + Filter Bar + Table -->
+      <template v-else>
+        <div class="ledger-card overflow-hidden">
+          <!-- Row 1: Stationery Index Sticker Saved Views + Export Actions -->
+          <div class="px-4 py-3 bg-cream-200/60 border-b border-cream-400 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <!-- Saved Views Stickers -->
+            <div class="flex flex-wrap items-center gap-2 min-w-0">
+              <button
+                type="button"
+                @click="applySavedView('')"
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-all"
+                :class="!activeViewId
+                  ? 'bg-cream-100 text-ink-900 border-cream-500 shadow-paper font-semibold'
+                  : 'bg-cream-300/50 text-ink-500 border-transparent hover:bg-cream-100/80 hover:text-ink-900'"
+              >
+                <span>全部票据</span>
+                <span
+                  v-if="stats"
+                  class="px-1.5 py-0.5 rounded-full text-[11px] num-mono"
+                  :class="!activeViewId ? 'bg-mint-100 text-mint-800' : 'bg-cream-400/70 text-ink-500'"
+                >
+                  {{ stats.total_invoices }}
+                </span>
+              </button>
+
+              <div
+                v-for="view in savedViews"
+                :key="view.id"
+                class="inline-flex items-center rounded-xl border transition-all"
+                :class="activeViewId === view.id
+                  ? 'bg-mint-50 text-mint-800 border-mint-300 shadow-paper font-semibold'
+                  : 'bg-cream-100/80 text-ink-700 border-cream-400 hover:bg-cream-100 hover:border-cream-500'"
+              >
+                <button
+                  type="button"
+                  @click="applySavedView(view.id)"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
+                >
+                  <span
+                    class="w-1.5 h-1.5 rounded-full"
+                    :class="activeViewId === view.id ? 'bg-mint-600' : 'bg-ink-300'"
+                  ></span>
+                  <span>{{ view.name }}</span>
+                </button>
+                <button
+                  v-if="activeViewId === view.id"
+                  type="button"
+                  @click.stop="deleteSavedView(view.id)"
+                  class="pr-2 pl-0.5 py-1.5 text-mint-700/70 hover:text-cinnabar-600 transition-colors"
+                  title="删除当前视图"
+                  aria-label="删除当前视图"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <!-- Preserved select for E2E & keyboard compatibility -->
+              <select
+                data-test-id="saved-view-select"
+                :value="activeViewId || ''"
+                @change="e => applySavedView(Number((e.target as HTMLSelectElement).value) || '')"
+                aria-label="切换已保存视图"
+                class="sr-only"
+              >
+                <option value="">全部票据</option>
+                <option v-for="view in savedViews" :key="view.id" :value="view.id">{{ view.name }}</option>
+              </select>
+
+              <button
+                v-if="hasActiveFilters"
+                type="button"
+                @click="showSaveViewModal = true"
+                class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium border border-dashed border-cream-500 text-ink-700 bg-cream-50/70 hover:bg-cream-100 hover:border-mint-500 hover:text-mint-800 transition-colors whitespace-nowrap"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                保存视图
+              </button>
+
+              <span v-if="loadingViews" class="text-[11px] text-ink-400">加载视图中…</span>
+            </div>
+
+            <!-- Export Actions -->
+            <div class="flex items-center justify-end gap-2 flex-shrink-0">
+              <button
+                type="button"
+                @click="exportXLSX"
+                :disabled="isExporting"
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-mint-300 text-mint-800 bg-mint-50 hover:bg-mint-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                导出 Excel
+              </button>
+              <button
+                type="button"
+                @click="exportCSV"
+                :disabled="isExporting"
+                class="btn-cream py-1.5 px-3 text-xs"
+              >
+                <svg v-if="isExporting" class="animate-spin h-3.5 w-3.5 text-ink-500" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <svg v-else class="w-3.5 h-3.5 text-ink-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                {{ isExporting ? '导出中…' : '导出 CSV' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Row 2: Search + Date Range + Category & Reimbursement Chips -->
+          <div class="p-4 space-y-3">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div class="relative flex-1 max-w-md">
+                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <svg class="h-4 w-4 text-ink-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
+                  </svg>
+                </div>
+                <input
+                  type="text"
+                  v-model="searchQuery"
+                  class="input-warm pl-9 pr-8 py-1.5"
+                  placeholder="搜索销售方、购买方、发票号码、项目摘要…"
+                />
+                <button
+                  v-if="searchQuery"
+                  type="button"
+                  @click="searchQuery = ''"
+                  class="absolute inset-y-0 right-0 pr-2.5 flex items-center text-ink-400 hover:text-ink-700"
+                  title="清空搜索"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <div class="flex items-center gap-1.5">
                   <input
-                    type="checkbox"
-                    :checked="invoicesStore.selectedIds.includes(invoice.id)"
-                    @change="invoicesStore.toggleSelection(invoice.id)"
-                    class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-300 rounded transition-colors"
+                    type="date"
+                    v-model="dateFrom"
+                    aria-label="开始日期"
+                    class="input-warm w-auto py-1.5 px-2.5 text-xs num-mono"
                   />
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ invoice.invoice_no }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ invoice.buyer }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ invoice.seller }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{{ formatCurrency(invoice.amount, invoice.currency) }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(invoice.invoice_date) }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm">
-                  <CategoryBadge :category="invoice.invoice_category" />
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm">
-                  <span
-                    class="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full border"
-                    :class="REIMBURSEMENT_COLORS[invoice.reimbursement_status || 'unreimbursed']"
-                    :title="invoice.tags || invoice.notes || ''"
+                  <span class="text-ink-400 text-xs">~</span>
+                  <input
+                    type="date"
+                    v-model="dateTo"
+                    aria-label="结束日期"
+                    class="input-warm w-auto py-1.5 px-2.5 text-xs num-mono"
+                  />
+                  <button
+                    v-if="dateFrom || dateTo"
+                    type="button"
+                    @click="clearDates"
+                    class="p-1.5 text-ink-400 hover:text-ink-700 rounded-lg hover:bg-cream-300/60 transition-colors"
+                    title="清除日期"
                   >
-                    {{ REIMBURSEMENT_LABELS[invoice.reimbursement_status || 'unreimbursed'] }}
-                  </span>
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                  <span
-                    class="px-2.5 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full border"
-                    :class="invoice.invoice_type.toLowerCase().includes('增值税专用发票') ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-100 text-slate-700 border-slate-200'"
-                  >
-                    {{ invoice.invoice_type }}
-                  </span>
-                </td>
-                <td class="px-6 py-4 text-sm text-slate-500 max-w-xs truncate" :title="invoice.item_summary || ''">{{ invoice.item_summary || '-' }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-3">
-                  <button @click="viewInvoice(invoice.id)" class="text-blue-600 hover:text-blue-900 transition-colors">View</button>
-                  <button @click="downloadInvoice(invoice.id)" class="text-green-600 hover:text-green-900 transition-colors">Download</button>
-                  <button @click="confirmDelete(invoice.id)" class="text-red-600 hover:text-red-900 transition-colors">Delete</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                <button
+                  v-if="hasActiveFilters"
+                  type="button"
+                  @click="clearAllFilters"
+                  class="text-xs font-medium text-ink-500 hover:text-ink-900 px-2 py-1 rounded-lg hover:bg-cream-300/60 transition-colors"
+                >
+                  重置筛选
+                </button>
+              </div>
+            </div>
+
+            <div class="pt-2.5 border-t border-cream-400/70 space-y-2" data-test-id="category-filter">
+              <MultiSelectChips
+                v-model="selectedCategories"
+                :options="categoryOptions"
+                label="分类"
+              />
+              <MultiSelectChips
+                v-model="selectedReimbursementStatuses"
+                :options="reimbursementOptions"
+                label="报销状态"
+              />
+            </div>
+          </div>
         </div>
 
-        <!-- Pagination -->
-        <div class="bg-white px-4 py-3 flex items-center justify-between border-t border-slate-200 sm:px-6">
-          <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-            <div class="flex items-center gap-4">
-              <p class="text-sm text-slate-700">
-                Showing
-                <span class="font-medium">{{ (page - 1) * size + (invoicesStore.invoices.length > 0 ? 1 : 0) }}</span>
-                to
-                <span class="font-medium">{{ Math.min(page * size, invoicesStore.total) }}</span>
-                of
-                <span class="font-medium">{{ invoicesStore.total }}</span>
-                results
-              </p>
-              <select v-model="size" class="block w-20 pl-3 pr-8 py-1.5 text-sm border-slate-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 rounded-md transition-colors">
-                <option :value="20">20</option>
-                <option :value="50">50</option>
-                <option :value="100">100</option>
+        <!-- Ledger Table -->
+        <div class="ledger-card overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-cream-400">
+              <thead class="bg-cream-300/70">
+                <tr>
+                  <th scope="col" class="w-11 pl-5 pr-2 py-3 text-left">
+                    <input
+                      type="checkbox"
+                      :checked="isAllSelected"
+                      :indeterminate="isIndeterminate"
+                      @change="toggleAll"
+                      aria-label="全选当前页"
+                      class="h-4 w-4 rounded border-cream-500 text-mint-600 accent-mint-600 focus:ring-mint-500 cursor-pointer"
+                    />
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-ink-500 tracking-wide">
+                    销售方 &amp; 项目摘要
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-ink-500 tracking-wide">
+                    购买方 / 抬头
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-ink-500 tracking-wide">
+                    发票号码
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-ink-500 tracking-wide">
+                    开票日期
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-ink-500 tracking-wide">
+                    分类
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-ink-500 tracking-wide">
+                    报销状态
+                  </th>
+                  <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-ink-500 tracking-wide">
+                    金额
+                  </th>
+                  <th scope="col" class="pl-3 pr-5 py-3 text-right text-xs font-semibold text-ink-500 tracking-wide">
+                    操作
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody class="bg-cream-100 divide-y divide-cream-400/80">
+                <!-- Loading Skeleton -->
+                <tr v-if="invoicesStore.loading" v-for="i in 5" :key="i" class="animate-pulse">
+                  <td class="pl-5 pr-2 py-4"><div class="h-4 w-4 bg-cream-300 rounded"></div></td>
+                  <td class="px-4 py-4">
+                    <div class="h-4 w-44 bg-cream-300 rounded mb-1.5"></div>
+                    <div class="h-3 w-32 bg-cream-300/70 rounded"></div>
+                  </td>
+                  <td class="px-4 py-4"><div class="h-4 w-28 bg-cream-300 rounded"></div></td>
+                  <td class="px-4 py-4"><div class="h-4 w-32 bg-cream-300 rounded"></div></td>
+                  <td class="px-4 py-4"><div class="h-4 w-20 bg-cream-300 rounded"></div></td>
+                  <td class="px-4 py-4"><div class="h-5 w-16 bg-cream-300 rounded-full"></div></td>
+                  <td class="px-4 py-4"><div class="h-5 w-14 bg-cream-300 rounded-md"></div></td>
+                  <td class="px-4 py-4 text-right"><div class="h-4 w-24 bg-cream-300 rounded ml-auto"></div></td>
+                  <td class="pl-3 pr-5 py-4 text-right"><div class="h-4 w-20 bg-cream-300 rounded ml-auto"></div></td>
+                </tr>
+
+                <!-- No Matches -->
+                <tr v-else-if="invoicesStore.invoices.length === 0">
+                  <td colspan="9" class="px-6 py-16 text-center">
+                    <div class="flex flex-col items-center justify-center">
+                      <div class="w-12 h-12 rounded-2xl bg-cream-200 border border-cream-400 flex items-center justify-center mb-3">
+                        <svg class="w-6 h-6 text-ink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </div>
+                      <p class="text-sm font-semibold text-ink-900">没有找到符合条件的票据</p>
+                      <p class="text-xs text-ink-500 mt-1 mb-4">可调整搜索关键词、日期区间或筛选条件。</p>
+                      <button
+                        v-if="hasActiveFilters"
+                        type="button"
+                        @click="clearAllFilters"
+                        class="btn-cream text-xs py-1.5"
+                      >
+                        清空全部筛选
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+
+                <!-- Invoice Rows -->
+                <tr
+                  v-else
+                  v-for="invoice in invoicesStore.invoices"
+                  :key="invoice.id"
+                  class="transition-colors"
+                  :class="invoicesStore.selectedIds.includes(invoice.id)
+                    ? 'bg-mint-50/55 hover:bg-mint-50/85'
+                    : 'hover:bg-cream-200/70'"
+                  :data-test-id="`invoice-row-${invoice.id}`"
+                >
+                  <td class="pl-5 pr-2 py-3.5 whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      :checked="invoicesStore.selectedIds.includes(invoice.id)"
+                      @change="invoicesStore.toggleSelection(invoice.id)"
+                      :aria-label="`选择发票 ${invoice.invoice_no}`"
+                      class="h-4 w-4 rounded border-cream-500 text-mint-600 accent-mint-600 focus:ring-mint-500 cursor-pointer"
+                    />
+                  </td>
+
+                  <!-- Seller + Type + Item Summary -->
+                  <td class="px-4 py-3.5 max-w-[280px]">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <button
+                        type="button"
+                        @click="viewInvoice(invoice.id)"
+                        class="text-sm font-semibold text-ink-900 hover:text-mint-700 truncate text-left transition-colors"
+                        :title="invoice.seller || '—'"
+                      >
+                        {{ invoice.seller || '—' }}
+                      </button>
+                      <span
+                        v-if="invoice.invoice_type"
+                        class="flex-shrink-0 px-1.5 py-0.5 text-[10px] leading-tight font-medium rounded border"
+                        :class="invoice.invoice_type.toLowerCase().includes('专用')
+                          ? 'bg-mint-50 text-mint-800 border-mint-200'
+                          : 'bg-cream-300/70 text-ink-500 border-cream-400'"
+                      >
+                        {{ invoice.invoice_type }}
+                      </span>
+                    </div>
+                    <div
+                      class="text-xs text-ink-500 truncate mt-0.5"
+                      :title="invoice.item_summary || ''"
+                    >
+                      {{ invoice.item_summary || '—' }}
+                    </div>
+                  </td>
+
+                  <!-- Buyer -->
+                  <td class="px-4 py-3.5 text-sm text-ink-700 max-w-[170px] truncate" :title="invoice.buyer || ''">
+                    {{ invoice.buyer || '—' }}
+                  </td>
+
+                  <!-- Invoice No (Mono + Click Copy) -->
+                  <td class="px-4 py-3.5 whitespace-nowrap">
+                    <div class="inline-flex items-center gap-1 group">
+                      <span class="text-xs text-ink-700 num-mono" :title="invoice.invoice_no">
+                        {{ invoice.invoice_no || '—' }}
+                      </span>
+                      <button
+                        v-if="invoice.invoice_no"
+                        type="button"
+                        @click.stop="copyInvoiceNo(invoice.invoice_no)"
+                        class="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded text-ink-400 hover:text-mint-700 transition-opacity"
+                        :title="copiedInvoiceNo === invoice.invoice_no ? '已复制' : '复制发票号码'"
+                      >
+                        <svg v-if="copiedInvoiceNo === invoice.invoice_no" class="w-3.5 h-3.5 text-mint-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </button>
+                    </div>
+                  </td>
+
+                  <!-- Date -->
+                  <td class="px-4 py-3.5 whitespace-nowrap text-xs text-ink-500 num-mono">
+                    {{ formatDate(invoice.invoice_date) }}
+                  </td>
+
+                  <!-- Category -->
+                  <td class="px-4 py-3.5 whitespace-nowrap">
+                    <CategoryBadge :category="invoice.invoice_category" />
+                  </td>
+
+                  <!-- Reimbursement Stamp -->
+                  <td class="px-4 py-3.5 whitespace-nowrap">
+                    <span
+                      class="stamp-badge"
+                      :class="REIMBURSEMENT_COLORS[invoice.reimbursement_status || 'unreimbursed']"
+                      :title="invoice.tags || invoice.notes || ''"
+                    >
+                      {{ REIMBURSEMENT_LABELS[invoice.reimbursement_status || 'unreimbursed'] }}
+                    </span>
+                  </td>
+
+                  <!-- Amount (Strict Right-Aligned Mono + Real Currency Code) -->
+                  <td class="px-4 py-3.5 whitespace-nowrap text-right">
+                    <span class="text-[11px] font-medium text-ink-400 num-mono mr-1.5">
+                      {{ invoice.currency || 'CNY' }}
+                    </span>
+                    <span class="text-sm font-semibold text-ink-900 num-mono">
+                      {{ formatCurrency(invoice.amount, invoice.currency) }}
+                    </span>
+                  </td>
+
+                  <!-- Row Actions -->
+                  <td class="pl-3 pr-5 py-3.5 whitespace-nowrap text-right text-xs font-medium">
+                    <div class="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        @click="viewInvoice(invoice.id)"
+                        class="px-2 py-1 rounded-lg text-mint-700 hover:text-mint-900 hover:bg-mint-50 transition-colors"
+                      >
+                        详情
+                      </button>
+                      <button
+                        type="button"
+                        @click="downloadInvoice(invoice.id)"
+                        class="px-2 py-1 rounded-lg text-ink-700 hover:text-ink-900 hover:bg-cream-300/70 transition-colors"
+                      >
+                        下载
+                      </button>
+                      <button
+                        type="button"
+                        @click="confirmDelete(invoice.id)"
+                        class="px-2 py-1 rounded-lg text-cinnabar-600 hover:text-cinnabar-700 hover:bg-cinnabar-50 transition-colors"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="bg-cream-100 px-5 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-cream-400">
+            <div class="flex items-center gap-3 text-xs text-ink-500">
+              <span>
+                显示第
+                <span class="font-semibold text-ink-900 num-mono">
+                  {{ (page - 1) * size + (invoicesStore.invoices.length > 0 ? 1 : 0) }}–{{ Math.min(page * size, invoicesStore.total) }}
+                </span>
+                条，共
+                <span class="font-semibold text-ink-900 num-mono">{{ invoicesStore.total }}</span>
+                条
+              </span>
+              <select
+                v-model="size"
+                aria-label="每页显示数量"
+                class="input-warm w-auto py-1 pl-2.5 pr-7 text-xs num-mono"
+              >
+                <option :value="20">20 条/页</option>
+                <option :value="50">50 条/页</option>
+                <option :value="100">100 条/页</option>
               </select>
             </div>
-            <div>
-              <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
-                <button
-                  @click="handlePageChange(page - 1)"
-                  :disabled="page === 1"
-                  class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-slate-300 bg-white text-sm font-medium text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <span class="sr-only">Previous</span>
-                  <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
-                  </svg>
-                </button>
-                <span class="relative inline-flex items-center px-4 py-2 border border-slate-300 bg-white text-sm font-medium text-slate-700">
-                  Page {{ page }} of {{ totalPages || 1 }}
-                </span>
-                <button
-                  @click="handlePageChange(page + 1)"
-                  :disabled="page >= totalPages"
-                  class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-slate-300 bg-white text-sm font-medium text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <span class="sr-only">Next</span>
-                  <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
-                  </svg>
-                </button>
-              </nav>
-            </div>
+
+            <nav class="inline-flex items-center gap-1.5" aria-label="分页导航">
+              <button
+                type="button"
+                @click="handlePageChange(page - 1)"
+                :disabled="page === 1"
+                class="btn-cream py-1.5 px-3 text-xs"
+              >
+                上一页
+              </button>
+              <span class="px-3 py-1.5 rounded-xl bg-cream-200 border border-cream-400 text-xs font-medium text-ink-700 num-mono">
+                {{ page }} / {{ totalPages || 1 }}
+              </span>
+              <button
+                type="button"
+                @click="handlePageChange(page + 1)"
+                :disabled="page >= totalPages"
+                class="btn-cream py-1.5 px-3 text-xs"
+              >
+                下一页
+              </button>
+            </nav>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Bottom Deep Tea-Mint Floating Batch Action Dock -->
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="opacity-0 translate-y-3"
+      enter-to-class="opacity-100 translate-y-0"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="opacity-100 translate-y-0"
+      leave-to-class="opacity-0 translate-y-3"
+    >
+      <div
+        v-if="invoicesStore.selectedIds.length > 0"
+        class="bg-mint-900 text-white shadow-dock rounded-2xl fixed bottom-16 lg:bottom-6 left-1/2 -translate-x-1/2 z-40 max-w-[calc(100vw-1.5rem)] border border-mint-700/70 px-3.5 py-2.5"
+      >
+        <div class="flex flex-wrap items-center justify-center gap-2">
+          <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-xl bg-mint-800/90 border border-mint-700/80 text-xs">
+            <span class="font-semibold num-mono">已选 {{ invoicesStore.selectedIds.length }} 张</span>
+            <span
+              v-if="selectedCurrencyTotals.length > 0"
+              class="hidden sm:inline text-mint-200 num-mono border-l border-mint-700 pl-2"
+            >
+              {{ selectedCurrencyTotals.map(item => formatCurrency(item.total, item.currency)).join(' + ') }}
+            </span>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-center gap-1.5">
+            <button
+              type="button"
+              @click="batchSetReimbursement('reimbursed')"
+              :disabled="updatingReimbursement"
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold bg-mint-200 text-mint-900 hover:bg-mint-100 transition-colors disabled:opacity-50"
+            >
+              标为已报销
+            </button>
+            <button
+              type="button"
+              @click="batchSetReimbursement('pending')"
+              :disabled="updatingReimbursement"
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-mint-800 hover:bg-mint-700 text-cream-100 border border-mint-700 transition-colors disabled:opacity-50"
+            >
+              标为报销中
+            </button>
+            <button
+              type="button"
+              @click="downloadReimbursementPack"
+              :disabled="downloadingReimbursementPack"
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-mint-600 hover:bg-mint-500 text-white transition-colors disabled:opacity-50"
+            >
+              {{ downloadingReimbursementPack ? '打包中…' : '导出报销包 ZIP' }}
+            </button>
+            <button
+              type="button"
+              @click="batchDownload"
+              :disabled="downloadingBatch"
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-mint-800 hover:bg-mint-700 text-cream-100 border border-mint-700 transition-colors disabled:opacity-50"
+            >
+              {{ downloadingBatch ? '下载中…' : '批量下载' }}
+            </button>
+            <button
+              type="button"
+              @click="confirmBatchDelete"
+              :disabled="deletingBatch"
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-cinnabar-600 hover:bg-cinnabar-700 text-white transition-colors disabled:opacity-50"
+            >
+              {{ deletingBatch ? '删除中…' : '批量删除' }}
+            </button>
+            <button
+              type="button"
+              @click="invoicesStore.clearSelection"
+              class="px-2 py-1.5 rounded-xl text-xs text-mint-200 hover:text-white hover:bg-mint-800/80 transition-colors"
+            >
+              取消选择
+            </button>
           </div>
         </div>
       </div>
-    </div>
+    </Transition>
 
     <ConfirmDialog
       ref="confirmDialog"
-      title="Delete Invoice"
-      message="Are you sure you want to delete this invoice? This action cannot be undone."
-      confirmText="Delete"
+      title="删除发票"
+      message="确定删除这张发票吗？此操作无法撤销。"
+      confirmText="删除"
       @confirm="executeDelete"
     />
     <ConfirmDialog
       ref="confirmBatchDeleteDialog"
-      title="Delete Selected Invoices"
-      message="Are you sure you want to delete the selected invoices? This action cannot be undone."
-      confirmText="Delete All"
+      title="批量删除发票"
+      message="确定删除已选中的发票吗？此操作无法撤销。"
+      confirmText="全部删除"
       @confirm="executeBatchDelete"
     />
 
     <!-- Save View Modal -->
-    <div v-if="showSaveViewModal" class="fixed inset-0 z-10 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-        <div class="fixed inset-0 bg-slate-500 bg-opacity-75 transition-opacity" aria-hidden="true" @click="showSaveViewModal = false"></div>
-        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
-        <div class="inline-block align-bottom bg-white rounded-xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
-          <form @submit.prevent="saveCurrentView">
-            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-              <div class="sm:flex sm:items-start">
-                <div class="mt-3 text-center sm:mt-0 sm:text-left w-full">
-                  <h3 class="text-lg leading-6 font-medium text-slate-900" id="modal-title">
-                    Save Current View
-                  </h3>
-                  <div class="mt-4">
-                    <label class="block text-sm font-medium text-slate-700 mb-1">View Name</label>
-                    <input type="text" v-model="newViewName" required class="focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="e.g. Q3 Expenses">
-                  </div>
-                  <div class="mt-4 bg-slate-50 p-3 rounded text-sm text-slate-600">
-                    <p class="font-medium mb-1">Saved Filters:</p>
-                    <ul class="list-disc pl-5 space-y-1">
-                      <li v-if="searchQuery">Search: "{{ searchQuery }}"</li>
-                      <li v-if="dateFrom || dateTo">Date: {{ dateFrom || 'Any' }} to {{ dateTo || 'Any' }}</li>
-                      <li v-if="selectedCategories.length">Categories: {{ selectedCategories.map(c => CATEGORY_LABELS[c]).join(', ') }}</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="bg-slate-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-              <button type="submit" :disabled="isSavingView || !newViewName.trim()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 transition-colors">
-                {{ isSavingView ? 'Saving...' : 'Save View' }}
-              </button>
-              <button type="button" @click="showSaveViewModal = false" class="mt-3 w-full inline-flex justify-center rounded-md border border-slate-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm transition-colors">
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
+    <div
+      v-if="showSaveViewModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink-900/35 backdrop-blur-[2px]"
+      aria-labelledby="modal-title"
+      role="dialog"
+      aria-modal="true"
+      @click.self="showSaveViewModal = false"
+    >
+      <div class="ledger-card max-w-md w-full p-6 shadow-paper-lg">
+        <form @submit.prevent="saveCurrentView" class="space-y-4">
+          <h3 class="font-display text-lg font-bold text-ink-900" id="modal-title">
+            保存筛选视图
+          </h3>
+
+          <div>
+            <label class="block text-xs font-medium text-ink-500 mb-1.5">视图名称</label>
+            <input
+              type="text"
+              v-model="newViewName"
+              required
+              class="input-warm"
+              placeholder="例如：本月未报销、境外美元账单"
+            />
+          </div>
+
+          <div class="bg-cream-200/80 border border-cream-400 rounded-xl p-3 text-xs text-ink-700">
+            <p class="font-semibold text-ink-900 mb-1.5">当前筛选条件</p>
+            <ul class="space-y-1">
+              <li v-if="searchQuery">关键词：「{{ searchQuery }}」</li>
+              <li v-if="dateFrom || dateTo" class="num-mono">
+                日期：{{ dateFrom || '不限' }} ~ {{ dateTo || '不限' }}
+              </li>
+              <li v-if="selectedCategories.length">
+                分类：{{ selectedCategories.map(c => CATEGORY_LABELS[c]).join('、') }}
+              </li>
+              <li v-if="selectedReimbursementStatuses.length">
+                报销状态：{{ selectedReimbursementStatuses.map(s => REIMBURSEMENT_LABELS[s]).join('、') }}
+              </li>
+            </ul>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-1">
+            <button type="button" @click="showSaveViewModal = false" class="btn-cream">
+              取消
+            </button>
+            <button
+              type="submit"
+              :disabled="isSavingView || !newViewName.trim()"
+              class="btn-mint"
+            >
+              {{ isSavingView ? '保存中…' : '保存视图' }}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </AppLayout>

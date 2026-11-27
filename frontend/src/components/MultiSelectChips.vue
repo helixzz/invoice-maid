@@ -43,8 +43,8 @@ function clearAll() {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-2" role="group" :aria-label="label">
-    <span class="text-xs font-medium uppercase tracking-wider text-slate-500 mr-1">
+  <div class="flex flex-wrap items-center gap-1.5" role="group" :aria-label="label">
+    <span class="text-xs font-medium text-ink-400 mr-1">
       {{ label }}
     </span>
     <button
@@ -54,10 +54,10 @@ function clearAll() {
       :aria-pressed="selected.has(option.value)"
       :data-chip-value="option.value"
       :class="[
-        'px-3 py-1 text-xs font-medium rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-500',
+        'px-3 py-1 text-xs font-medium rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-mint-400',
         selected.has(option.value)
-          ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+          ? 'bg-mint-600 text-white border-mint-600 hover:bg-mint-700'
+          : 'bg-cream-50 text-ink-700 border-cream-500 hover:bg-cream-300/60'
       ]"
       @click="toggle(option.value)"
       @keydown="onKeydown($event, option.value)"
@@ -67,10 +67,10 @@ function clearAll() {
     <button
       v-if="modelValue.length > 0"
       type="button"
-      class="text-xs text-slate-500 hover:text-slate-700 underline underline-offset-2"
+      class="text-xs text-ink-500 hover:text-ink-900 underline underline-offset-2 ml-1"
       @click="clearAll"
     >
-      Clear
+      清除
     </button>
   </div>
 </template>
