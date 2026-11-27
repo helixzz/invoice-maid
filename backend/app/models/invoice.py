@@ -33,11 +33,19 @@ class Invoice(Base):
     buyer: Mapped[str] = mapped_column(String(255))
     seller: Mapped[str] = mapped_column(String(255))
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="CNY", server_default="CNY", index=True
+    )
     invoice_date: Mapped[date] = mapped_column(Date(), index=True)
     invoice_type: Mapped[str] = mapped_column(String(128))
     invoice_category: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="vat_invoice", index=True
     )
+    reimbursement_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unreimbursed", server_default="unreimbursed", index=True
+    )
+    tags: Mapped[str] = mapped_column(String(500), nullable=False, default="", server_default="")
+    notes: Mapped[str] = mapped_column(Text(), nullable=False, default="", server_default="")
     item_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     file_path: Mapped[str] = mapped_column(String(500))
     raw_text: Mapped[str] = mapped_column(Text(), default="")

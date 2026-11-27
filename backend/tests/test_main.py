@@ -35,6 +35,8 @@ async def test_health_and_spa_catch_all(
         "sqlite_vec": False,
         "invoice_count": 1,
         "last_scan_at": "2026-01-02T00:00:00+00:00",
+        "llm_circuit_state": "closed",
+        "pending_retries": 0,
     }
 
     monkeypatch.setattr(main_module, "FRONTEND_DIST", tmp_path / "missing")
@@ -83,7 +85,23 @@ async def test_health_reports_degraded_on_db_failure(client, monkeypatch: pytest
         "sqlite_vec": False,
         "invoice_count": 0,
         "last_scan_at": None,
+        "llm_circuit_state": "closed",
+        "pending_retries": 0,
     }
+
+
+async def test_health_reports_degraded_when_llm_circuit_open(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.ai_service import get_llm_circuit_breaker
+
+    monkeypatch.setattr(main_module, "get_scheduler", lambda: type("Scheduler", (), {"running": True})())
+    breaker = get_llm_circuit_breaker()
+    for _ in range(3):
+        breaker.record_failure("503 upstream")
+    health = await client.get("/api/v1/health")
+    assert health.status_code == 200
+    body = health.json()
+    assert body["status"] == "degraded"
+    assert body["llm_circuit_state"] == "open"
 
 
 async def test_health_normalizes_naive_last_scan_datetime(

@@ -32,6 +32,7 @@ from app.api import (
     classifier_settings_router,
     download_router,
     invoice_router,
+    notification_settings_router,
     scan_router,
     stats_router,
     test_helper_router,
@@ -41,6 +42,8 @@ from app.config import get_settings
 from app.database import create_engine_and_session, get_db, init_db
 from app.models import Invoice, ScanLog
 from app.rate_limiter import limiter
+from app.services.ai_service import get_llm_circuit_breaker
+from app.services.failed_email_queue import count_pending_failed_emails
 from app.tasks.scheduler import get_scheduler
 
 logger = logging.getLogger(__name__)
@@ -173,6 +176,7 @@ app.include_router(download_router, prefix="/api/v1")
 app.include_router(account_router, prefix="/api/v1")
 app.include_router(ai_settings_router, prefix="/api/v1")
 app.include_router(classifier_settings_router, prefix="/api/v1")
+app.include_router(notification_settings_router, prefix="/api/v1")
 app.include_router(scan_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(view_router, prefix="/api/v1")
@@ -183,6 +187,8 @@ app.include_router(test_helper_router, prefix="/api/v1")
 async def health(db: AsyncSession = Depends(get_db)) -> dict[str, str | bool | int | None]:
     scheduler = get_scheduler()
     scheduler_status = "running" if scheduler is not None and scheduler.running else "stopped"
+    breaker_snapshot = get_llm_circuit_breaker().snapshot()
+    llm_circuit_state = str(breaker_snapshot["state"])
     response: dict[str, str | bool | int | None] = {
         "status": "ok",
         "version": _APP_VERSION,
@@ -191,14 +197,17 @@ async def health(db: AsyncSession = Depends(get_db)) -> dict[str, str | bool | i
         "sqlite_vec": get_settings().sqlite_vec_available,
         "invoice_count": 0,
         "last_scan_at": None,
+        "llm_circuit_state": llm_circuit_state,
+        "pending_retries": 0,
     }
 
-    if scheduler_status != "running":
+    if scheduler_status != "running" or llm_circuit_state == "open":
         response["status"] = "degraded"
 
     try:
         await db.execute(text("SELECT 1"))
         response["invoice_count"] = await db.scalar(select(func.count()).select_from(Invoice)) or 0
+        response["pending_retries"] = await count_pending_failed_emails(db)
         last_scan_at = await db.scalar(select(func.max(ScanLog.finished_at)))
         if isinstance(last_scan_at, datetime):
             if last_scan_at.tzinfo is None:  # pragma: no branch

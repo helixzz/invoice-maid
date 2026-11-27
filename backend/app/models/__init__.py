@@ -4,6 +4,7 @@ from app.models.correction_log import CorrectionLog
 
 from app.models.email_account import EmailAccount
 from app.models.extraction_log import ExtractionLog
+from app.models.failed_email import FailedEmail
 from app.models.invoice import Invoice
 from app.models.llm_cache import LLMCache
 from app.models.scan_log import ScanLog
@@ -18,6 +19,7 @@ __all__ = [
     "CorrectionLog",
     "EmailAccount",
     "ExtractionLog",
+    "FailedEmail",
     "Invoice",
     "LLMCache",
     "SavedView",

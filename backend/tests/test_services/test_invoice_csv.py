@@ -42,9 +42,13 @@ def test_csv_columns_has_expected_order() -> None:
         "buyer",
         "seller",
         "amount",
+        "currency",
         "invoice_date",
         "invoice_category",
         "invoice_type",
+        "reimbursement_status",
+        "tags",
+        "notes",
         "item_summary",
         "extraction_method",
         "confidence",
@@ -59,9 +63,13 @@ def test_invoice_csv_row_renders_in_column_order() -> None:
         "Acme Corp",
         "Widget Co",
         "1234.56",
+        "CNY",
         "2026-04-20",
         "vat_invoice",
         "电子发票",
+        "unreimbursed",
+        "",
+        "",
         "widgets",
         "llm",
         0.93,
@@ -71,7 +79,7 @@ def test_invoice_csv_row_renders_in_column_order() -> None:
 
 def test_invoice_csv_row_empty_item_summary_renders_as_blank() -> None:
     row = invoice_csv_row(_make_invoice(item_summary=None))
-    assert row[7] == ""
+    assert row[11] == ""
 
 
 def test_build_csv_content_emits_header_then_rows() -> None:

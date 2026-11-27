@@ -23,12 +23,14 @@ from app.models import CorrectionLog, Invoice
 from app.models.invoice import invoice_no_dedup_expression
 from app.services.invoice_parser import invoice_no_dedup_key
 from app.rate_limiter import limiter
-from app.schemas.invoice import InvoiceListResponse, InvoiceResponse
+from app.schemas.invoice import InvoiceListResponse, InvoiceResponse, ReimbursementStatus
 from app.services.ai_service import AIService
 from app.services.file_manager import FileManager
 from app.services.invoice_csv import CSV_UTF8_BOM, build_csv_content
+from app.services.invoice_parser import normalize_currency
+from app.services.invoice_xlsx import XLSX_MEDIA_TYPE, build_xlsx_bytes
 from app.services.manual_upload import UploadResult, process_uploaded_invoice
-from app.services.search_service import SearchService
+from app.services.search_service import SearchService, store_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -107,14 +109,24 @@ class BatchDeleteRequest(BaseModel):
     ids: list[int]
 
 
+class BatchReimbursementRequest(BaseModel):
+    ids: list[int]
+    reimbursement_status: ReimbursementStatus | None = None
+    tags: str | None = None
+
+
 class InvoiceUpdateRequest(BaseModel):
     buyer: str | None = None
     seller: str | None = None
     amount: Decimal | None = None
+    currency: str | None = None
     invoice_date: date | None = None
     invoice_type: str | None = None
     item_summary: str | None = None
     invoice_no: str | None = None
+    reimbursement_status: ReimbursementStatus | None = None
+    tags: str | None = None
+    notes: str | None = None
 
 
 def _stringify_field_value(value: Any) -> str | None:
@@ -135,7 +147,10 @@ def _serialize_invoice(invoice: Invoice) -> InvoiceResponse:
         invoice_date=invoice.invoice_date.isoformat(),
         invoice_type=invoice.invoice_type,
         invoice_category=invoice.invoice_category,
-        currency="USD" if invoice.invoice_category == "overseas_invoice" else "CNY",
+        currency=getattr(invoice, "currency", None) or "CNY",
+        reimbursement_status=getattr(invoice, "reimbursement_status", None) or "unreimbursed",
+        tags=getattr(invoice, "tags", None) or "",
+        notes=getattr(invoice, "notes", None) or "",
         item_summary=invoice.item_summary,
         source_format=invoice.source_format,
         extraction_method=invoice.extraction_method,
@@ -279,6 +294,9 @@ async def list_invoices(
     date_from: date | None = None,
     date_to: date | None = None,
     category: list[str] = Query(default_factory=list),
+    currency: list[str] = Query(default_factory=list),
+    reimbursement_status: list[str] = Query(default_factory=list),
+    tag: str = "",
     page: int = 1,
     size: int = 20,
 ) -> InvoiceListResponse:
@@ -290,6 +308,9 @@ async def list_invoices(
         date_from=date_from,
         date_to=date_to,
         categories=category,
+        currencies=currency,
+        reimbursement_statuses=reimbursement_status,
+        tag=tag or None,
         page=page,
         size=size,
     )
@@ -305,13 +326,15 @@ async def list_invoices(
 async def export_invoices(
     _current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
-    format: Literal["csv"] = "csv",
+    format: Literal["csv", "xlsx"] = "csv",
     q: str = "",
     date_from: date | None = None,
     date_to: date | None = None,
     category: list[str] = Query(default_factory=list),
+    currency: list[str] = Query(default_factory=list),
+    reimbursement_status: list[str] = Query(default_factory=list),
+    tag: str = "",
 ) -> StreamingResponse:
-    del format
     search_service = SearchService(get_settings())
     _, total = await search_service.search_fts(
         db=db,
@@ -320,6 +343,9 @@ async def export_invoices(
         date_from=date_from,
         date_to=date_to,
         categories=category,
+        currencies=currency,
+        reimbursement_statuses=reimbursement_status,
+        tag=tag or None,
         page=1,
         size=1,
     )
@@ -330,9 +356,20 @@ async def export_invoices(
         date_from=date_from,
         date_to=date_to,
         categories=category,
+        currencies=currency,
+        reimbursement_statuses=reimbursement_status,
+        tag=tag or None,
         page=1,
         size=max(total, 1),
     )
+    if format == "xlsx":
+        xlsx_bytes = build_xlsx_bytes(invoices)
+        return StreamingResponse(
+            content=iter([xlsx_bytes]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition": 'attachment; filename="invoices.xlsx"'},
+        )
+
     csv_content = _build_csv_content(invoices)
 
     def stream_csv() -> list[bytes]:
@@ -381,6 +418,10 @@ async def update_invoice(
     invoice = assert_owned(await db.get(Invoice, invoice_id), _current_user)
 
     update_data = payload.model_dump(exclude_unset=True)
+    if "currency" in update_data and update_data["currency"] is not None:
+        update_data["currency"] = normalize_currency(update_data["currency"])
+    if "reimbursement_status" in update_data and update_data["reimbursement_status"] is not None:
+        update_data["reimbursement_status"] = update_data["reimbursement_status"].value
     if "invoice_no" in update_data:
         duplicate = await db.execute(
             select(Invoice.id).where(
@@ -394,6 +435,7 @@ async def update_invoice(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice number already exists")
 
     changed = False
+    semantic_changed = False
     for field_name, new_value in update_data.items():
         old_value = getattr(invoice, field_name)
         if old_value == new_value:
@@ -409,12 +451,25 @@ async def update_invoice(
             )
         )
         changed = True
+        if field_name in ("buyer", "seller", "item_summary"):
+            semantic_changed = True
 
     if changed:
         invoice.is_manually_corrected = True
 
     await db.commit()
     await db.refresh(invoice)
+    settings = get_settings()
+    if semantic_changed and settings.sqlite_vec_available:
+        try:
+            ai = AIService(settings)
+            embedding = await ai.embed_text(
+                f"{invoice.buyer} {invoice.seller} {invoice.item_summary or ''}", db
+            )
+            await store_embedding(db, invoice.id, embedding)
+            await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to refresh embedding for invoice %s: %s", invoice.id, exc)
     return _serialize_invoice(invoice)
 
 
@@ -486,3 +541,33 @@ async def batch_delete_invoices(
 
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/batch-reimbursement")
+async def batch_update_reimbursement(
+    payload: BatchReimbursementRequest,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    if not payload.ids:
+        return {"updated": 0}
+    if payload.reimbursement_status is None and payload.tags is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide reimbursement_status or tags to update",
+        )
+
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.user_id == _current_user.id,
+            Invoice.id.in_(payload.ids),
+        )
+    )
+    invoices = list(result.scalars().all())
+    for invoice in invoices:
+        if payload.reimbursement_status is not None:
+            invoice.reimbursement_status = payload.reimbursement_status.value
+        if payload.tags is not None:
+            invoice.tags = payload.tags
+    await db.commit()
+    return {"updated": len(invoices)}

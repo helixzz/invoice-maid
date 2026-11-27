@@ -17,6 +17,7 @@ from app.deps import CurrentUser, assert_owned
 from app.models import Invoice
 from app.services.file_manager import FileManager
 from app.services.invoice_csv import SUMMARY_FILENAME, build_csv_bytes
+from app.services.invoice_xlsx import REIMBURSEMENT_XLSX_FILENAME, build_xlsx_bytes
 
 router = APIRouter(prefix="/invoices", tags=["downloads"])
 
@@ -75,4 +76,42 @@ async def batch_download_invoices(
         io.BytesIO(archive),
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="invoices.zip"'},
+    )
+
+
+@router.post("/reimbursement-pack")
+async def download_reimbursement_pack(
+    payload: BatchDownloadRequest,
+    _current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Export a reimbursement package ZIP containing Excel summary, CSV summary, and invoice files."""
+    if not payload.ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No invoice ids provided")
+
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.user_id == _current_user.id,
+            Invoice.id.in_(payload.ids),
+        )
+    )
+    invoices = list(result.scalars().all())
+    if not invoices:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoices not found")
+
+    xlsx_bytes = build_xlsx_bytes(invoices)
+    csv_bytes = build_csv_bytes(invoices)
+    file_paths = [invoice.file_path for invoice in invoices]
+    extra_members = [
+        (REIMBURSEMENT_XLSX_FILENAME, xlsx_bytes),
+        (SUMMARY_FILENAME, csv_bytes),
+    ]
+
+    file_manager = FileManager(get_settings().STORAGE_PATH)
+    archive = await asyncio.to_thread(file_manager.stream_zip, file_paths, extra_members)
+
+    return StreamingResponse(
+        io.BytesIO(archive),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="reimbursement_pack.zip"'},
     )

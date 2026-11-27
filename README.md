@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="v1.2.0">
+  <img src="https://img.shields.io/badge/version-1.4.0-blue" alt="v1.4.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-769%20passing-brightgreen" alt="769 tests">
+  <img src="https://img.shields.io/badge/Tests-797%2B%20passing-brightgreen" alt="797+ tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -121,7 +121,11 @@ Two invoice sources feed the **same** five-stage pipeline. The email scanner run
 - **Rate limiting** — brute-force protection (10 req/min/IP) on login
 - **Rich health endpoint** — reports DB, scheduler, sqlite-vec, invoice count, and last-scan time for monitoring
 - **Outbound webhooks** — `invoice.created` events with HMAC-SHA256 signed payloads (GitHub-style `X-Signature-256` header); delivery failures are logged but never block the scan pipeline
-- **100% test coverage** — 619 unit + e2e tests, enforced in CI with `--cov-fail-under=100`
+- **AI classification, multi-model fallback & VLM vision fallback** — OpenAI-compatible LLMs (including local routers like Magpie) with ordered fallback model chains, circuit breaking, independent embedding endpoint support, and PyMuPDF-rendered multimodal vision fallback for image-only scanned PDFs
+- **True multi-currency support** — stores real ISO-4217 currency codes (`CNY`, `USD`, `EUR`, `GBP`, `HKD`, `JPY`, etc.) extracted from documents and breaks down spend analytics and exports accurately per currency
+- **Reimbursement workflow** — track reimbursement status (`unreimbursed` / `pending` / `reimbursed` / `not_applicable`), tags, and notes; batch-update status, export zero-dependency Excel (`.xlsx`) reports with per-currency totals, or download a complete Reimbursement Pack ZIP (`reimbursement_summary.xlsx` + `invoices_summary.csv` + original invoice files)
+- **Telegram IM notifications** — real-time alerts on LLM circuit trips or account scan failures (with 15-minute anti-spam cooldown) plus concise scan summaries whenever new invoices arrive
+- **100% test coverage** — 797+ backend tests + 23 Vitest unit tests + Playwright E2E specs, enforced in CI with `--cov-fail-under=100`
 
 ---
 

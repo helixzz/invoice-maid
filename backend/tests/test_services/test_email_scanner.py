@@ -1664,7 +1664,8 @@ async def test_outlook_hydrate_email_handles_http_error(monkeypatch: pytest.Monk
     monkeypatch.setattr(email_scanner.logger, "warning", lambda m, *args: warnings.append(m % args))
 
     result = await scanner.hydrate_email(account, email)
-    assert result.is_hydrated is True
+    assert result.is_hydrated is False
+    assert "_hydrate_error" in result.headers
     assert any("Outlook hydrate failed" in w for w in warnings)
 
 

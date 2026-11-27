@@ -356,3 +356,190 @@ def test_extract_prompt_excludes_refund_and_fee_labels_from_amount(settings) -> 
             f"refund/fee label {label!r} must appear in the amount-exclusion rule"
         )
 
+
+@pytest.mark.asyncio
+async def test_fallback_model_chain_recovers_on_secondary_model(db, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+    import openai
+    from app.services.ai_service import LLMCircuitBreaker, parse_model_chain
+
+    assert parse_model_chain("m1", "m2, m1, , m3") == ["m1", "m2", "m3"]
+
+    settings.LLM_MODEL = "auto/gemini-4-hydrogen"
+    settings.LLM_FALLBACK_MODELS = "auto/gpt-6-luna,modelverse/deepseek-v4.1-flash-1017,auto/gemini-4-neon"
+    result = make_analysis(is_invoice_related=True)
+
+    attempted: list[str] = []
+
+    class FlakyChat:
+        async def create(self, **kwargs):
+            attempted.append(kwargs["model"])
+            if kwargs["model"] != "modelverse/deepseek-v4.1-flash-1017":
+                req = httpx.Request("POST", "http://127.0.0.1:3425/v1/chat/completions")
+                resp = httpx.Response(503, request=req)
+                raise openai.InternalServerError("model_not_found", response=resp, body=None)
+            return result
+
+    monkeypatch.setattr("app.services.ai_service.AsyncOpenAI", lambda **kwargs: FakeRawClient([0.1, 0.2, 0.3]))
+    monkeypatch.setattr(
+        "app.services.ai_service.instructor.from_openai",
+        lambda client, mode: SimpleNamespace(chat=SimpleNamespace(completions=FlakyChat())),
+    )
+
+    breaker = LLMCircuitBreaker(failure_threshold=2, cooldown_seconds=30.0)
+    service = AIService(settings, circuit_breaker=breaker)
+    analyzed = await service.analyze_email(db, "subj", "from@x.com", "body", [])
+    assert analyzed.is_invoice_related is True
+    assert attempted == [
+        "auto/gemini-4-hydrogen",
+        "auto/gpt-6-luna",
+        "modelverse/deepseek-v4.1-flash-1017",
+    ]
+    assert breaker.snapshot()["state"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_opens_on_repeated_upstream_failures_and_recovers(
+    db, settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import openai
+    from app.services.ai_service import (
+        LLMCircuitBreaker,
+        LLMCircuitOpenError,
+        LLMUnavailableError,
+        _is_upstream_service_error,
+        _unwrap_exception_message,
+    )
+
+    req = httpx.Request("POST", "http://127.0.0.1:3425/v1/chat/completions")
+    upstream_err = openai.APIConnectionError(request=req)
+
+    # Exercise wrapped instructor-style exception helpers
+    wrapped = SimpleNamespace(last_attempt=SimpleNamespace(exception=lambda: upstream_err))
+    assert _is_upstream_service_error(wrapped) is True
+    assert _is_upstream_service_error(ValueError("bad schema")) is False
+    assert _is_upstream_service_error(SimpleNamespace(last_attempt=SimpleNamespace(exception=lambda: None))) is False
+    assert _unwrap_exception_message(wrapped)
+    assert _unwrap_exception_message(SimpleNamespace(last_attempt=SimpleNamespace(exception=lambda: None)))
+
+    class AlwaysFailChat:
+        async def create(self, **kwargs):
+            del kwargs
+            raise upstream_err
+
+    monkeypatch.setattr("app.services.ai_service.AsyncOpenAI", lambda **kwargs: FakeRawClient([0.1, 0.2, 0.3]))
+    monkeypatch.setattr(
+        "app.services.ai_service.instructor.from_openai",
+        lambda client, mode: SimpleNamespace(chat=SimpleNamespace(completions=AlwaysFailChat())),
+    )
+
+    breaker = LLMCircuitBreaker(failure_threshold=2, cooldown_seconds=60.0)
+    service = AIService(settings, circuit_breaker=breaker)
+
+    with pytest.raises(LLMUnavailableError):
+        await service.analyze_email(db, "s1", "a@b.com", "b1", [])
+    assert breaker.is_open is False
+
+    with pytest.raises(LLMUnavailableError):
+        await service.analyze_email(db, "s2", "a@b.com", "b2", [])
+    assert breaker.is_open is True
+    snap = breaker.snapshot()
+    assert snap["state"] == "open"
+    assert snap["consecutive_failures"] == 2
+    assert snap["cooldown_remaining_seconds"] > 0
+
+    with pytest.raises(LLMCircuitOpenError):
+        await service.analyze_email(db, "s3", "a@b.com", "b3", [])
+
+    # Record a second failure while already open -> returns False (not newly tripped)
+    assert breaker.record_failure("still broken") is False
+    # Recovery transitions back to healthy
+    assert breaker.record_success() is True
+    assert breaker.record_success() is False
+    assert breaker.snapshot()["state"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_non_upstream_error_does_not_trip_circuit_breaker(db, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.ai_service import LLMCircuitBreaker, LLMUnavailableError
+
+    class SchemaFailChat:
+        async def create(self, **kwargs):
+            del kwargs
+            raise ValueError("schema validation failed")
+
+    monkeypatch.setattr("app.services.ai_service.AsyncOpenAI", lambda **kwargs: FakeRawClient([0.1, 0.2, 0.3]))
+    monkeypatch.setattr(
+        "app.services.ai_service.instructor.from_openai",
+        lambda client, mode: SimpleNamespace(chat=SimpleNamespace(completions=SchemaFailChat())),
+    )
+
+    breaker = LLMCircuitBreaker(failure_threshold=1, cooldown_seconds=60.0)
+    service = AIService(settings, circuit_breaker=breaker)
+    with pytest.raises(LLMUnavailableError):
+        await service.analyze_email(db, "s", "a@b.com", "b", [])
+    assert breaker.is_open is False
+
+
+@pytest.mark.asyncio
+async def test_embed_text_uses_independent_embed_endpoint(db, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings.LLM_EMBED_BASE_URL = "https://embed-only.invalid/v1"
+    settings.LLM_EMBED_API_KEY = "embed-secret-key"
+
+    created_clients: list[dict[str, object]] = []
+    raw_client = FakeRawClient([0.1, 0.2, 0.3])
+
+    def fake_openai(**kwargs):
+        created_clients.append(kwargs)
+        return raw_client
+
+    monkeypatch.setattr("app.services.ai_service.AsyncOpenAI", fake_openai)
+    monkeypatch.setattr(
+        "app.services.ai_service.instructor.from_openai",
+        lambda client, mode: SimpleNamespace(chat=SimpleNamespace(completions=FakeChatCompletions(None))),
+    )
+
+    service = AIService(settings)
+    emb = await service.embed_text("invoice text", db)
+    assert emb == [0.1, 0.2, 0.3]
+    assert created_clients[0]["base_url"] == "https://embed-only.invalid/v1"
+    assert created_clients[0]["api_key"] == "embed-secret-key"
+
+
+@pytest.mark.asyncio
+async def test_extract_invoice_fields_from_images_uses_vision_model_and_cache(
+    db, settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings.LLM_VISION_MODEL = "auto/gemini-4-neon"
+    extract_result = InvoiceExtract(
+        is_valid_tax_invoice=True,
+        invoice_no="12345678",
+        buyer="Buyer Co",
+        seller="Seller Co",
+        amount=99.5,
+        invoice_date="2026-11-26",
+        invoice_type="增值税电子普通发票",
+        item_summary="Cloud service",
+        confidence=0.92,
+    )
+    chat = FakeChatCompletions(extract_result)
+    monkeypatch.setattr("app.services.ai_service.AsyncOpenAI", lambda **kwargs: FakeRawClient([0.1, 0.2, 0.3]))
+    monkeypatch.setattr(
+        "app.services.ai_service.instructor.from_openai",
+        lambda client, mode: SimpleNamespace(chat=SimpleNamespace(completions=chat)),
+    )
+
+    service = AIService(settings)
+    first = await service.extract_invoice_fields_from_images(db, ["ZmFrZQ=="], context_text="from: billing@vendor.com")
+    assert first.invoice_no == "12345678"
+    assert chat.calls[0]["model"] == "auto/gemini-4-neon"
+    user_parts = chat.calls[0]["messages"][1]["content"]
+    assert user_parts[1]["image_url"]["url"] == "data:image/png;base64,ZmFrZQ=="
+
+    # Second call hits cache
+    second = await service.extract_invoice_fields_from_images(db, ["ZmFrZQ=="], context_text="from: billing@vendor.com")
+    assert second.invoice_no == "12345678"
+    assert len(chat.calls) == 1
+
+

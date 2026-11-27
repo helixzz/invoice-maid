@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { api } from '@/api/client'
-import type { Invoice, InvoiceCategory } from '@/types'
+import type { Invoice, InvoiceCategory, ReimbursementStatus } from '@/types'
 
 interface InvoicesState {
   invoices: Invoice[]
@@ -8,6 +8,7 @@ interface InvoicesState {
   total: number
   selectedIds: number[]
   selectedCategories: InvoiceCategory[]
+  selectedReimbursementStatuses: ReimbursementStatus[]
 }
 
 export const useInvoicesStore = defineStore('invoices', {
@@ -17,6 +18,7 @@ export const useInvoicesStore = defineStore('invoices', {
     total: 0,
     selectedIds: [],
     selectedCategories: [],
+    selectedReimbursementStatuses: [],
   }),
   actions: {
     async fetchInvoices(
@@ -26,6 +28,7 @@ export const useInvoicesStore = defineStore('invoices', {
       page: number = 1,
       size: number = 20,
       categories: InvoiceCategory[] = [],
+      reimbursementStatuses: ReimbursementStatus[] = [],
     ) {
       this.loading = true
       try {
@@ -36,6 +39,7 @@ export const useInvoicesStore = defineStore('invoices', {
           page,
           size,
           category: categories,
+          reimbursement_status: reimbursementStatuses,
         })
         this.invoices = response.items
         this.total = response.total
@@ -48,6 +52,9 @@ export const useInvoicesStore = defineStore('invoices', {
     },
     setCategories(categories: InvoiceCategory[]) {
       this.selectedCategories = categories
+    },
+    setReimbursementStatuses(statuses: ReimbursementStatus[]) {
+      this.selectedReimbursementStatuses = statuses
     },
     async deleteInvoice(id: number) {
       try {

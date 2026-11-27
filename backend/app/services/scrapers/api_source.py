@@ -81,7 +81,7 @@ class BaseAPIScraper(BaseScraper):
         if not raw:
             return ""
         try:
-            return decrypt_password(account, raw)
+            return decrypt_password(raw)
         except Exception:
             return ""
 
@@ -114,18 +114,20 @@ class BaseAPIScraper(BaseScraper):
 
     @property
     def _scan_events(self) -> list[dict[str, Any]]:
-        if not hasattr(self, "__scan_events"):
-            self.__scan_events: list[dict[str, Any]] = []
-        return self.__scan_events
+        events = getattr(self, "_api_scan_events", None)
+        if events is None:
+            events = []
+            self._api_scan_events = events
+        return events
 
     @_scan_events.setter
     def _scan_events(self, val: list[dict[str, Any]]) -> None:
-        self.__scan_events = val
+        self._api_scan_events = val
 
     @property
     def _last_scan_state(self) -> str | None:
-        return getattr(self, "__last_scan_state", None)
+        return getattr(self, "_api_last_scan_state", None)
 
     @_last_scan_state.setter
     def _last_scan_state(self, val: str | None) -> None:
-        self.__last_scan_state = val
+        self._api_last_scan_state = val

@@ -354,3 +354,42 @@ async def test_trigger_scan_body_absent_still_works(client, auth_headers, db, cr
     assert response.status_code == 200
     for coro in task_calls:
         await coro
+
+
+async def test_trigger_scan_full_resets_single_account_and_handles_missing_id(
+    client, auth_headers, db, create_email_account, monkeypatch
+) -> None:
+    task_calls: list[object] = []
+    monkeypatch.setattr("app.api.scan.asyncio", SimpleNamespace(create_task=lambda coro: task_calls.append(coro) or "task"))
+
+    async def fake_scan_all_accounts(options=None, **_kwargs):
+        del options
+
+    monkeypatch.setattr("app.api.scan.scan_all_accounts", fake_scan_all_accounts)
+    acc1 = await create_email_account(name="A1")
+    acc2 = await create_email_account(name="A2")
+    acc1.last_scan_uid = "wm-1"
+    acc2.last_scan_uid = "wm-2"
+    await db.commit()
+
+    # Reset only acc1
+    resp1 = await client.post(
+        "/api/v1/scan/trigger",
+        headers=auth_headers,
+        json={"full": True, "email_account_id": acc1.id},
+    )
+    assert resp1.status_code == 200
+    await db.refresh(acc1)
+    await db.refresh(acc2)
+    assert acc1.last_scan_uid is None
+    assert acc2.last_scan_uid == "wm-2"
+
+    # Unknown account id with full=True is a safe no-op
+    resp2 = await client.post(
+        "/api/v1/scan/trigger",
+        headers=auth_headers,
+        json={"full": True, "email_account_id": 999999},
+    )
+    assert resp2.status_code == 200
+    for coro in task_calls:
+        await coro

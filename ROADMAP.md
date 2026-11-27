@@ -1,5 +1,11 @@
 # Roadmap
 
+## v1.4.0 — Released
+
+**Theme:** Production reliability overhaul, Magpie multi-tier model routing, Outlook 429 resilience, Telegram IM alerts, true multi-currency, multimodal VLM PDF fallback, and reimbursement workflow closed loop. Introduces ordered LLM fallback chains, circuit breaking, persistent failed-email retry queue with watermark protection, Outlook `Retry-After` backoff & pre-hydration noise filtering, Telegram error/summary alerts, `invoices.currency` + VLM vision extraction, unified ingestion pipeline, modular Settings UI, and reimbursement status/tags/notes with zero-dependency Excel (`.xlsx`) and Reimbursement Pack ZIP exports. See [CHANGELOG.md](CHANGELOG.md#140---2026-11-27).
+
+---
+
 ## v1.3.27 — Released
 
 **Theme:** Reliable reusable invoice filters. Fixes the Saved View API route,

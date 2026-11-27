@@ -12,7 +12,11 @@ import { api } from '@/api/client'
 import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
+  REIMBURSEMENT_COLORS,
+  REIMBURSEMENT_LABELS,
+  REIMBURSEMENT_ORDER,
   type InvoiceCategory,
+  type ReimbursementStatus,
   type StatsResponse,
   type SavedView,
 } from '@/types'
@@ -23,11 +27,28 @@ const invoicesStore = useInvoicesStore()
 const authStore = useAuthStore()
 
 const CATEGORY_VALUES = new Set<InvoiceCategory>(CATEGORY_ORDER)
+const REIMBURSEMENT_VALUES = new Set<ReimbursementStatus>(REIMBURSEMENT_ORDER)
 
 const categoryOptions = CATEGORY_ORDER.map(value => ({
   value,
   label: CATEGORY_LABELS[value],
 }))
+
+const reimbursementOptions = REIMBURSEMENT_ORDER.map(value => ({
+  value,
+  label: REIMBURSEMENT_LABELS[value],
+}))
+
+function toReimbursementList(raw: unknown): ReimbursementStatus[] {
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : []
+  const result: ReimbursementStatus[] = []
+  for (const entry of list) {
+    if (typeof entry === 'string' && REIMBURSEMENT_VALUES.has(entry as ReimbursementStatus)) {
+      result.push(entry as ReimbursementStatus)
+    }
+  }
+  return result
+}
 
 function toCategoryList(raw: unknown): InvoiceCategory[] {
   const list = Array.isArray(raw) ? raw : raw ? [raw] : []
@@ -49,6 +70,7 @@ interface ViewFilters {
   dateFrom: string
   dateTo: string
   categories: InvoiceCategory[]
+  reimbursementStatuses: ReimbursementStatus[]
 }
 
 // Views saved before categories existed have no `category` key at all;
@@ -60,16 +82,24 @@ function parseViewFilters(view: SavedView): ViewFilters {
     dateFrom: filters.date_from || '',
     dateTo: filters.date_to || '',
     categories: toCategoryList(filters.category),
+    reimbursementStatuses: toReimbursementList(filters.reimbursement_status),
   }
 }
 
 // Order-insensitive: the same categories picked in a different order are the
 // same filter, so they must not count as a divergence.
 function filterSignature(filters: ViewFilters): string {
-  return JSON.stringify([filters.q, filters.dateFrom, filters.dateTo, [...filters.categories].sort()])
+  return JSON.stringify([
+    filters.q,
+    filters.dateFrom,
+    filters.dateTo,
+    [...filters.categories].sort(),
+    [...filters.reimbursementStatuses].sort(),
+  ])
 }
 
 const selectedCategories = ref<InvoiceCategory[]>(parseCategoriesFromQuery())
+const selectedReimbursementStatuses = ref<ReimbursementStatus[]>([])
 
 const stats = ref<StatsResponse | null>(null)
 const loadingStats = ref(true)
@@ -98,6 +128,7 @@ const clearAllFilters = () => {
   dateFrom.value = ''
   dateTo.value = ''
   selectedCategories.value = []
+  selectedReimbursementStatuses.value = []
 }
 
 const applySavedView = (viewId: number | '') => {
@@ -114,6 +145,7 @@ const applySavedView = (viewId: number | '') => {
       dateFrom.value = filters.dateFrom
       dateTo.value = filters.dateTo
       selectedCategories.value = filters.categories
+      selectedReimbursementStatuses.value = filters.reimbursementStatuses
       activeViewId.value = view.id
     } catch (e) {
       console.error('Failed to parse saved view filters', e)
@@ -133,6 +165,7 @@ const releaseActiveViewIfDiverged = () => {
       dateFrom: dateFrom.value,
       dateTo: dateTo.value,
       categories: selectedCategories.value,
+      reimbursementStatuses: selectedReimbursementStatuses.value,
     }
     if (filterSignature(current) !== filterSignature(parseViewFilters(view))) {
       activeViewId.value = null
@@ -151,6 +184,7 @@ const saveCurrentView = async () => {
     date_from: dateFrom.value,
     date_to: dateTo.value,
     category: [...selectedCategories.value],
+    reimbursement_status: [...selectedReimbursementStatuses.value],
   })
 
   try {
@@ -188,6 +222,7 @@ const exportCSV = async () => {
       date_from: dateFrom.value || undefined,
       date_to: dateTo.value || undefined,
       category: selectedCategories.value.length > 0 ? [...selectedCategories.value] : undefined,
+      reimbursement_status: selectedReimbursementStatuses.value.length > 0 ? [...selectedReimbursementStatuses.value] : undefined,
     })
     
     const url = window.URL.createObjectURL(blob)
@@ -203,6 +238,70 @@ const exportCSV = async () => {
     alert('Failed to export CSV')
   } finally {
     isExporting.value = false
+  }
+}
+
+const exportXLSX = async () => {
+  isExporting.value = true
+  try {
+    const blob = await api.exportInvoicesXLSX({
+      q: searchQuery.value || undefined,
+      date_from: dateFrom.value || undefined,
+      date_to: dateTo.value || undefined,
+      category: selectedCategories.value.length > 0 ? [...selectedCategories.value] : undefined,
+      reimbursement_status: selectedReimbursementStatuses.value.length > 0 ? [...selectedReimbursementStatuses.value] : undefined,
+    })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoices_reimbursement_${new Date().toISOString().split('T')[0]}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  } catch (error) {
+    console.error('Failed to export Excel', error)
+    alert('Failed to export Excel')
+  } finally {
+    isExporting.value = false
+  }
+}
+
+const updatingReimbursement = ref(false)
+const batchSetReimbursement = async (status: ReimbursementStatus) => {
+  if (invoicesStore.selectedIds.length === 0) return
+  updatingReimbursement.value = true
+  try {
+    await api.batchUpdateReimbursement(invoicesStore.selectedIds, { reimbursement_status: status })
+    await fetchInvoices()
+    invoicesStore.clearSelection()
+  } catch (error) {
+    console.error('Failed to update reimbursement status', error)
+    alert('批量更新报销状态失败')
+  } finally {
+    updatingReimbursement.value = false
+  }
+}
+
+const downloadingReimbursementPack = ref(false)
+const downloadReimbursementPack = async () => {
+  if (invoicesStore.selectedIds.length === 0) return
+  downloadingReimbursementPack.value = true
+  try {
+    const blob = await api.downloadReimbursementPack(invoicesStore.selectedIds)
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `reimbursement_pack_${new Date().toISOString().split('T')[0]}.zip`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  } catch (error) {
+    console.error('Failed to download reimbursement pack', error)
+    alert('导出报销包失败')
+  } finally {
+    downloadingReimbursementPack.value = false
   }
 }
 
@@ -233,6 +332,7 @@ const fetchInvoices = async () => {
     page.value,
     size.value,
     [...selectedCategories.value],
+    [...selectedReimbursementStatuses.value],
   )
 }
 
@@ -273,6 +373,16 @@ watch(selectedCategories, (next, prev) => {
   fetchInvoices()
 }, { deep: true })
 
+watch(selectedReimbursementStatuses, (next, prev) => {
+  if (prev && next.length === prev.length && next.every((v, i) => v === prev[i])) {
+    return
+  }
+  releaseActiveViewIfDiverged()
+  invoicesStore.setReimbursementStatuses(next)
+  page.value = 1
+  fetchInvoices()
+}, { deep: true })
+
 watch(() => route.query.category, () => {
   const next = parseCategoriesFromQuery()
   if (
@@ -308,7 +418,17 @@ const toggleAll = () => {
   }
 }
 
-const CURRENCY_SYMBOLS: Record<string, string> = { USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥' }
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$',
+  CNY: '¥',
+  EUR: '€',
+  GBP: '£',
+  JPY: '¥',
+  HKD: 'HK$',
+  SGD: 'S$',
+  CAD: 'C$',
+  AUD: 'A$',
+}
 
 const formatCurrency = (amount: number, currency?: string) => {
   const symbol = CURRENCY_SYMBOLS[currency || 'CNY'] || currency || ''
@@ -432,7 +552,10 @@ const clearDates = () => {
 }
 
 const hasActiveFilters = computed(
-  () => Boolean(searchQuery.value || dateFrom.value || dateTo.value) || selectedCategories.value.length > 0,
+  () =>
+    Boolean(searchQuery.value || dateFrom.value || dateTo.value) ||
+    selectedCategories.value.length > 0 ||
+    selectedReimbursementStatuses.value.length > 0,
 )
 
 const categoryBreakdown = computed<{ category: InvoiceCategory; count: number }[]>(() => {
@@ -615,7 +738,14 @@ onMounted(() => {
             </button>
           </div>
 
-          <div class="flex items-center justify-end w-full sm:w-auto">
+          <div class="flex items-center justify-end gap-2 w-full sm:w-auto">
+            <button
+              @click="exportXLSX"
+              :disabled="isExporting"
+              class="inline-flex items-center px-3.5 py-2 border border-emerald-300 shadow-sm text-sm font-medium rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 focus:outline-none disabled:opacity-50 transition-colors"
+            >
+              导出 Excel
+            </button>
             <button
               @click="exportCSV"
               :disabled="isExporting"
@@ -666,17 +796,22 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="pt-2 border-t border-slate-100" data-test-id="category-filter">
+        <div class="pt-2 border-t border-slate-100 space-y-2" data-test-id="category-filter">
           <MultiSelectChips
             v-model="selectedCategories"
             :options="categoryOptions"
             label="Category"
           />
+          <MultiSelectChips
+            v-model="selectedReimbursementStatuses"
+            :options="reimbursementOptions"
+            label="报销状态"
+          />
         </div>
       </div>
 
       <!-- Batch Actions -->
-      <div v-if="invoicesStore.selectedIds.length > 0" class="flex items-center justify-between bg-blue-50 p-4 rounded-xl border border-blue-100 transition-all duration-300">
+      <div v-if="invoicesStore.selectedIds.length > 0" class="flex flex-wrap items-center justify-between gap-3 bg-blue-50 p-4 rounded-xl border border-blue-100 transition-all duration-300">
         <div class="flex items-center gap-4">
           <span class="text-sm text-blue-800 font-medium">
             {{ invoicesStore.selectedIds.length }} selected
@@ -685,7 +820,28 @@ onMounted(() => {
             Clear selection
           </button>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            @click="batchSetReimbursement('reimbursed')"
+            :disabled="updatingReimbursement"
+            class="inline-flex items-center px-3 py-2 border border-emerald-200 text-sm font-medium rounded-lg text-emerald-700 bg-white hover:bg-emerald-50 disabled:opacity-50"
+          >
+            标为已报销
+          </button>
+          <button
+            @click="batchSetReimbursement('pending')"
+            :disabled="updatingReimbursement"
+            class="inline-flex items-center px-3 py-2 border border-amber-200 text-sm font-medium rounded-lg text-amber-700 bg-white hover:bg-amber-50 disabled:opacity-50"
+          >
+            标为报销中
+          </button>
+          <button
+            @click="downloadReimbursementPack"
+            :disabled="downloadingReimbursementPack"
+            class="inline-flex items-center px-3.5 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {{ downloadingReimbursementPack ? '打包中...' : '导出报销包 (ZIP)' }}
+          </button>
           <button
             @click="confirmBatchDelete"
             :disabled="deletingBatch"
@@ -734,6 +890,7 @@ onMounted(() => {
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Amount</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Category</th>
+                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">报销状态</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Type</th>
                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Summary</th>
                 <th scope="col" class="relative px-6 py-3">
@@ -758,7 +915,7 @@ onMounted(() => {
               </tr>
               
               <tr v-else-if="invoicesStore.invoices.length === 0">
-                <td colspan="10" class="px-6 py-16 text-center text-slate-500">
+                <td colspan="11" class="px-6 py-16 text-center text-slate-500">
                   <div class="flex flex-col items-center justify-center">
                     <svg class="w-12 h-12 text-slate-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                     <p class="text-base font-medium text-slate-900">No invoices match your search</p>
@@ -790,6 +947,15 @@ onMounted(() => {
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{{ formatDate(invoice.invoice_date) }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                   <CategoryBadge :category="invoice.invoice_category" />
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                  <span
+                    class="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full border"
+                    :class="REIMBURSEMENT_COLORS[invoice.reimbursement_status || 'unreimbursed']"
+                    :title="invoice.tags || invoice.notes || ''"
+                  >
+                    {{ REIMBURSEMENT_LABELS[invoice.reimbursement_status || 'unreimbursed'] }}
+                  </span>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
                   <span

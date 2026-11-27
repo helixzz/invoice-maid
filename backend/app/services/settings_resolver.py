@@ -15,6 +15,10 @@ AI_SETTINGS_KEY_MAP = {
     "llm_base_url": "LLM_BASE_URL",
     "llm_api_key": "LLM_API_KEY",
     "llm_model": "LLM_MODEL",
+    "llm_fallback_models": "LLM_FALLBACK_MODELS",
+    "llm_vision_model": "LLM_VISION_MODEL",
+    "llm_embed_base_url": "LLM_EMBED_BASE_URL",
+    "llm_embed_api_key": "LLM_EMBED_API_KEY",
     "llm_embed_model": "LLM_EMBED_MODEL",
     "embed_dim": "EMBED_DIM",
 }
@@ -27,6 +31,10 @@ class ResolvedAISettings(TypedDict):
     llm_base_url: str
     llm_api_key: str
     llm_model: str
+    llm_fallback_models: str
+    llm_vision_model: str
+    llm_embed_base_url: str
+    llm_embed_api_key: str
     llm_embed_model: str
     embed_dim: int
     source: Literal["database", "environment"]
@@ -47,6 +55,10 @@ def _env_ai_settings(settings: Settings) -> ResolvedAISettings:
         "llm_base_url": settings.LLM_BASE_URL,
         "llm_api_key": settings.LLM_API_KEY,
         "llm_model": settings.LLM_MODEL,
+        "llm_fallback_models": settings.LLM_FALLBACK_MODELS,
+        "llm_vision_model": settings.LLM_VISION_MODEL,
+        "llm_embed_base_url": settings.LLM_EMBED_BASE_URL,
+        "llm_embed_api_key": settings.LLM_EMBED_API_KEY,
         "llm_embed_model": settings.LLM_EMBED_MODEL,
         "embed_dim": settings.EMBED_DIM,
         "source": "environment",
@@ -73,6 +85,17 @@ async def resolve_ai_settings(db: AsyncSession) -> ResolvedAISettings:
             resolved["llm_api_key"] = decrypt_password(rows["llm_api_key"], settings.JWT_SECRET)
         if "llm_model" in rows:
             resolved["llm_model"] = rows["llm_model"]
+        if "llm_fallback_models" in rows:
+            resolved["llm_fallback_models"] = rows["llm_fallback_models"]
+        if "llm_vision_model" in rows:
+            resolved["llm_vision_model"] = rows["llm_vision_model"]
+        if "llm_embed_base_url" in rows:
+            resolved["llm_embed_base_url"] = rows["llm_embed_base_url"]
+        if "llm_embed_api_key" in rows:
+            raw_embed_key = rows["llm_embed_api_key"]
+            resolved["llm_embed_api_key"] = (
+                decrypt_password(raw_embed_key, settings.JWT_SECRET) if raw_embed_key else ""
+            )
         if "llm_embed_model" in rows:
             resolved["llm_embed_model"] = rows["llm_embed_model"]
         if "embed_dim" in rows:

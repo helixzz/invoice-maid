@@ -250,3 +250,52 @@ def test_trusted_sender_handles_malformed_brackets() -> None:
     classifier = EmailClassifier(trusted_senders=["billing@company.com"])
     assert classifier._sender_trusted("billing@company.com> <garbage") is False
     assert classifier._sender_trusted("billing@company.com") is True
+
+
+def test_blocked_senders_and_noise_subject_and_preflight() -> None:
+    from app.services.email_classifier import _parse_blocked_senders
+
+    assert _parse_blocked_senders("a@b.com\n c@d.com , ") == ["a@b.com", "c@d.com"]
+    classifier = EmailClassifier(
+        trusted_senders=["vip@github.com"],
+        blocked_senders=["alerts@nas.local"],
+    )
+
+    # Default blocked GitHub CI notification with links is rejected at preflight and tier1
+    gh_mail = make_email(
+        from_addr="GitHub <notifications@github.com>",
+        subject="[repo] PR run failed: CI",
+        body_text="check logs",
+        body_links=["https://github.com/org/repo/actions/runs/1"],
+    )
+    pre = classifier.classify_metadata_preflight(gh_mail)
+    assert pre is not None and pre.is_invoice is False and pre.reason == "blocked sender"
+    t1 = classifier.classify_tier1(gh_mail)
+    assert t1 is not None and t1.is_invoice is False and t1.reason == "blocked sender"
+
+    # Noise subject without blocked sender is rejected at preflight and tier1
+    nas_mail = make_email(
+        from_addr="nas@company.com",
+        subject="[SHKDNAS01] Active Backup for Business - task completed",
+        body_text="backup succeeded",
+        body_links=["https://nas.local/report"],
+    )
+    pre2 = classifier.classify_metadata_preflight(nas_mail)
+    assert pre2 is not None and pre2.is_invoice is False and pre2.reason == "noise subject"
+    t1_2 = classifier.classify_tier1(nas_mail)
+    assert t1_2 is not None and t1_2.is_invoice is False and t1_2.reason == "noise subject"
+
+    # Preflight bulk header, scam, trusted sender, and attachment passthrough
+    bulk = make_email(headers={"List-Unsubscribe": "<mailto:u@x>"})
+    assert classifier.classify_metadata_preflight(bulk).reason == "bulk header"
+    scam = make_email(subject="代开发票联系微信abc12345")
+    assert "scam" in classifier.classify_metadata_preflight(scam).reason
+    trusted = make_email(from_addr="vip@github.com", subject="PR run failed: test")
+    assert classifier.classify_metadata_preflight(trusted) is None
+    with_att = make_email(
+        from_addr="notifications@github.com",
+        subject="PR run failed: test",
+        headers={"_has_attachments": "True"},
+    )
+    assert classifier.classify_metadata_preflight(with_att) is None
+

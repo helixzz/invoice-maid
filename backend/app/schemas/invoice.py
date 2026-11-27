@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 VALID_INVOICE_TYPES: frozenset[str] = frozenset({
@@ -40,6 +40,13 @@ class InvoiceCategory(str, Enum):
     OTHER = "other"
 
 
+class ReimbursementStatus(str, Enum):
+    UNREIMBURSED = "unreimbursed"
+    PENDING = "pending"
+    REIMBURSED = "reimbursed"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class InvoiceExtract(BaseModel):
     """LLM-extracted invoice fields — used with instructor for structured output."""
 
@@ -48,6 +55,10 @@ class InvoiceExtract(BaseModel):
     invoice_no: str = Field(description="发票号码")
     invoice_date: date = Field(description="开票日期, YYYY-MM-DD")
     amount: Decimal = Field(ge=0, description="价税合计金额，纯数字。对于图片型铁路/航空电子客票若无法读取可填 0.01 标记占位")
+    currency: str = Field(
+        default="CNY",
+        description="ISO 4217 3-letter currency code (e.g. CNY, USD, EUR, GBP, JPY, HKD, SGD).",
+    )
     item_summary: str = Field(description="商品/服务一句话中文概括")
     invoice_type: str = Field(description="发票类型，如增值税电子普通发票、数电专票、电子发票（铁路电子客票）")
     invoice_category: InvoiceCategory = Field(
@@ -73,6 +84,14 @@ class InvoiceExtract(BaseModel):
             "receipts, foreign-currency receipts, or any non-invoice document."
         ),
     )
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _normalize_currency(cls, value: object) -> str:
+        text = str(value or "").strip().upper()
+        if not text:
+            return "CNY"
+        return text[:8]
 
 
 class InvoicePlatform(str, Enum):
@@ -158,6 +177,9 @@ class InvoiceResponse(BaseModel):
     invoice_type: str
     invoice_category: str
     currency: str = "CNY"
+    reimbursement_status: str = "unreimbursed"
+    tags: str = ""
+    notes: str = ""
     item_summary: str | None
     source_format: str
     extraction_method: str

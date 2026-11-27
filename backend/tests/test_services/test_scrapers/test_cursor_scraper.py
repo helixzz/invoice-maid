@@ -18,6 +18,18 @@ from app.services.scrapers.cursor import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fast_cursor_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay: float, result: Any = None) -> Any:
+        if delay <= 3.0:
+            return result
+        return await real_sleep(delay, result)
+
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+
+
 INVOICE_URL_1 = (
     "https://invoice.stripe.com/i/acct_1Lb5LzB4TZWxSIGU/"
     "live_YWNjdF8xTGI1THpCNFRaV3hTSUdVLEludm9pY2VOdW1iZXJPbmUsMTY4OTQxMjA5?s=il&"
@@ -1043,3 +1055,93 @@ async def test_scheduler_persists_updated_storage_state_when_scraper_sets_it(
     refreshed = (await db.execute(select(EmailAccount).where(EmailAccount.id == account.id))).scalar_one()
     await db.refresh(refreshed)
     assert refreshed.playwright_storage_state == '{"cookies": [{"name": "rotated"}]}'
+
+
+@pytest.mark.asyncio
+async def test_cursor_scraper_remaining_branches_bill_to_view_more_and_worker_error(
+    tmp_path: Any,
+) -> None:
+    # _extract_bill_to_name match + too-short fallback
+    assert CursorScraper._extract_bill_to_name("Billing information Name Acme Corp Email a@b.com") == "Acme Corp"
+    assert CursorScraper._extract_bill_to_name("Billing information Name A Email a@b.com") == "Billing Contact"
+
+    # _scroll_stripe_page_to_bottom: clicks View more 20 times (exhausting loop) & catches click error
+    clicks = 0
+
+    class AlwaysExpandLocator:
+        @property
+        def first(self):
+            return self
+
+        async def count(self) -> int:
+            return 1
+
+        async def click(self) -> None:
+            nonlocal clicks
+            clicks += 1
+
+    fake_stripe = MagicMock()
+    fake_stripe.evaluate = AsyncMock(return_value=None)
+    fake_stripe.locator = MagicMock(return_value=AlwaysExpandLocator())
+    scraper = CursorScraper()
+    await scraper._scroll_stripe_page_to_bottom(fake_stripe)
+    assert clicks == 20
+
+    class CrashingExpandLocator:
+        @property
+        def first(self):
+            return self
+
+        async def count(self) -> int:
+            raise RuntimeError("detached")
+
+    fake_stripe2 = MagicMock()
+    fake_stripe2.evaluate = AsyncMock(return_value=None)
+    fake_stripe2.locator = MagicMock(return_value=CrashingExpandLocator())
+    await scraper._scroll_stripe_page_to_bottom(fake_stripe2)
+
+    # _process_single_invoice inner_text raises -> falls back to text_content
+    pdf_bytes = b"%PDF-1.4 sample"
+    worker = MagicMock()
+    worker.goto = AsyncMock(return_value=None)
+    worker.inner_text = AsyncMock(side_effect=RuntimeError("no inner text"))
+    worker.text_content = AsyncMock(return_value="May 7, 2026 $20.00")
+    scraper2 = CursorScraper()
+    scraper2._download_invoice_pdf = AsyncMock(return_value=pdf_bytes)  # type: ignore[method-assign]
+    raw = await scraper2._process_single_invoice(
+        stripe_page=worker,
+        account=SimpleNamespace(id=1, username="user@example.com"),
+        invoice_url=INVOICE_URL_1,
+        bill_to_name="Acme Corp",
+    )
+    assert raw is not None
+
+    # Parallel worker raises unexpected exception inside _run_scrape -> logged and skipped
+    portal = MagicMock()
+    portal.url = CURSOR_BILLING_URL
+    portal.goto = AsyncMock(return_value=None)
+    stripe_tab = MagicMock()
+    stripe_tab.content = AsyncMock(return_value=_portal_html([INVOICE_URL_1]))
+    stripe_tab.text_content = AsyncMock(return_value="Billing information Name Acme Corp Email x@y.com")
+    stripe_tab.close = AsyncMock(return_value=None)
+    stripe_tab.context = MagicMock()
+    failing_worker = MagicMock()
+    failing_worker.close = AsyncMock(return_value=None)
+    stripe_tab.context.new_page = AsyncMock(return_value=failing_worker)
+
+    scraper3 = CursorScraper()
+    scraper3._open_stripe_portal = AsyncMock(return_value=stripe_tab)  # type: ignore[method-assign]
+    scraper3._scroll_stripe_page_to_bottom = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    scraper3._process_single_invoice = AsyncMock(side_effect=RuntimeError("worker boom"))  # type: ignore[method-assign]
+    out_invoices: list[Any] = []
+    out_urls: list[str] = []
+    await scraper3._run_scrape(
+        page=portal,
+        account=SimpleNamespace(id=1, username="user@example.com"),
+        seen=set(),
+        new_invoices=out_invoices,
+        new_urls_ordered=out_urls,
+        progress_callback=None,
+    )
+    assert out_invoices == []
+

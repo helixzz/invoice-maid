@@ -22,6 +22,10 @@ async def test_get_ai_settings_returns_masked_values(client, auth_headers, db, s
         "llm_base_url": settings.LLM_BASE_URL,
         "llm_api_key_masked": "te...-key",
         "llm_model": settings.LLM_MODEL,
+        "llm_fallback_models": settings.LLM_FALLBACK_MODELS,
+        "llm_vision_model": settings.LLM_VISION_MODEL,
+        "llm_embed_base_url": settings.LLM_EMBED_BASE_URL,
+        "llm_embed_api_key_masked": "",
         "llm_embed_model": settings.LLM_EMBED_MODEL,
         "embed_dim": settings.EMBED_DIM,
         "source": "environment",
@@ -403,6 +407,10 @@ async def test_resolve_ai_settings_falls_back_to_environment_when_db_empty(db, s
         "llm_base_url": settings.LLM_BASE_URL,
         "llm_api_key": settings.LLM_API_KEY,
         "llm_model": settings.LLM_MODEL,
+        "llm_fallback_models": settings.LLM_FALLBACK_MODELS,
+        "llm_vision_model": settings.LLM_VISION_MODEL,
+        "llm_embed_base_url": settings.LLM_EMBED_BASE_URL,
+        "llm_embed_api_key": settings.LLM_EMBED_API_KEY,
         "llm_embed_model": settings.LLM_EMBED_MODEL,
         "embed_dim": settings.EMBED_DIM,
         "source": "environment",
@@ -565,7 +573,55 @@ async def test_ai_service_uses_database_overrides(db, settings, monkeypatch) -> 
             "base_url": "https://override.invalid/v1",
             "api_key": "override-key",
             "timeout": 60.0,
-            "max_retries": 2,
+            "max_retries": 0,
         }
     ]
     assert calls[0]["model"] == "override-model"
+
+
+async def test_put_ai_settings_supports_fallback_vision_and_independent_embed(
+    client, auth_headers, db, settings
+) -> None:
+    resp = await client.put(
+        "/api/v1/settings/ai",
+        headers=auth_headers,
+        json={
+            "llm_base_url": "http://127.0.0.1:3425/v1",
+            "llm_model": "auto/gemini-4-hydrogen",
+            "llm_fallback_models": "auto/gpt-6-luna,modelverse/deepseek-v4.1-flash-1017,auto/gemini-4-neon",
+            "llm_vision_model": "auto/gemini-4-neon",
+            "llm_embed_base_url": "https://embed.example.com/v1",
+            "llm_embed_api_key": "sk-embed-9999",
+            "llm_embed_model": "text-embedding-3-small",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["llm_fallback_models"] == "auto/gpt-6-luna,modelverse/deepseek-v4.1-flash-1017,auto/gemini-4-neon"
+    assert body["llm_vision_model"] == "auto/gemini-4-neon"
+    assert body["llm_embed_base_url"] == "https://embed.example.com/v1"
+    assert body["llm_embed_api_key_masked"] == "sk-...9999"
+
+    # Reject invalid embed URL scheme
+    bad = await client.put(
+        "/api/v1/settings/ai",
+        headers=auth_headers,
+        json={"llm_embed_base_url": "ftp://bad.invalid"},
+    )
+    assert bad.status_code == 422
+
+    # Allow clearing optional embed URL & key back to empty string
+    cleared = await client.put(
+        "/api/v1/settings/ai",
+        headers=auth_headers,
+        json={"llm_embed_base_url": "", "llm_embed_api_key": "", "llm_embed_model": ""},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["llm_embed_base_url"] == ""
+    assert cleared.json()["llm_embed_api_key_masked"] == ""
+
+    # Disabled embed model skips embed test cleanly
+    embed_res = await ai_settings_api._test_embed_model("http://127.0.0.1:3425/v1", "k", "", None)
+    assert embed_res["ok"] is True
+    assert embed_res["skipped"] is True
+

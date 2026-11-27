@@ -35,6 +35,7 @@ from imap_tools.query import UidRange as U
 
 from app.config import get_settings
 from app.models import EmailAccount
+from app.services.graph_http import graph_get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -586,7 +587,7 @@ async def _delta_fetch_round(
     while url:
         if max_pages is not None and pages >= max_pages:
             return fetched, "", True
-        response = await client.get(url, headers=sentinel_headers)
+        response = await graph_get_with_retry(client, url, headers=sentinel_headers)
         if response.status_code == 410:
             try:
                 err_body = response.json().get("error", {}) or {}
@@ -1732,7 +1733,7 @@ class OutlookScanner(BaseEmailScanner):
                 if url in seen_urls:
                     break
                 seen_urls.add(url)
-                response = await client.get(url, headers=headers)
+                response = await graph_get_with_retry(client, url, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
                 for folder in payload.get("value", []):
@@ -1771,7 +1772,8 @@ class OutlookScanner(BaseEmailScanner):
             access_token = await self._acquire_access_token(account)
             headers_auth = {"Authorization": f"Bearer {access_token}"}
             async with httpx.AsyncClient(timeout=30.0) as client:
-                body_resp = await client.get(
+                body_resp = await graph_get_with_retry(
+                    client,
                     f"{GRAPH_BASE_URL}/me/messages/{graph_id}",
                     headers=headers_auth,
                     params={"$select": "body"},
@@ -1786,9 +1788,12 @@ class OutlookScanner(BaseEmailScanner):
 
                 if has_attachments:
                     email.attachments = await self._fetch_attachments(client, headers_auth, graph_id)
+                email.headers.pop("_hydrate_error", None)
+                email.is_hydrated = True
         except OUTLOOK_CONNECTION_ERRORS as exc:
             logger.warning("Outlook hydrate failed for uid=%s: %s", email.uid, exc)
-        email.is_hydrated = True
+            email.headers["_hydrate_error"] = str(exc)[:500]
+            email.is_hydrated = False
         return email
 
     async def test_connection(self, account: EmailAccount) -> bool:
@@ -1920,7 +1925,8 @@ class OutlookScanner(BaseEmailScanner):
         if not message_id:
             return []
 
-        response = await client.get(
+        response = await graph_get_with_retry(
+            client,
             f"{GRAPH_BASE_URL}/me/messages/{message_id}/attachments",
             headers=headers,
             params={"$top": "50"},

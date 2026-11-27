@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -205,10 +205,7 @@ async def get_stats(
             .order_by(func.count(Invoice.id).desc(), Invoice.extraction_method.asc())
         )
     ).all()
-    _currency_expr = case(
-        (Invoice.invoice_category == "overseas_invoice", "USD"),
-        else_="CNY",
-    ).label("currency")
+    _currency_expr = func.coalesce(Invoice.currency, "CNY").label("currency")
     currency_rows = (
         await db.execute(
             select(

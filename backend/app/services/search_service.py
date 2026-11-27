@@ -32,26 +32,14 @@ class SearchService:
         date_from: date | None = None,
         date_to: date | None = None,
         categories: list[str] | None = None,
+        currencies: list[str] | None = None,
+        reimbursement_statuses: list[str] | None = None,
+        tag: str | None = None,
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
-        """Full-text search via FTS5 with optional date range filter and pagination.
-
-        Tenant isolation: every branch filters ``Invoice.user_id == user_id``.
-        The FTS MATCH branch first gets candidate rowids from the shared
-        FTS index (FTS5 cannot filter by user_id itself), then the SQL
-        hydration query constrains to the caller's rows. This is safe
-        because we rely on the ORM filter, not on the FTS index, for
-        authorization — the FTS index is a shared tokenizer, not a
-        security boundary.
-
-        v1.2.0 Track A: ``categories`` takes a list of invoice_category
-        enum values. Empty list / None means "no filter" (backward-compat
-        with v1.1.x clients)."""
-        if not query.strip():
-            stmt = select(Invoice).where(Invoice.user_id == user_id)
-            count_stmt = select(func.count(Invoice.id)).where(Invoice.user_id == user_id)
-
+        """Full-text search via FTS5 with optional date/category/currency/reimbursement filters."""
+        def _apply_filters(stmt, count_stmt):
             if date_from is not None:
                 stmt = stmt.where(Invoice.invoice_date >= date_from)
                 count_stmt = count_stmt.where(Invoice.invoice_date >= date_from)
@@ -61,6 +49,22 @@ class SearchService:
             if categories:
                 stmt = stmt.where(Invoice.invoice_category.in_(categories))
                 count_stmt = count_stmt.where(Invoice.invoice_category.in_(categories))
+            if currencies:
+                stmt = stmt.where(Invoice.currency.in_([c.upper() for c in currencies]))
+                count_stmt = count_stmt.where(Invoice.currency.in_([c.upper() for c in currencies]))
+            if reimbursement_statuses:
+                stmt = stmt.where(Invoice.reimbursement_status.in_(reimbursement_statuses))
+                count_stmt = count_stmt.where(Invoice.reimbursement_status.in_(reimbursement_statuses))
+            if tag and tag.strip():
+                like_expr = f"%{tag.strip()}%"
+                stmt = stmt.where(Invoice.tags.ilike(like_expr))
+                count_stmt = count_stmt.where(Invoice.tags.ilike(like_expr))
+            return stmt, count_stmt
+
+        if not query.strip():
+            stmt = select(Invoice).where(Invoice.user_id == user_id)
+            count_stmt = select(func.count(Invoice.id)).where(Invoice.user_id == user_id)
+            stmt, count_stmt = _apply_filters(stmt, count_stmt)
 
             total = (await db.execute(count_stmt)).scalar() or 0
             stmt = stmt.order_by(Invoice.invoice_date.desc(), Invoice.id.desc())
@@ -93,16 +97,7 @@ class SearchService:
             Invoice.user_id == user_id,
             Invoice.id.in_(matching_ids),
         )
-
-        if date_from is not None:
-            stmt = stmt.where(Invoice.invoice_date >= date_from)
-            count_stmt = count_stmt.where(Invoice.invoice_date >= date_from)
-        if date_to is not None:
-            stmt = stmt.where(Invoice.invoice_date <= date_to)
-            count_stmt = count_stmt.where(Invoice.invoice_date <= date_to)
-        if categories:
-            stmt = stmt.where(Invoice.invoice_category.in_(categories))
-            count_stmt = count_stmt.where(Invoice.invoice_category.in_(categories))
+        stmt, count_stmt = _apply_filters(stmt, count_stmt)
 
         total = (await db.execute(count_stmt)).scalar() or 0
         stmt = stmt.order_by(Invoice.invoice_date.desc(), Invoice.id.desc())

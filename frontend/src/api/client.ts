@@ -14,6 +14,10 @@ import type {
   AISettingsUpdate,
   ClassifierSettingsResponse,
   ClassifierSettingsUpdate,
+  NotificationSettingsResponse,
+  NotificationSettingsUpdate,
+  NotificationTestResponse,
+  ReimbursementStatus,
   ExtractionLog,
   ExtractionSummary,
   AIConnectionTestResponse,
@@ -108,7 +112,17 @@ export const api = {
   },
 
   // Invoices
-  async getInvoices(params?: {q?: string, date_from?: string, date_to?: string, category?: string[], page?: number, size?: number}): Promise<InvoiceListResponse> {
+  async getInvoices(params?: {
+    q?: string
+    date_from?: string
+    date_to?: string
+    category?: string[]
+    currency?: string[]
+    reimbursement_status?: string[]
+    tag?: string
+    page?: number
+    size?: number
+  }): Promise<InvoiceListResponse> {
     const res = await apiClient.get('/invoices', {
       params,
       paramsSerializer: { indexes: null },
@@ -153,6 +167,19 @@ export const api = {
     await apiClient.post('/invoices/batch-delete', { ids })
   },
 
+  async batchUpdateReimbursement(
+    ids: number[],
+    payload: { reimbursement_status?: ReimbursementStatus; tags?: string },
+  ): Promise<{ updated: number }> {
+    const res = await apiClient.post('/invoices/batch-reimbursement', { ids, ...payload })
+    return res.data
+  },
+
+  async downloadReimbursementPack(ids: number[]): Promise<Blob> {
+    const res = await apiClient.post('/invoices/reimbursement-pack', { ids }, { responseType: 'blob' })
+    return res.data
+  },
+
   async uploadInvoice(
     file: File,
     onProgress?: (percent: number) => void,
@@ -180,9 +207,33 @@ export const api = {
     return res.data
   },
 
-  exportInvoicesCSV(params?: {q?: string, date_from?: string, date_to?: string, category?: string[]}): Promise<Blob> {
+  exportInvoicesCSV(params?: {
+    q?: string
+    date_from?: string
+    date_to?: string
+    category?: string[]
+    currency?: string[]
+    reimbursement_status?: string[]
+    tag?: string
+  }): Promise<Blob> {
     return apiClient.get('/invoices/export', {
-      params,
+      params: { ...params, format: 'csv' },
+      paramsSerializer: { indexes: null },
+      responseType: 'blob',
+    }).then(res => res.data)
+  },
+
+  exportInvoicesXLSX(params?: {
+    q?: string
+    date_from?: string
+    date_to?: string
+    category?: string[]
+    currency?: string[]
+    reimbursement_status?: string[]
+    tag?: string
+  }): Promise<Blob> {
+    return apiClient.get('/invoices/export', {
+      params: { ...params, format: 'xlsx' },
       paramsSerializer: { indexes: null },
       responseType: 'blob',
     }).then(res => res.data)
@@ -297,6 +348,21 @@ export const api = {
 
   async updateClassifierSettings(data: ClassifierSettingsUpdate): Promise<void> {
     await apiClient.put('/settings/classifier', data)
+  },
+
+  async getNotificationSettings(): Promise<NotificationSettingsResponse> {
+    const res = await apiClient.get('/settings/notifications')
+    return res.data
+  },
+
+  async updateNotificationSettings(data: NotificationSettingsUpdate): Promise<NotificationSettingsResponse> {
+    const res = await apiClient.put('/settings/notifications', data)
+    return res.data
+  },
+
+  async testNotification(): Promise<NotificationTestResponse> {
+    const res = await apiClient.post('/settings/notifications/test')
+    return res.data
   },
 
   // Admin

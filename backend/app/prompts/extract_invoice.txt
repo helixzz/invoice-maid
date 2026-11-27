@@ -134,10 +134,13 @@ so operators can filter, stat, and export them separately.
                  For overseas: the billing/invoice date, not the payment date.
   amount       价税合计 (grand total incl. tax) or the provider's total.
                  Decimal value only; strip ¥ / ￥ / $ / € / £ / currency codes.
-                 For overseas_invoice: record the local-currency amount. The app
-                 does NOT have a currency column in v1.2.0; the currency code
-                 belongs in invoice_type (e.g. "Cursor Pro (USD)"). Do not
-                 convert to CNY.
+                 For overseas_invoice: record the local-currency amount without
+                 converting to CNY.
+  currency     ISO 4217 3-letter currency code: CNY for Chinese invoices (¥/￥/RMB),
+                 USD for US dollars ($/US$/USD), EUR for Euros (€/EUR), GBP (£/GBP),
+                 HKD (HK$/HKD), JPY (JPY/円), SGD (S$/SGD), CAD, AUD, etc.
+                 Also keep currency in invoice_type for overseas_invoice (e.g.
+                 "Cursor Invoice (USD)").
                  For railway tickets, use 票价. If the fare is shown as a bare
                  currency amount such as ￥6.50 use that value. Strip ￥/¥.
                  Ignore any amount explicitly tied to 退票费 / 改签费 / 手续费 /

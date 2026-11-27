@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.0] - 2026-11-27
+
+### Added
+
+- **Multi-tier LLM routing, circuit breaker & independent embedding endpoint**:
+  - Added ordered `LLM_FALLBACK_MODELS` chain (e.g. `auto/gemini-4-hydrogen` → `auto/gpt-6-luna` → `modelverse/deepseek-v4.1-flash-1017` → `auto/gemini-4-neon`), `LLM_VISION_MODEL`, and optional independent `LLM_EMBED_BASE_URL` / `LLM_EMBED_API_KEY` (works seamlessly with local routers such as Magpie that serve chat + vision without embeddings).
+  - Eliminated the 9× retry storm (`AsyncOpenAI max_retries=2` × `instructor max_retries=3`) on upstream HTTP errors; upstream failures immediately fail over to the next model in the chain.
+  - Added `LLMCircuitBreaker` that opens after sustained chain-level upstream failures, surfaces `llm_circuit_state` and `pending_retries` in `GET /api/v1/health` (marking status `degraded` when open), and auto-recovers after cooldown.
+- **Persistent failed-email retry queue (DLQ) & watermark protection**:
+  - Migration `0020_failed_emails_queue` adds `failed_emails` with exponential backoff (`5m → 15m → 45m → 2h → 6h`).
+  - Email-level exceptions now persist an `ExtractionLog(outcome="error")` audit row and enqueue transient/LLM/hydrate failures for automatic retry on subsequent scans instead of silently dropping emails behind an advancing watermark.
+  - Watermark advancement is held if unqueued systemic errors occur.
+- **Outlook 429 Retry-After backoff & Tier-1 pre-hydration noise filter**:
+  - Added `app/services/graph_http.py` (`graph_get_with_retry`) honoring HTTP `Retry-After` headers with exponential backoff for 429/503/504 across Outlook delta, folder, hydration, and attachment calls.
+  - Failed Outlook hydrations no longer set `is_hydrated=True`; they record `_hydrate_error` and enter the retry queue.
+  - Added `blocked_senders` (`classifier_blocked_senders`) plus built-in GitHub/GitLab CI and backup-alert pre-hydration filtering (`classify_metadata_preflight`), dramatically cutting unnecessary Graph hydrations and LLM token spend.
+- **Telegram IM notifications**:
+  - Added `app/services/telegram_notifier.py` and `/api/v1/settings/notifications` (Fernet-encrypted Bot Token, Chat ID, error-alert toggle with 15-minute cooldown, scan-summary toggle, and one-click test endpoint).
+- **True multi-currency support**:
+  - Migration `0021_invoice_currency` adds `invoices.currency` (backfilling existing `overseas_invoice` rows to `USD`), replaces hardcoded `overseas_invoice → USD` guesses across API/stats/exports with actual extracted & editable ISO-4217 currency codes.
+- **Multimodal VLM fallback for image-only PDFs**:
+  - Added PyMuPDF page rendering (`render_pdf_pages_to_base64_png`) and `AIService.extract_invoice_fields_from_images` so scanned/image-only PDFs without a text layer fall back to vision extraction (`extraction_method="vlm"`).
+- **Reimbursement workflow closed loop**:
+  - Migration `0022_invoice_reimbursement` adds `reimbursement_status`, `tags`, and `notes` to `invoices`.
+  - Added filter parameters (`currency`, `reimbursement_status`, `tag`), `POST /api/v1/invoices/batch-reimbursement`, zero-dependency Excel export (`GET /api/v1/invoices/export?format=xlsx`), and `POST /api/v1/invoices/reimbursement-pack` (ZIP bundling Excel summary, CSV summary, and original invoice files), plus full UI controls in `InvoiceListView` and `InvoiceDetailView`.
+
+### Changed
+
+- **Unified ingestion pipeline & monolith cleanup**:
+  - Extracted shared `app/services/invoice_ingestion.py` used by both `app/tasks/scheduler.py` and `app/services/manual_upload.py`, removing ~200 lines of duplicated enrichment/validation logic.
+  - Extracted modular Settings panels (`AISettingsPanel.vue`, `ClassifierSettingsPanel.vue`, `NotificationSettingsPanel.vue`) out of `SettingsView.vue`.
+  - Refreshed `sqlite-vec` embeddings automatically when semantic fields (`buyer`/`seller`/`item_summary`) are manually corrected.
+  - Synced `AGENTS.md`, `README.md`, and `backend/.env.example`.
+
+### Fixed
+
+- **Fixed 3 always-fail bugs in `BaseAPIScraper` (`app/services/scrapers/api_source.py`)**: wrong argument order in `decrypt_password(account, raw)` and broken Python double-underscore name mangling in `_scan_events` / `_last_scan_state`; added 100% unit test coverage.
+- **Sped up `test_cursor_scraper.py`** from multi-minute real sleeps to <0.5s via scoped sleep mocking, and restored full-repository 100% backend line & branch coverage.
+
 ## [1.3.27] - 2026-08-16
 
 ### Fixed

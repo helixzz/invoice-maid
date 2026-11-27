@@ -4,17 +4,16 @@ import AppLayout from '@/components/AppLayout.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import Toast from '@/components/Toast.vue'
 import ScanProgressBar from '@/components/ScanProgressBar.vue'
+import AISettingsPanel from '@/components/settings/AISettingsPanel.vue'
+import ClassifierSettingsPanel from '@/components/settings/ClassifierSettingsPanel.vue'
+import NotificationSettingsPanel from '@/components/settings/NotificationSettingsPanel.vue'
 import { useScanProgress } from '@/composables/useScanProgress'
 import { api } from '@/api/client'
-import type { 
-  EmailAccount, 
-  AccountCreate, 
-  AccountUpdate, 
-  ScanLog, 
-  AISettingsResponse, 
-  AISettingsUpdate, 
-  ClassifierSettingsResponse,
-  ClassifierSettingsUpdate,
+import type {
+  EmailAccount,
+  AccountCreate,
+  AccountUpdate,
+  ScanLog,
   ExtractionLog,
   ExtractionSummary,
   OAuthInitiateResponse,
@@ -23,6 +22,10 @@ import type {
 import { aggregateByEmail, summarizeEmails } from './scanAggregation'
 
 const activeTab = ref('accounts')
+
+const handlePanelToast = (message: string, type: 'success' | 'error' | 'info') => {
+  toastRef.value?.addToast(message, type)
+}
 
 // OAuth status map for Outlook accounts
 const oauthStatusMap = ref<Record<number, 'authorized' | 'none' | 'pending' | 'expired' | 'error' | 'loading'>>({})
@@ -39,153 +42,6 @@ const refreshOAuthStatuses = async (accountList: EmailAccount[]) => {
     } catch {
       oauthStatusMap.value[acct.id] = 'none'
     }
-  }
-}
-
-// AI Settings
-const aiSettings = ref<AISettingsResponse | null>(null)
-const aiSettingsForm = ref<AISettingsUpdate>({})
-const loadingAISettings = ref(false)
-const savingAISettings = ref(false)
-const availableModels = ref<string[]>([])
-const loadingModels = ref(false)
-const modelsFetchFailed = ref(false)
-const aiConnectionOk = ref<boolean | null>(null)
-const aiChatOk = ref<boolean | null>(null)
-const aiEmbedOk = ref<boolean | null>(null)
-const aiChatDetail = ref<string>('')
-const aiEmbedDetail = ref<string>('')
-
-// Classifier Settings
-const classifierSettings = ref<ClassifierSettingsResponse | null>(null)
-const classifierSettingsForm = ref<ClassifierSettingsUpdate>({})
-const loadingClassifierSettings = ref(false)
-const savingClassifierSettings = ref(false)
-
-const fetchClassifierSettings = async () => {
-  loadingClassifierSettings.value = true
-  try {
-    const res = await api.getClassifierSettings()
-    classifierSettings.value = res
-    classifierSettingsForm.value = {
-      trusted_senders: res.trusted_senders,
-      extra_keywords: res.extra_keywords,
-    }
-  } catch (error) {
-    console.error('Failed to fetch Classifier settings', error)
-    toastRef.value?.addToast('Failed to fetch Classifier settings', 'error')
-  } finally {
-    loadingClassifierSettings.value = false
-  }
-}
-
-const saveClassifierSettings = async () => {
-  savingClassifierSettings.value = true
-  try {
-    await api.updateClassifierSettings(classifierSettingsForm.value)
-    toastRef.value?.addToast('Classifier settings saved successfully', 'success')
-    await fetchClassifierSettings()
-  } catch (error) {
-    console.error('Failed to save Classifier settings', error)
-    toastRef.value?.addToast('Failed to save Classifier settings', 'error')
-  } finally {
-    savingClassifierSettings.value = false
-  }
-}
-
-const fetchAISettings = async () => {
-  loadingAISettings.value = true
-  try {
-    const res = await api.getAISettings()
-    aiSettings.value = res
-    aiConnectionOk.value = null
-    aiChatOk.value = null
-    aiEmbedOk.value = null
-    aiSettingsForm.value = {
-      llm_base_url: res.llm_base_url,
-      llm_model: res.llm_model,
-      llm_embed_model: res.llm_embed_model,
-      embed_dim: res.embed_dim,
-      // intentionally not setting api key here unless they type it
-    }
-  } catch (error) {
-    console.error('Failed to fetch AI settings', error)
-    toastRef.value?.addToast('Failed to fetch AI settings', 'error')
-  } finally {
-    loadingAISettings.value = false
-  }
-}
-
-const fetchAIModels = async () => {
-  loadingModels.value = true
-  modelsFetchFailed.value = false
-  try {
-    const res = await api.getAIModels()
-    availableModels.value = res.models
-    toastRef.value?.addToast(`Found ${res.models.length} models`, 'success')
-  } catch (error) {
-    console.error('Failed to fetch AI models', error)
-    modelsFetchFailed.value = true
-    toastRef.value?.addToast('Failed to fetch models. Using text input.', 'error')
-  } finally {
-    loadingModels.value = false
-  }
-}
-
-const testAIConnection = async () => {
-  loadingModels.value = true
-  aiConnectionOk.value = null
-  aiChatOk.value = null
-  aiEmbedOk.value = null
-  aiChatDetail.value = ''
-  aiEmbedDetail.value = ''
-  try {
-    const res = await api.testAIConnection()
-    aiConnectionOk.value = res.ok
-    aiChatOk.value = res.chat.ok
-    aiEmbedOk.value = res.embed.ok
-    aiChatDetail.value = res.chat.detail || res.chat.error_type || ''
-    aiEmbedDetail.value = res.embed.detail || res.embed.error_type || ''
-
-    const chatLabel = `Chat (${res.chat.model})${res.chat.latency_ms ? ` · ${res.chat.latency_ms}ms` : ''}`
-    const embedLabel = `Embed (${res.embed.model})${res.embed.dim ? ` · ${res.embed.dim}d` : ''}${res.embed.latency_ms ? ` · ${res.embed.latency_ms}ms` : ''}`
-
-    if (res.chat.ok) {
-      toastRef.value?.addToast(`${chatLabel}: OK`, 'success')
-    } else {
-      toastRef.value?.addToast(`${chatLabel} failed: ${res.chat.detail}`, 'error')
-    }
-    if (res.embed.ok) {
-      if (res.embed.dim_mismatch) {
-        toastRef.value?.addToast(`${embedLabel}: ${res.embed.detail}`, 'error')
-      } else {
-        toastRef.value?.addToast(`${embedLabel}: OK`, 'success')
-      }
-    } else {
-      toastRef.value?.addToast(`${embedLabel} failed: ${res.embed.detail}`, 'error')
-    }
-  } catch (error) {
-    aiConnectionOk.value = false
-    aiChatOk.value = false
-    aiEmbedOk.value = false
-    toastRef.value?.addToast('AI connection test failed', 'error')
-  } finally {
-    loadingModels.value = false
-  }
-}
-
-const saveAISettings = async () => {
-  savingAISettings.value = true
-  try {
-    await api.updateAISettings(aiSettingsForm.value)
-    toastRef.value?.addToast('AI settings saved successfully', 'success')
-    await fetchAISettings()
-    aiSettingsForm.value.llm_api_key = '' // Clear input after save
-  } catch (error) {
-    console.error('Failed to save AI settings', error)
-    toastRef.value?.addToast('Failed to save AI settings', 'error')
-  } finally {
-    savingAISettings.value = false
   }
 }
 
@@ -611,8 +467,6 @@ const formatScanState = (raw: string | null, accountType: string = 'imap') => {
 onMounted(() => {
   fetchAccounts()
   fetchLogs()
-  fetchAISettings()
-  fetchClassifierSettings()
   connectScanProgress()
 })
 </script>
@@ -649,6 +503,13 @@ onMounted(() => {
           >
             <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
             分类规则
+          </button>
+          <button
+            @click="activeTab = 'notifications'"
+            :class="[activeTab === 'notifications' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300', 'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center']"
+          >
+            <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+            IM 通知
           </button>
         </nav>
       </div>
@@ -1018,174 +879,17 @@ onMounted(() => {
         </div>
       </div>
       <div v-if="activeTab === 'ai'" class="space-y-6">
-        <div class="sm:flex sm:items-center sm:justify-between bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <div>
-            <h3 class="text-lg leading-6 font-medium text-slate-900">AI Model Configuration</h3>
-            <p class="mt-1 max-w-2xl text-sm text-slate-500">Configure LLM models used for extracting invoice data.</p>
-          </div>
-        </div>
-
-        <div class="bg-white shadow-sm sm:rounded-xl border border-slate-200 p-6">
-          <div v-if="loadingAISettings" class="p-6 text-center text-slate-500 animate-pulse">
-            Loading settings...
-          </div>
-          <form v-else @submit.prevent="saveAISettings" class="space-y-6">
-            <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-2">
-              <div class="sm:col-span-2">
-                <label class="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                  <span>API Base URL</span>
-                  <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
-                  <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
-                </label>
-                <input type="text" v-model="aiSettingsForm.llm_base_url" placeholder="https://api.openai.com/v1" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
-              </div>
-
-              <div class="sm:col-span-2">
-                <label class="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                  <span>API Key</span>
-                  <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
-                  <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
-                </label>
-                <input type="password" v-model="aiSettingsForm.llm_api_key" :placeholder="aiSettings?.llm_api_key_masked" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
-                <p class="mt-1 text-xs text-slate-500">Leave blank to keep existing key.</p>
-              </div>
-
-              <div>
-                <label class="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                  <span>Chat Model</span>
-                  <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
-                  <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
-                </label>
-                <div class="flex items-center space-x-2">
-                  <select v-if="availableModels.length > 0 && !modelsFetchFailed" v-model="aiSettingsForm.llm_model" class="block w-full py-2 px-3 border border-slate-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                    <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
-                  </select>
-                  <input v-else type="text" v-model="aiSettingsForm.llm_model" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
-                  <span
-                    class="inline-flex h-3 w-3 rounded-full"
-                    :class="aiChatOk === null ? 'bg-slate-300' : aiChatOk ? 'bg-green-500' : 'bg-red-500'"
-                    :title="aiChatOk === null ? 'Not tested' : aiChatOk ? `Chat model OK · ${aiChatDetail}` : `Chat model failed · ${aiChatDetail}`"
-                  ></span>
-                  <button type="button" @click="fetchAIModels" :disabled="loadingModels" class="inline-flex items-center px-3 py-2 border border-slate-300 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors" title="Refresh Models">
-                    <svg v-if="loadingModels" class="animate-spin h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label class="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                  <span>Embedding Model</span>
-                  <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
-                  <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
-                </label>
-                <div class="flex items-center space-x-2">
-                  <select v-if="availableModels.length > 0 && !modelsFetchFailed" v-model="aiSettingsForm.llm_embed_model" class="block w-full py-2 px-3 border border-slate-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                    <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
-                  </select>
-                  <input v-else type="text" v-model="aiSettingsForm.llm_embed_model" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
-                  <span
-                    class="inline-flex h-3 w-3 rounded-full"
-                    :class="aiEmbedOk === null ? 'bg-slate-300' : aiEmbedOk ? 'bg-green-500' : 'bg-red-500'"
-                    :title="aiEmbedOk === null ? 'Not tested' : aiEmbedOk ? `Embed model OK · ${aiEmbedDetail}` : `Embed model failed · ${aiEmbedDetail}`"
-                  ></span>
-                  <button type="button" @click="fetchAIModels" :disabled="loadingModels" class="inline-flex items-center px-3 py-2 border border-slate-300 shadow-sm text-sm leading-4 font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors" title="Refresh Models">
-                    <svg v-if="loadingModels" class="animate-spin h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label class="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                  <span>Embedding Dimensions</span>
-                  <span v-if="aiSettings?.source === 'database'" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Database</span>
-                  <span v-else class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">Environment</span>
-                </label>
-                <input type="number" v-model="aiSettingsForm.embed_dim" placeholder="1536" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border">
-              </div>
-            </div>
-
-            <div class="pt-5 border-t border-slate-200 flex justify-between items-center">
-                <button
-                  type="button"
-                  @click="testAIConnection"
-                  :disabled="loadingModels"
-                  class="inline-flex items-center justify-center py-2 px-4 border border-slate-300 shadow-sm text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
-                >
-                {{ loadingModels ? 'Testing...' : 'Test Connection' }}
-              </button>
-              
-              <button
-                type="submit"
-                :disabled="savingAISettings"
-                class="inline-flex items-center justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
-              >
-                <svg v-if="savingAISettings" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                {{ savingAISettings ? 'Saving...' : 'Save Settings' }}
-              </button>
-            </div>
-          </form>
-        </div>
+        <AISettingsPanel @toast="handlePanelToast" />
       </div>
 
       <!-- Classifier Settings Tab -->
       <div v-if="activeTab === 'classifier'" class="space-y-6">
-        <div class="sm:flex sm:items-center sm:justify-between bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <div>
-            <h3 class="text-lg leading-6 font-medium text-slate-900">Email Classification Rules</h3>
-            <p class="mt-1 max-w-2xl text-sm text-slate-500">Configure how emails are identified as containing invoices.</p>
-          </div>
-        </div>
+        <ClassifierSettingsPanel @toast="handlePanelToast" />
+      </div>
 
-        <div class="bg-white shadow-sm sm:rounded-xl border border-slate-200 p-6">
-          <div v-if="loadingClassifierSettings" class="p-6 text-center text-slate-500 animate-pulse">
-            Loading settings...
-          </div>
-          <form v-else @submit.prevent="saveClassifierSettings" class="space-y-8">
-            <div>
-              <label class="block text-sm font-medium text-slate-700 mb-1">
-                Trusted Sender Domains / Addresses
-              </label>
-              <p class="text-sm text-slate-500 mb-3">Emails from these senders are immediately classified as invoice-related without LLM. One per line. Example: tax.gov.cn, einvoice@company.com</p>
-              <textarea v-model="classifierSettingsForm.trusted_senders" rows="5" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="tax.gov.cn&#10;einvoice@company.com"></textarea>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-slate-700 mb-1">
-                Extra Invoice Keywords
-              </label>
-              <p class="text-sm text-slate-500 mb-3">Additional keywords (beyond the built-in list) that identify invoice emails. One per line. Example: 财务, billing</p>
-              <textarea v-model="classifierSettingsForm.extra_keywords" rows="4" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md py-2 px-3 border" placeholder="财务&#10;billing"></textarea>
-            </div>
-
-            <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
-              <h4 class="text-sm font-medium text-slate-700 mb-2">Built-in keywords (always active)</h4>
-              <div class="flex flex-wrap gap-2">
-                <span v-for="keyword in ['发票', 'invoice', '开票', '报销', '税务', 'fapiao', 'receipt', 'vat', '增值税', '电子发票', '数电票']" :key="keyword" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-800">
-                  {{ keyword }}
-                </span>
-              </div>
-            </div>
-
-            <div class="pt-5 border-t border-slate-200 flex justify-end">
-              <button
-                type="submit"
-                :disabled="savingClassifierSettings"
-                class="inline-flex items-center justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
-              >
-                <svg v-if="savingClassifierSettings" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                {{ savingClassifierSettings ? 'Saving...' : 'Save' }}
-              </button>
-            </div>
-          </form>
-        </div>
+      <!-- IM Notifications Tab -->
+      <div v-if="activeTab === 'notifications'" class="space-y-6">
+        <NotificationSettingsPanel @toast="handlePanelToast" />
       </div>
 
     </div>

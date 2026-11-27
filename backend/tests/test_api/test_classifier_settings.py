@@ -10,6 +10,7 @@ async def test_get_classifier_settings_returns_defaults(client, auth_headers, se
     data = response.json()
     assert data["trusted_senders"] == ""
     assert data["extra_keywords"] == ""
+    assert data["blocked_senders"] == ""
 
 
 @pytest.mark.asyncio
@@ -44,12 +45,13 @@ async def test_update_classifier_settings_partial(client, auth_headers, settings
     put2 = await client.put(
         "/api/v1/settings/classifier",
         headers=auth_headers,
-        json={"extra_keywords": "billing"},
+        json={"extra_keywords": "billing", "blocked_senders": "ci@example.com"},
     )
     assert put2.status_code == 200
     data = put2.json()
     assert data["trusted_senders"] == "a@b.com"
     assert data["extra_keywords"] == "billing"
+    assert data["blocked_senders"] == "ci@example.com"
 
 
 @pytest.mark.asyncio

@@ -22,17 +22,29 @@ from app.config import Settings, get_settings
 from app.database import get_db
 from app.models import AppSettings, EmailAccount, ExtractionLog, Invoice, ScanLog, WebhookLog
 from app.schemas.invoice import InvoiceCategory, VALID_INVOICE_TYPES
-from app.services.ai_service import AIService, _resolve_safelink
-from app.services.email_classifier import EmailClassifier, _parse_extra_keywords, _parse_trusted_senders, is_scam_text
+from app.services.ai_service import AIService, LLMCircuitOpenError, LLMUnavailableError, _resolve_safelink
+from app.services.email_classifier import (
+    EmailClassifier,
+    _parse_blocked_senders,
+    _parse_extra_keywords,
+    _parse_trusted_senders,
+    is_scam_text,
+)
 from app.services.email_scanner import ScanOptions, ScannerFactory, _is_uid_newer
+from app.services.failed_email_queue import (
+    enqueue_failed_email,
+    fetch_due_failed_emails,
+    mark_failed_email_resolved,
+)
 from app.services.file_manager import FileManager
+from app.services.invoice_ingestion import enrich_and_validate_invoice
 from app.services.invoice_parser import invoice_no_dedup_key
 from app.services.invoice_parser import parse as parse_invoice
-from app.services.invoice_parser import restore_legal_seller_name
 from app.models.invoice import invoice_no_dedup_expression
 from app.services.scrapers.factory import ScraperFactory
 from app.services.search_service import store_embedding
 from app.services import scan_progress as sp
+from app.services.telegram_notifier import notify_account_error, notify_scan_summary
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +116,9 @@ class _EmailResult:
     invoices_added: int = 0
     last_uid: str | None = None
     error: str | None = None
+    system_error: bool = False
+    circuit_open: bool = False
+    enqueued_retry: bool = False
 
 
 _scheduler: AsyncIOScheduler | None = None
@@ -238,9 +253,13 @@ async def _load_classifier(db: Any) -> EmailClassifier:
     keywords_raw = (
         await db.execute(select(AppSettings.value).where(AppSettings.key == "classifier_extra_keywords"))
     ).scalar_one_or_none() or ""
+    blocked_raw = (
+        await db.execute(select(AppSettings.value).where(AppSettings.key == "classifier_blocked_senders"))
+    ).scalar_one_or_none() or ""
     return EmailClassifier(
         trusted_senders=_parse_trusted_senders(trusted_raw),
         extra_keywords=_parse_extra_keywords(keywords_raw),
+        blocked_senders=_parse_blocked_senders(blocked_raw),
     )
 
 
@@ -336,13 +355,64 @@ async def _process_single_email(
         async for db in get_db():
             result = _EmailResult(last_uid=email_data.uid)
             try:
+                from_retry_queue = bool(
+                    getattr(email_data, "headers", None)
+                    and email_data.headers.get("_from_retry_queue") == "True"
+                )
                 if (
                     scanner is not None
                     and account is not None
                     and not getattr(email_data, "is_hydrated", True)
                 ):
+                    preflight_fn = getattr(classifier, "classify_metadata_preflight", None)
+                    preflight = preflight_fn(email_data) if callable(preflight_fn) else None
+                    if preflight is not None and not preflight.is_invoice:
+                        db.add(
+                            _record_extraction_log(
+                                user_id=user_id,
+                                scan_log_id=log_id,
+                                email_uid=email_data.uid,
+                                email_subject=email_data.subject,
+                                attachment_filename=None,
+                                outcome="not_invoice",
+                                classification_tier=preflight.tier,
+                            )
+                        )
+                        await db.commit()
+                        if from_retry_queue:
+                            await mark_failed_email_resolved(
+                                db, email_account_id=account_id, email_uid=email_data.uid
+                            )
+                        return result
+
                     async with _hydration_semaphore:
                         email_data = await scanner.hydrate_email(account, email_data)
+
+                    hydrate_error = (getattr(email_data, "headers", None) or {}).get("_hydrate_error")
+                    if hydrate_error:
+                        result.error = hydrate_error[:500]
+                        result.system_error = True
+                        db.add(
+                            _record_extraction_log(
+                                user_id=user_id,
+                                scan_log_id=log_id,
+                                email_uid=email_data.uid,
+                                email_subject=email_data.subject,
+                                attachment_filename=None,
+                                outcome="error",
+                                error_detail=f"hydrate failed: {hydrate_error}",
+                            )
+                        )
+                        await db.commit()
+                        await enqueue_failed_email(
+                            db,
+                            user_id=user_id,
+                            email_account_id=account_id,
+                            email_data=email_data,
+                            error_message=f"hydrate failed: {hydrate_error}",
+                        )
+                        result.enqueued_retry = True
+                        return result
 
                 t1 = classifier.classify_tier1(email_data)
 
@@ -383,6 +453,10 @@ async def _process_single_email(
                         )
                     )
                     await db.commit()
+                    if from_retry_queue:
+                        await mark_failed_email_resolved(
+                            db, email_account_id=account_id, email_uid=email_data.uid
+                        )
                     return result
 
                 raw_items: list[tuple[str, bytes]] = [
@@ -421,104 +495,26 @@ async def _process_single_email(
 
                     try:
                         parsed = await asyncio.to_thread(parse_invoice, filename, payload)
-                        extracted = None
-
-                        # Strong parse = deterministic structured extraction succeeded.
-                        # We trust these for invoice_no/amount/date and ignore LLM rejection.
-                        parser_invoice_no_looks_valid = bool(
-                            parsed.invoice_no
-                            and parsed.invoice_no.isdigit()
-                            and len(parsed.invoice_no) in (8, 20)
+                        verdict = await enrich_and_validate_invoice(
+                            db=db,
+                            ai=ai,
+                            settings=settings,
+                            parsed=parsed,
+                            payload=payload,
+                            filename=filename,
+                            email_context=email_data.body_text or "",
+                            allow_transport_relaxation=False,
                         )
-                        strong_parse = (
-                            parsed.extraction_method in ("qr", "xml_xpath", "ofd_struct")
-                            or parser_invoice_no_looks_valid
-                        )
-
-                        amount_is_sentinel = parsed.amount is not None and parsed.amount < Decimal("0.10")
-                        fields_missing = (
-                            not parsed.buyer
-                            or parsed.buyer == "未知"
-                            or not parsed.seller
-                            or parsed.seller == "未知"
-                            or not parsed.invoice_type
-                            or parsed.invoice_type == "未知"
-                            or not parsed.item_summary
-                        )
-                        should_enrich = (
-                            parsed.confidence < 0.6
-                            or not parsed.invoice_no
-                            or amount_is_sentinel
-                            or fields_missing
-                        ) and parsed.raw_text
-
-                        if should_enrich:
-                            try:
-                                # Prepend email body context so the LLM sees
-                                # structured hints (Provider:/Bill-to:/currency)
-                                # before the raw parsed text. Critical for
-                                # scraper-generated RawEmails where the PDF text
-                                # alone carries no category signal.
-                                enriched_text = parsed.raw_text
-                                if email_data.body_text:
-                                    enriched_text = (
-                                        f"[Email context]\n"
-                                        f"{email_data.body_text}\n"
-                                        f"[/Email context]\n\n"
-                                        f"[Attachment text]\n"
-                                        f"{parsed.raw_text}\n"
-                                        f"[/Attachment text]"
-                                    )
-                                extracted = await ai.extract_invoice_fields(db, enriched_text)
-                            except Exception as exc:
-                                extracted = None
-                                logger.warning(
-                                    "LLM enrichment failed for %s (%s); falling back to parser result",
-                                    filename,
-                                    exc,
-                                )
-
-                            if extracted is not None and (
-                                extracted.is_valid_tax_invoice
-                                or extracted.invoice_category != InvoiceCategory.VAT_INVOICE
-                            ):
-                                # Selective merge: LLM fills semantic fields (buyer/seller/type/summary)
-                                # unconditionally when non-未知. Parser keeps invoice_no/amount/date when
-                                # it had strong deterministic evidence; LLM backfills missing/invalid ones.
-                                #
-                                # v1.2.0 Track A: extend the merge trigger to non-vat_invoice categories.
-                                # Under v1.1.x the merge only ran when is_valid_tax_invoice=True, but
-                                # receipt/proforma/overseas_invoice/other legitimately have is_valid_tax_invoice=False;
-                                # without this, overseas invoices would silently fail to populate invoice_no.
-                                if extracted.buyer and extracted.buyer != "未知":
-                                    parsed.buyer = extracted.buyer
-                                if extracted.seller and extracted.seller != "未知":
-                                    parsed.seller = extracted.seller
-                                if extracted.item_summary and extracted.item_summary != "未知":
-                                    parsed.item_summary = extracted.item_summary
-                                if extracted.invoice_type and extracted.invoice_type != "未知":
-                                    parsed.invoice_type = extracted.invoice_type
-                                parsed.invoice_category = extracted.invoice_category.value
-
-                                # invoice_no: parser wins if deterministic 8/20-digit match
-                                if not parser_invoice_no_looks_valid and extracted.invoice_no:
-                                    parsed.invoice_no = extracted.invoice_no
-                                # date: parser wins if present
-                                if parsed.invoice_date is None and extracted.invoice_date:
-                                    parsed.invoice_date = extracted.invoice_date
-                                # amount: parser wins unless it's missing/sentinel
-                                if (parsed.amount is None or amount_is_sentinel) and extracted.amount:
-                                    parsed.amount = extracted.amount
-                                    amount_is_sentinel = parsed.amount < Decimal("0.10")
-
-                                parsed.extraction_method = "llm"
-                                parsed.confidence = max(extracted.confidence, parsed.confidence)
-
-                        scam_text = " ".join(
-                            s for s in (parsed.buyer, parsed.seller, parsed.item_summary) if s
-                        )
-                        scam_hit, scam_reason = is_scam_text(scam_text)
-                        if scam_hit:
+                        if not verdict.accepted:
+                            assert verdict.extraction_log_outcome is not None
+                            err_detail = verdict.reason
+                            if verdict.extraction_log_outcome == "low_confidence":
+                                if err_detail == "amount below sentinel":
+                                    err_detail = "amount sentinel"
+                                elif err_detail == "missing invoice_no":
+                                    err_detail = "invoice_no missing"
+                                else:
+                                    err_detail = None
                             db.add(
                                 _record_extraction_log(
                                     user_id=user_id,
@@ -526,96 +522,19 @@ async def _process_single_email(
                                     email_uid=email_data.uid,
                                     email_subject=email_data.subject,
                                     attachment_filename=filename,
-                                    outcome="not_vat_invoice",
+                                    outcome=verdict.extraction_log_outcome,
                                     classification_tier=classification_tier,
                                     parse_method=parsed.extraction_method,
                                     parse_format=parsed.source_format,
                                     invoice_no=parsed.invoice_no,
                                     confidence=parsed.confidence,
-                                    error_detail=f"scam signal: {scam_reason}",
+                                    error_detail=err_detail,
                                 )
                             )
                             await db.commit()
                             continue
 
-                        final_type = parsed.invoice_type or ""
-                        type_is_valid = (
-                            final_type in VALID_INVOICE_TYPES
-                            or any(vt in final_type for vt in VALID_INVOICE_TYPES if len(vt) > 3)
-                        )
-                        # LLM veto: only honour when parser evidence is weak. A strong parse
-                        # (QR/XML/OFD struct, or regex-matched 8/20-digit invoice_no) must not
-                        # be discarded just because the LLM guessed is_valid_tax_invoice=false.
-                        llm_rejected = (
-                            extracted is not None
-                            and not extracted.is_valid_tax_invoice
-                            and not strong_parse
-                        )
-                        heuristic_rejected = extracted is None and not parsed.is_vat_document and not type_is_valid
-
-                        # v1.2.0 Track A: rejection rule gated by STRICT_VAT_ONLY.
-                        # Default false: only reject invoice_category=vat_invoice
-                        # rows with is_valid_tax_invoice=false. Non-VAT categories
-                        # (receipt / proforma / overseas_invoice / other) save normally.
-                        # See .sisyphus/plans/v1.2.0-track-a-invoice-category.md §5.2.
-                        final_category = (
-                            extracted.invoice_category.value
-                            if extracted is not None
-                            else (parsed.invoice_category or "vat_invoice")
-                        )
-                        if settings.STRICT_VAT_ONLY:
-                            should_reject = llm_rejected or (not type_is_valid and heuristic_rejected)
-                        else:
-                            should_reject = (
-                                final_category == "vat_invoice"
-                                and (llm_rejected or (not type_is_valid and heuristic_rejected))
-                            )
-
-                        if should_reject:
-                            db.add(
-                                _record_extraction_log(
-                                    user_id=user_id,
-                                    scan_log_id=log_id,
-                                    email_uid=email_data.uid,
-                                    email_subject=email_data.subject,
-                                    attachment_filename=filename,
-                                    outcome="not_vat_invoice",
-                                    classification_tier=classification_tier,
-                                    parse_method=parsed.extraction_method,
-                                    parse_format=parsed.source_format,
-                                    invoice_no=parsed.invoice_no,
-                                    confidence=parsed.confidence,
-                                    error_detail=f"type={final_type!r} category={final_category!r} llm_rejected={llm_rejected}",
-                                )
-                            )
-                            await db.commit()
-                            continue
-
-                        amount_is_sentinel = parsed.amount is not None and parsed.amount < Decimal("0.10")
-                        if parsed.confidence < 0.6 or not parsed.invoice_no or amount_is_sentinel:
-                            db.add(
-                                _record_extraction_log(
-                                    user_id=user_id,
-                                    scan_log_id=log_id,
-                                    email_uid=email_data.uid,
-                                    email_subject=email_data.subject,
-                                    attachment_filename=filename,
-                                    outcome="low_confidence",
-                                    classification_tier=classification_tier,
-                                    parse_method=parsed.extraction_method,
-                                    parse_format=parsed.source_format,
-                                    invoice_no=parsed.invoice_no,
-                                    confidence=parsed.confidence,
-                                    error_detail=(
-                                        "amount sentinel"
-                                        if amount_is_sentinel
-                                        else None if parsed.invoice_no else "invoice_no missing"
-                                    ),
-                                )
-                            )
-                            continue
-
-                        parsed.seller = restore_legal_seller_name(parsed.seller, parsed.raw_text)
+                        final_category = verdict.final_category
                         existing = await db.execute(
                             select(Invoice).where(
                                 Invoice.user_id == user_id,
@@ -659,6 +578,7 @@ async def _process_single_email(
                             buyer=parsed.buyer or "未知",
                             seller=parsed.seller or "未知",
                             amount=parsed.amount or 0,
+                            currency=verdict.final_currency,
                             invoice_date=parsed.invoice_date or datetime.now(timezone.utc).date(),
                             invoice_type=parsed.invoice_type or "未知",
                             invoice_category=final_category,
@@ -743,10 +663,40 @@ async def _process_single_email(
                         await db.commit()
 
                 await db.commit()
+                if from_retry_queue:
+                    await mark_failed_email_resolved(
+                        db, email_account_id=account_id, email_uid=email_data.uid
+                    )
             except Exception as exc:
                 result.error = str(exc)[:500]
+                result.system_error = isinstance(exc, LLMUnavailableError)
+                result.circuit_open = isinstance(exc, LLMCircuitOpenError)
                 await db.rollback()
                 logger.error("Failed to process email %s: %s", email_data.subject[:60], exc)
+                try:
+                    db.add(
+                        _record_extraction_log(
+                            user_id=user_id,
+                            scan_log_id=log_id,
+                            email_uid=email_data.uid,
+                            email_subject=email_data.subject,
+                            attachment_filename=None,
+                            outcome="error",
+                            error_detail=str(exc)[:2000],
+                        )
+                    )
+                    await db.commit()
+                    if result.system_error:
+                        await enqueue_failed_email(
+                            db,
+                            user_id=user_id,
+                            email_account_id=account_id,
+                            email_data=email_data,
+                            error_message=str(exc)[:2000],
+                        )
+                        result.enqueued_retry = True
+                except Exception as log_exc:  # pragma: no cover - defensive double-fault guard
+                    logger.warning("Failed to persist email error audit/retry for %s: %s", email_data.uid, log_exc)
 
             return result
     return _EmailResult()
@@ -828,6 +778,16 @@ async def scan_all_accounts(options: ScanOptions | None = None, account_id: int 
                             )
                         except TypeError:
                             emails = await scanner.scan(account, **scan_kwargs)
+                        due_retries = await fetch_due_failed_emails(
+                            db, email_account_id=account.id
+                        )
+                        if due_retries:
+                            existing_uids = {e.uid for e in emails}
+                            emails = [
+                                *emails,
+                                *[r for r in due_retries if r.uid not in existing_uids],
+                            ]
+
                         log.emails_scanned = len(emails)
                         await sp.update_progress(
                             total_emails=len(emails),
@@ -851,11 +811,15 @@ async def scan_all_accounts(options: ScanOptions | None = None, account_id: int 
 
                         last_uid = account.last_scan_uid
                         invoices_added = 0
+                        email_errors = 0
+                        circuit_open_hits = 0
+                        unenqueued_system_errors = 0
 
                         for coro in asyncio.as_completed(tasks):
                             try:
                                 email_result = await coro
                             except Exception:
+                                email_errors += 1
                                 await sp.inc_errors()
                                 await sp.inc_emails_processed()
                                 continue
@@ -864,7 +828,12 @@ async def scan_all_accounts(options: ScanOptions | None = None, account_id: int 
                             if email_result.invoices_added > 0:
                                 await sp.inc_invoices_found(email_result.invoices_added)
                             if email_result.error:
+                                email_errors += 1
                                 await sp.inc_errors()
+                            if email_result.circuit_open:
+                                circuit_open_hits += 1
+                            if email_result.system_error and not email_result.enqueued_retry:
+                                unenqueued_system_errors += 1
                             if email_result.last_uid and (
                                 not last_uid or _is_uid_newer(email_result.last_uid, last_uid)
                             ):
@@ -892,7 +861,13 @@ async def scan_all_accounts(options: ScanOptions | None = None, account_id: int 
                             )
 
                         scan_state = getattr(scanner, "_last_scan_state", None)
-                        if scan_state is not None:
+                        if unenqueued_system_errors > 0:
+                            logger.warning(
+                                "Holding scan watermark for account %s due to %d unqueued system error(s)",
+                                account_id,
+                                unenqueued_system_errors,
+                            )
+                        elif scan_state is not None:
                             if scan_state != account.last_scan_uid:
                                 account.last_scan_uid = scan_state
                         elif last_uid and last_uid != account.last_scan_uid:
@@ -905,6 +880,14 @@ async def scan_all_accounts(options: ScanOptions | None = None, account_id: int 
                         log.invoices_found = invoices_added
                         log.finished_at = datetime.now(timezone.utc)
                         await db.commit()
+                        await notify_scan_summary(
+                            db,
+                            account_name=account_name,
+                            emails_scanned=len(emails),
+                            invoices_added=invoices_added,
+                            errors_count=email_errors,
+                            circuit_open=circuit_open_hits > 0,
+                        )
                     except Exception as exc:
                         await db.rollback()
                         error_msg = str(exc)[:500]
@@ -925,6 +908,9 @@ async def scan_all_accounts(options: ScanOptions | None = None, account_id: int 
                             await db.commit()  # pragma: no cover
                         except Exception:  # pragma: no cover
                             pass
+                        await notify_account_error(
+                            db, account_name=account_name, error_message=error_msg
+                        )
                         continue
 
             await sp.finish_progress()

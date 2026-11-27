@@ -3,7 +3,12 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import { api } from '@/api/client'
-import type { Invoice } from '@/types'
+import {
+  REIMBURSEMENT_COLORS,
+  REIMBURSEMENT_LABELS,
+  REIMBURSEMENT_ORDER,
+  type Invoice,
+} from '@/types'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -26,8 +31,12 @@ const startEdit = () => {
     buyer: invoice.value.buyer,
     seller: invoice.value.seller,
     amount: invoice.value.amount,
+    currency: invoice.value.currency || 'CNY',
     invoice_date: invoice.value.invoice_date,
     invoice_type: invoice.value.invoice_type,
+    reimbursement_status: invoice.value.reimbursement_status || 'unreimbursed',
+    tags: invoice.value.tags || '',
+    notes: invoice.value.notes || '',
     item_summary: invoice.value.item_summary,
     invoice_no: invoice.value.invoice_no
   }
@@ -98,7 +107,17 @@ const loadPreviewBlob = async (id: number) => {
   }
 }
 
-const CURRENCY_SYMBOLS: Record<string, string> = { USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥' }
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$',
+  CNY: '¥',
+  EUR: '€',
+  GBP: '£',
+  JPY: '¥',
+  HKD: 'HK$',
+  SGD: 'S$',
+  CAD: 'C$',
+  AUD: 'A$',
+}
 
 const formatCurrency = (amount: number | undefined, currency?: string) => {
   if (amount === undefined) return '-'
@@ -239,8 +258,11 @@ onMounted(() => {
           <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 pb-8 border-b border-slate-100">
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
               <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Total Amount</span>
-              <span v-if="!isEditing" class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount, invoice.currency) }}</span>
-              <input v-else v-model.number="editForm.amount" type="number" step="0.01" class="text-2xl font-bold text-blue-600 border border-slate-300 rounded px-2 py-1 text-center w-32 focus:ring-blue-500 focus:border-blue-500">
+              <span v-if="!isEditing" class="text-3xl font-bold text-blue-600">{{ formatCurrency(invoice.amount, invoice.currency) }} <span class="text-sm font-medium text-slate-400">{{ invoice.currency || 'CNY' }}</span></span>
+              <div v-else class="flex items-center gap-2">
+                <input v-model="editForm.currency" type="text" maxlength="8" class="text-sm font-semibold uppercase border border-slate-300 rounded px-2 py-1 text-center w-16" placeholder="CNY">
+                <input v-model.number="editForm.amount" type="number" step="0.01" class="text-2xl font-bold text-blue-600 border border-slate-300 rounded px-2 py-1 text-center w-32 focus:ring-blue-500 focus:border-blue-500">
+              </div>
             </div>
             <div class="flex flex-col justify-center items-center p-6 bg-slate-50 rounded-xl border border-slate-100">
               <span class="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Invoice Date</span>
@@ -288,6 +310,31 @@ onMounted(() => {
               <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Item Summary</dt>
               <dd v-if="!isEditing" class="text-sm text-slate-900 bg-slate-50 p-4 rounded-lg border border-slate-100 min-h-[4rem] leading-relaxed">{{ invoice.item_summary || '-' }}</dd>
               <textarea v-else v-model="editForm.item_summary" rows="3" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-4 w-full focus:ring-blue-500 focus:border-blue-500"></textarea>
+            </div>
+
+            <div class="sm:col-span-1">
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">报销状态</dt>
+              <dd v-if="!isEditing" class="pt-1">
+                <span
+                  class="px-2.5 py-1 inline-flex text-xs font-semibold rounded-full border"
+                  :class="REIMBURSEMENT_COLORS[invoice.reimbursement_status || 'unreimbursed']"
+                >
+                  {{ REIMBURSEMENT_LABELS[invoice.reimbursement_status || 'unreimbursed'] }}
+                </span>
+              </dd>
+              <select v-else v-model="editForm.reimbursement_status" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-2.5 w-full bg-white">
+                <option v-for="st in REIMBURSEMENT_ORDER" :key="st" :value="st">{{ REIMBURSEMENT_LABELS[st] }}</option>
+              </select>
+            </div>
+            <div class="sm:col-span-1">
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">标签 (Tags)</dt>
+              <dd v-if="!isEditing" class="text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[2.75rem]">{{ invoice.tags || '-' }}</dd>
+              <input v-else v-model="editForm.tags" type="text" placeholder="例如：出差, Q4, 办公" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-2.5 w-full">
+            </div>
+            <div class="sm:col-span-2">
+              <dt class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">报销备注 (Notes)</dt>
+              <dd v-if="!isEditing" class="text-sm text-slate-900 bg-slate-50 p-3 rounded-lg border border-slate-100 min-h-[2.75rem]">{{ invoice.notes || '-' }}</dd>
+              <textarea v-else v-model="editForm.notes" rows="2" placeholder="可选报销说明或事由" class="text-sm text-slate-900 border border-slate-300 rounded-lg p-3 w-full"></textarea>
             </div>
             
             <div class="sm:col-span-2 flex flex-wrap gap-4 pt-4 border-t border-slate-100 mt-2">

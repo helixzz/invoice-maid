@@ -28,10 +28,11 @@ class ParsedInvoice:
     invoice_date: date | None = None
     invoice_type: str | None = None
     invoice_category: str | None = None
+    currency: str | None = None
     item_summary: str | None = None
     raw_text: str = ""
     source_format: Literal["pdf", "xml", "ofd"] = "pdf"
-    extraction_method: Literal["qr", "xml_xpath", "ofd_struct", "llm", "regex"] = "llm"
+    extraction_method: Literal["qr", "xml_xpath", "ofd_struct", "llm", "regex", "vlm"] = "llm"
     confidence: float = 0.0
     is_vat_document: bool = False
 
@@ -78,6 +79,65 @@ def restore_legal_seller_name(seller: str | None, raw_text: str) -> str | None:
     if seller == "OpenAI" and "OpenAI OpCo, LLC" in raw_text:
         return "OpenAI OpCo, LLC"
     return seller
+
+
+_CURRENCY_CODE_RE = re.compile(r"\b(USD|EUR|GBP|HKD|JPY|SGD|CAD|AUD|CNY|RMB)\b", re.IGNORECASE)
+
+
+def normalize_currency(raw: str | None, default: str = "CNY") -> str:
+    """Normalize a raw currency token into an uppercase ISO-4217 code."""
+    token = (raw or "").strip().upper()
+    if token == "RMB":
+        return "CNY"
+    if len(token) == 3 and token.isalpha():
+        return token
+    return default
+
+
+def detect_currency(text: str, default: str = "CNY") -> str:
+    """Heuristically detect currency code from invoice text or email context."""
+    if not text:
+        return default
+    code_match = _CURRENCY_CODE_RE.search(text)
+    if code_match:
+        return normalize_currency(code_match.group(1), default=default)
+    if "€" in text:
+        return "EUR"
+    if "£" in text:
+        return "GBP"
+    if "HK$" in text:
+        return "HKD"
+    if "US$" in text or "$" in text:
+        return "USD"
+    if "￥" in text or "¥" in text or "人民币" in text:
+        return "CNY"
+    return default
+
+
+def render_pdf_pages_to_base64_png(
+    content: bytes,
+    *,
+    max_pages: int = 2,
+    dpi: int = 150,
+) -> list[str]:
+    """Render up to ``max_pages`` pages of a PDF to base64-encoded PNG strings for VLM fallback."""
+    if not content:
+        return []
+    try:
+        fitz = importlib.import_module("fitz")
+        doc = fitz.open(stream=content, filetype="pdf")
+        images: list[str] = []
+        try:
+            page_count = min(len(doc), max_pages)
+            for idx in range(page_count):
+                pix = doc[idx].get_pixmap(dpi=dpi)
+                images.append(base64.b64encode(pix.tobytes("png")).decode("ascii"))
+        finally:
+            doc.close()
+        return images
+    except Exception as exc:
+        logger.warning("Failed to render PDF pages to PNG for VLM fallback: %s", exc)
+        return []
 
 
 def detect_format(filename: str, content: bytes) -> Literal["pdf", "xml", "ofd"]:

@@ -29,6 +29,33 @@ export const CATEGORY_ORDER: InvoiceCategory[] = [
   'other',
 ]
 
+export type ReimbursementStatus =
+  | 'unreimbursed'
+  | 'pending'
+  | 'reimbursed'
+  | 'not_applicable'
+
+export const REIMBURSEMENT_LABELS: Record<ReimbursementStatus, string> = {
+  unreimbursed: '未报销',
+  pending: '报销中',
+  reimbursed: '已报销',
+  not_applicable: '无需报销',
+}
+
+export const REIMBURSEMENT_COLORS: Record<ReimbursementStatus, string> = {
+  unreimbursed: 'bg-rose-50 text-rose-700 border-rose-200',
+  pending: 'bg-amber-50 text-amber-700 border-amber-200',
+  reimbursed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  not_applicable: 'bg-slate-100 text-slate-600 border-slate-200',
+}
+
+export const REIMBURSEMENT_ORDER: ReimbursementStatus[] = [
+  'unreimbursed',
+  'pending',
+  'reimbursed',
+  'not_applicable',
+]
+
 export interface Invoice {
   id: number
   invoice_no: string
@@ -39,6 +66,9 @@ export interface Invoice {
   invoice_type: string
   invoice_category: InvoiceCategory
   currency: string
+  reimbursement_status: ReimbursementStatus
+  tags: string
+  notes: string
   item_summary: string | null
   source_format: string
   extraction_method: string
@@ -159,6 +189,10 @@ export interface AISettingsResponse {
   llm_base_url: string
   llm_api_key_masked: string
   llm_model: string
+  llm_fallback_models: string
+  llm_vision_model: string
+  llm_embed_base_url: string
+  llm_embed_api_key_masked: string
   llm_embed_model: string
   embed_dim: number
   source: 'database' | 'environment'
@@ -168,6 +202,10 @@ export interface AISettingsUpdate {
   llm_base_url?: string
   llm_api_key?: string
   llm_model?: string
+  llm_fallback_models?: string
+  llm_vision_model?: string
+  llm_embed_base_url?: string
+  llm_embed_api_key?: string
   llm_embed_model?: string
   embed_dim?: number
 }
@@ -175,11 +213,35 @@ export interface AISettingsUpdate {
 export interface ClassifierSettingsResponse {
   trusted_senders: string
   extra_keywords: string
+  blocked_senders: string
 }
 
 export interface ClassifierSettingsUpdate {
   trusted_senders?: string
   extra_keywords?: string
+  blocked_senders?: string
+}
+
+export interface NotificationSettingsResponse {
+  telegram_enabled: boolean
+  telegram_bot_token_masked: string
+  telegram_chat_id: string
+  telegram_notify_on_error: boolean
+  telegram_notify_on_scan_summary: boolean
+  source: 'database' | 'environment'
+}
+
+export interface NotificationSettingsUpdate {
+  telegram_enabled?: boolean
+  telegram_bot_token?: string
+  telegram_chat_id?: string
+  telegram_notify_on_error?: boolean
+  telegram_notify_on_scan_summary?: boolean
+}
+
+export interface NotificationTestResponse {
+  ok: boolean
+  detail: string
 }
 
 export interface CorrectionLog {

@@ -42,6 +42,7 @@ import app.api.auth as auth_api
 import app.api.downloads as downloads_api
 import app.api.email_accounts as accounts_api
 import app.api.invoices as invoices_api
+import app.api.notification_settings as notification_settings_api
 import app.api.scan as scan_api
 import app.api.test_helpers as test_helpers_api
 import app.deps as deps_module
@@ -53,6 +54,7 @@ import app.services.ai_service as ai_service_module
 import app.services.email_scanner as email_scanner_module
 import app.services.scan_progress as scan_progress_module
 import app.services.settings_resolver as settings_resolver_module
+import app.services.telegram_notifier as telegram_notifier_module
 import app.tasks.scheduler as scheduler_module
 from app.config import Settings
 from app.database import create_fts5_objects, get_db
@@ -62,6 +64,7 @@ from app.schemas.invoice import EmailAnalysis, InvoiceExtract
 from app.services.auth_service import create_access_token
 from app.services.email_scanner import encrypt_password
 from app.services.email_scanner import oauth_registry
+from app.services.ai_service import reset_llm_circuit_breaker
 from app.services.settings_resolver import invalidate_ai_settings_cache
 
 
@@ -74,6 +77,7 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None
         downloads_api,
         accounts_api,
         invoices_api,
+        notification_settings_api,
         scan_api,
         test_helpers_api,
         deps_module,
@@ -82,6 +86,7 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None
         ai_service_module,
         email_scanner_module,
         settings_resolver_module,
+        telegram_notifier_module,
         scheduler_module,
     ):
         monkeypatch.setattr(module, "get_settings", getter, raising=False)
@@ -114,6 +119,8 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
             monkeypatch.setenv(key, str(value))
     config_module.get_settings.cache_clear()
     invalidate_ai_settings_cache()
+    reset_llm_circuit_breaker()
+    telegram_notifier_module.reset_alert_cooldowns()
     settings_obj = Settings(**values)
     _patch_settings(monkeypatch, settings_obj)
     monkeypatch.setattr(

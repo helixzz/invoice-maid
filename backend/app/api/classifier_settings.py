@@ -11,17 +11,23 @@ from app.models import AppSettings
 
 router = APIRouter(prefix="/settings/classifier", tags=["settings"])
 
-_KEYS = ("classifier_trusted_senders", "classifier_extra_keywords")
+_KEYS = (
+    "classifier_trusted_senders",
+    "classifier_extra_keywords",
+    "classifier_blocked_senders",
+)
 
 
 class ClassifierSettingsResponse(BaseModel):
     trusted_senders: str
     extra_keywords: str
+    blocked_senders: str = ""
 
 
 class ClassifierSettingsUpdate(BaseModel):
     trusted_senders: str | None = None
     extra_keywords: str | None = None
+    blocked_senders: str | None = None
 
 
 async def _get_value(db: AsyncSession, key: str) -> str:
@@ -45,6 +51,7 @@ async def get_classifier_settings(
     return ClassifierSettingsResponse(
         trusted_senders=await _get_value(db, "classifier_trusted_senders"),
         extra_keywords=await _get_value(db, "classifier_extra_keywords"),
+        blocked_senders=await _get_value(db, "classifier_blocked_senders"),
     )
 
 
@@ -58,8 +65,11 @@ async def update_classifier_settings(
         await _set_value(db, "classifier_trusted_senders", payload.trusted_senders)
     if payload.extra_keywords is not None:
         await _set_value(db, "classifier_extra_keywords", payload.extra_keywords)
+    if payload.blocked_senders is not None:
+        await _set_value(db, "classifier_blocked_senders", payload.blocked_senders)
     await db.commit()
     return ClassifierSettingsResponse(
         trusted_senders=await _get_value(db, "classifier_trusted_senders"),
         extra_keywords=await _get_value(db, "classifier_extra_keywords"),
+        blocked_senders=await _get_value(db, "classifier_blocked_senders"),
     )

@@ -39,6 +39,10 @@ def _serialize_response(payload: dict[str, object]) -> AISettingsResponse:
         llm_base_url=str(payload["llm_base_url"]),
         llm_api_key_masked=_mask_api_key(str(payload["llm_api_key"])),
         llm_model=str(payload["llm_model"]),
+        llm_fallback_models=str(payload.get("llm_fallback_models", "")),
+        llm_vision_model=str(payload.get("llm_vision_model", "")),
+        llm_embed_base_url=str(payload.get("llm_embed_base_url", "")),
+        llm_embed_api_key_masked=_mask_api_key(str(payload.get("llm_embed_api_key", ""))),
         llm_embed_model=str(payload["llm_embed_model"]),
         embed_dim=int(payload["embed_dim"]),
         source=str(payload["source"]),
@@ -64,8 +68,10 @@ async def update_ai_settings(
     current_settings = await resolve_ai_settings(db)
 
     for key, value in updates.items():
-        stored_value = str(value)
+        stored_value = str(value).strip() if isinstance(value, str) else str(value)
         if key == "llm_api_key":
+            stored_value = encrypt_password(stored_value, settings.JWT_SECRET)
+        elif key == "llm_embed_api_key" and stored_value:
             stored_value = encrypt_password(stored_value, settings.JWT_SECRET)
 
         entry = await db.get(AppSettings, key)
@@ -145,6 +151,13 @@ async def _test_chat_model(base_url: str, api_key: str, model: str) -> dict[str,
 async def _test_embed_model(
     base_url: str, api_key: str, model: str, expected_dim: int | None = None
 ) -> dict[str, Any]:
+    if not model:
+        return {
+            "ok": True,
+            "skipped": True,
+            "model": "",
+            "detail": "Embedding model disabled (using FTS5 search only)",
+        }
     client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
     t0 = time.monotonic()
     try:
@@ -195,16 +208,18 @@ async def test_ai_connection(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     resolver = SettingsResolver(db)
-    base_url = await resolver.get("LLM_BASE_URL")
-    api_key = await resolver.get("LLM_API_KEY")
-    chat_model = await resolver.get("LLM_MODEL")
-    embed_model = await resolver.get("LLM_EMBED_MODEL")
+    base_url = str(await resolver.get("LLM_BASE_URL"))
+    api_key = str(await resolver.get("LLM_API_KEY"))
+    chat_model = str(await resolver.get("LLM_MODEL"))
+    embed_base_url = str(await resolver.get("LLM_EMBED_BASE_URL")) or base_url
+    embed_api_key = str(await resolver.get("LLM_EMBED_API_KEY")) or api_key
+    embed_model = str(await resolver.get("LLM_EMBED_MODEL"))
     embed_dim_value = await resolver.get("EMBED_DIM")
     expected_dim = int(embed_dim_value) if embed_dim_value else None
 
     chat_result, embed_result = await asyncio.gather(
         _test_chat_model(base_url, api_key, chat_model),
-        _test_embed_model(base_url, api_key, embed_model, expected_dim),
+        _test_embed_model(embed_base_url, embed_api_key, embed_model, expected_dim),
     )
     return {
         "ok": bool(chat_result["ok"] and embed_result["ok"]),
