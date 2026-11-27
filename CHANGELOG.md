@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.3.0] - 2026-11-27
+
+### Added
+
+- **Set-of-Mark Multimodal Vision Browser Agent (`app/services/vision_browser_agent.py`)**:
+  - Replaces brittle hardcoded button-text matching as the primary browser controller for offline QR invoice claiming.
+  - On each step (up to 6 turns), annotates all visible interactive controls (including H5 `<div>`/`<span>` pseudo-buttons and native inputs) with numeric badges `[1], [2], ...`, captures a live screenshot, and asks the configured Vision LLM (`auto/gemini-4-neon`) to visually understand any invoice portal (Chinese or international) and emit a structured action (`click`, `fill_and_click`, `done_submitted`, or `needs_attention`).
+  - Automatically falls back to the deterministic engine if the Vision LLM is unavailable.
+
 ## [2.2.1] - 2026-11-27
 
 ### Fixed

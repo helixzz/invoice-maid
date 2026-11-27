@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.3.0 — Released
+
+**Theme:** Multimodal Vision Browser Agent (Set-of-Mark). Replaces hardcoded button keyword matching with an iterative VLM-guided browser loop (`vision_browser_agent.py`) that visually annotates interactive controls, understands arbitrary invoice portals (Meituan, Nuonuo, Baiwang, overseas portals, etc.), fills forms, clicks entry/resend buttons, and explains failures naturally. See [CHANGELOG.md](CHANGELOG.md#230---2026-11-27).
+
+---
+
 ## v2.2.1 — Released
 
 **Theme:** Tag-agnostic H5 click handling for QR claim pages. Fixes clicking `<div>`/`<span>` action buttons like Meituan's `发送邮箱` and preserves detected invoice numbers across multi-step navigation. See [CHANGELOG.md](CHANGELOG.md#221---2026-11-27).

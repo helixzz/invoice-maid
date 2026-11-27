@@ -358,6 +358,9 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
     qr_url: str,
     profile: InvoiceProfile,
     captcha_input: str = "",
+    *,
+    db: AsyncSession | None = None,
+    ai: Any = None,
 ) -> BrowserClaimOutcome:
     try:
         from playwright.async_api import async_playwright
@@ -395,6 +398,33 @@ async def _default_playwright_runner(  # pragma: no cover - real headless browse
 
             # Give SPA frameworks (Vue/React, e.g. Meituan eInvoice) time to hydrate
             await page.wait_for_timeout(2500)
+
+            # Primary intelligent path: Multimodal Vision Browser Agent Loop (Set-of-Mark)
+            if db is not None and ai is not None:
+                from app.services.vision_browser_agent import run_vision_claim_loop
+
+                vision_res = await run_vision_claim_loop(
+                    page,
+                    db=db,
+                    ai=ai,
+                    profile=profile,
+                    captcha_input=captcha_input,
+                )
+                if vision_res is not None:
+                    detail = str(vision_res.get("detail") or "")
+                    if vision_res.get("is_wechat_only") and profile.title not in detail:
+                        detail = f"{detail}\n\n请用微信扫原小票二维码，并复制以下抬头：\n{format_copyable_profile_card(profile)}"
+                    steps = vision_res.get("steps_taken") or steps_taken
+                    if vision_res.get("kind") == "needs_attention" and steps and "已执行" not in detail:
+                        detail = f"{detail}\n已执行步骤：{' → '.join(steps)}"
+                    return BrowserClaimOutcome(
+                        kind=str(vision_res.get("kind") or "needs_attention"),
+                        detail=detail,
+                        screenshot_bytes=vision_res.get("screenshot_bytes"),
+                        detected_invoice_no=str(vision_res.get("detected_invoice_no") or ""),
+                        page_text_excerpt=str(vision_res.get("page_text_excerpt") or ""),
+                        steps_taken=steps,
+                    )
 
             for step_idx in range(3):
                 body_text = (await page.inner_text("body")) or ""
@@ -613,8 +643,16 @@ async def execute_claim_task(
     append_claim_log(task, "filling", f"Using profile '{profile.name}' ({profile.title})")
     await db.commit()
 
-    runner = browser_runner or _default_playwright_runner
-    outcome = await runner(task.qr_url, profile, captcha_input)
+    if browser_runner is not None:
+        outcome = await browser_runner(task.qr_url, profile, captcha_input)
+    else:  # pragma: no cover - real headless browser path
+        outcome = await _default_playwright_runner(
+            task.qr_url,
+            profile,
+            captcha_input,
+            db=db,
+            ai=ai,
+        )
 
     if outcome.screenshot_bytes:
         task.last_screenshot_path = _save_claim_screenshot(
