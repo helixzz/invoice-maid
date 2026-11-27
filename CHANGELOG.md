@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.1.2] - 2026-11-27
+
+### Fixed
+
+- **Backend CI `test_test_ai_connection_failure` passed `request=None` to `openai.APIConnectionError`, causing newer `openai` SDK versions to raise inside `__init__` and miss the `APIConnectionError` branches in `app/api/ai_settings.py`.** Supplied a real `httpx.Request` and asserted `error_type == "connection"`, restoring 100.00% coverage on CI.
+
 ## [2.1.1] - 2026-11-27
 
 ### Fixed

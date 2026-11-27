@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.1.2 — Released
+
+**Theme:** 100% Backend & Frontend CI Green. Fixes `openai.APIConnectionError` test fixture compatibility with newer `openai` SDK versions so GitHub Actions backend (100% coverage) and frontend (Vitest + 21 Playwright E2E) both pass cleanly. See [CHANGELOG.md](CHANGELOG.md#212---2026-11-27).
+
+---
+
 ## v2.1.1 — Released
 
 **Theme:** Green GitHub Actions CI & E2E parity with Miri v2.1.0 UI. Fixes `test_playwright_session` monkeypatch ordering when Playwright is installed in CI, pins CI runners to `ubuntu-24.04`, adds Vitest to CI, and updates all 21 Playwright E2E specs to the redesigned Chinese UI. See [CHANGELOG.md](CHANGELOG.md#211---2026-11-27).

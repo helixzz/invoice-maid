@@ -301,15 +301,17 @@ async def test_test_ai_connection_no_expected_dim_skips_mismatch_check(client, a
 
 
 async def test_test_ai_connection_failure(client, auth_headers, monkeypatch) -> None:
+    mock_request = httpx.Request("POST", "https://llm.invalid/v1/chat/completions")
+
     class FakeCompletions:
         async def create(self, **kwargs):
             del kwargs
-            raise openai.APIConnectionError(message="boom", request=None)
+            raise openai.APIConnectionError(message="boom", request=mock_request)
 
     class FakeEmbeddings:
         async def create(self, **kwargs):
             del kwargs
-            raise openai.APIConnectionError(message="boom", request=None)
+            raise openai.APIConnectionError(message="boom", request=mock_request)
 
     class FakeAsyncOpenAI:
         def __init__(self, *, base_url: str, api_key: str):
@@ -325,8 +327,10 @@ async def test_test_ai_connection_failure(client, auth_headers, monkeypatch) -> 
     body = response.json()
     assert body["ok"] is False
     assert body["chat"]["ok"] is False
+    assert body["chat"]["error_type"] == "connection"
     assert body["chat"]["model"] == "test-model"
     assert body["embed"]["ok"] is False
+    assert body["embed"]["error_type"] == "connection"
     assert body["embed"]["model"] == "test-embed-model"
 
 
