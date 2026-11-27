@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.1.1 — Released
+
+**Theme:** Green GitHub Actions CI & E2E parity with Miri v2.1.0 UI. Fixes `test_playwright_session` monkeypatch ordering when Playwright is installed in CI, pins CI runners to `ubuntu-24.04`, adds Vitest to CI, and updates all 21 Playwright E2E specs to the redesigned Chinese UI. See [CHANGELOG.md](CHANGELOG.md#211---2026-11-27).
+
+---
+
 ## v2.1.0 — Released
 
 **Theme:** Warm Stationery Ledger WebUI Redesign & Miri (米尔) Brand Identity. Introduces a cohesive cream-and-sage-mint design system (`docs/VI-DESIGN-SYSTEM.md`), desktop stationery sidebar + mobile bottom tab bar, 50/50 invoice verification workbench, floating batch dock, grouped vertical Settings menu, and concise Chinese copy across all views and agent prompts. See [CHANGELOG.md](CHANGELOG.md#210---2026-11-27).

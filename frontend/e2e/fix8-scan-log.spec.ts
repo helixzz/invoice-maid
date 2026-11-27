@@ -4,7 +4,7 @@ const backendBaseURL = 'http://127.0.0.1:8010';
 const smokeEmail = 'admin@local';
 const smokePassword = 'smoke-admin-password';
 
-test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
+test.describe('Fix 8 — per-email scan summary aggregation', () => {
   test.beforeEach(async ({ request }) => {
     await request.post(`${backendBaseURL}/api/v1/test-helpers/reset-smoke`);
 
@@ -31,16 +31,16 @@ test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
 
   test('renders 2 email cards (not 6 rows) with Chinese summary banner', async ({ page }) => {
     await page.goto('/login');
-    await page.getByLabel('Email').fill(smokeEmail);
-    await page.getByLabel('Password').fill(smokePassword);
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByLabel('邮箱').fill(smokeEmail);
+    await page.getByLabel('密码', { exact: true }).fill(smokePassword);
+    await page.getByRole('button', { name: '登录' }).click();
     await expect(page).toHaveURL(/\/invoices$/);
 
-    await page.getByRole('link', { name: 'Settings' }).click();
+    await page.getByRole('link', { name: '系统设置' }).click();
     await expect(page).toHaveURL(/\/settings$/);
 
-    await page.getByRole('button', { name: 'Scan Operations' }).click();
-    await expect(page.getByRole('heading', { name: 'Recent Scans' })).toBeVisible();
+    await page.getByRole('button', { name: '扫描记录' }).first().click();
+    await expect(page.getByRole('heading', { name: '扫描记录' })).toBeVisible();
 
     const seededLogRow = page.getByRole('row').filter({ hasText: 'Smoke Mailbox' }).first();
     await expect(seededLogRow).toBeVisible();
@@ -53,8 +53,7 @@ test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
     await seededLogRow.click();
     await extractionsResponseWait;
 
-    await expect(page.getByText('Summary (by email)')).toBeVisible();
-
+    await expect(page.getByText('按邮件汇总')).toBeVisible();
     await expect(page.getByText('2 封邮件')).toBeVisible();
     await expect(page.getByText('保存 1 张新发票')).toBeVisible();
     await expect(page.getByText('去重 1 封')).toBeVisible();
@@ -62,11 +61,11 @@ test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
 
   test('duplicate badge has the explicit "correctly deduped" tooltip', async ({ page }) => {
     await page.goto('/login');
-    await page.getByLabel('Email').fill(smokeEmail);
-    await page.getByLabel('Password').fill(smokePassword);
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await page.getByRole('link', { name: 'Settings' }).click();
-    await page.getByRole('button', { name: 'Scan Operations' }).click();
+    await page.getByLabel('邮箱').fill(smokeEmail);
+    await page.getByLabel('密码', { exact: true }).fill(smokePassword);
+    await page.getByRole('button', { name: '登录' }).click();
+    await page.getByRole('link', { name: '系统设置' }).click();
+    await page.getByRole('button', { name: '扫描记录' }).first().click();
 
     const seededLogRow = page.getByRole('row').filter({ hasText: 'Smoke Mailbox' }).first();
     const extractionsResponseWait = page.waitForResponse(
@@ -77,7 +76,7 @@ test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
     );
     await seededLogRow.click();
     await extractionsResponseWait;
-    await expect(page.getByText('Summary (by email)')).toBeVisible();
+    await expect(page.getByText('按邮件汇总')).toBeVisible();
 
     const duplicateBadge = page.locator('[title*="correctly deduped"]').first();
     await expect(duplicateBadge).toBeVisible();
@@ -87,11 +86,11 @@ test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
 
   test('expanded panel shows the saved invoice_no on the saved-email card', async ({ page }) => {
     await page.goto('/login');
-    await page.getByLabel('Email').fill(smokeEmail);
-    await page.getByLabel('Password').fill(smokePassword);
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await page.getByRole('link', { name: 'Settings' }).click();
-    await page.getByRole('button', { name: 'Scan Operations' }).click();
+    await page.getByLabel('邮箱').fill(smokeEmail);
+    await page.getByLabel('密码', { exact: true }).fill(smokePassword);
+    await page.getByRole('button', { name: '登录' }).click();
+    await page.getByRole('link', { name: '系统设置' }).click();
+    await page.getByRole('button', { name: '扫描记录' }).first().click();
 
     const seededLogRow = page.getByRole('row').filter({ hasText: 'Smoke Mailbox' }).first();
     const extractionsResponseWait = page.waitForResponse(
@@ -102,7 +101,7 @@ test.describe('Fix 8 — per-email scan summary aggregation (v1.0.0)', () => {
     );
     await seededLogRow.click();
     await extractionsResponseWait;
-    await expect(page.getByText('Summary (by email)')).toBeVisible();
+    await expect(page.getByText('按邮件汇总')).toBeVisible();
 
     await expect(page.getByText('FIX8-SAMS-CLUB-001').first()).toBeVisible();
   });

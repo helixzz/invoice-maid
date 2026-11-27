@@ -125,8 +125,8 @@ async def test_playwright_session_loads_existing_storage_state_into_context() ->
 async def test_playwright_session_raises_when_playwright_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = PlaywrightSession(_account(None), async_playwright_factory=None)
     monkeypatch.setattr(ps_mod, "_async_playwright", None, raising=False)
+    session = PlaywrightSession(_account(None), async_playwright_factory=None)
     with pytest.raises(PlaywrightUnavailableError):
         await session.__aenter__()
 

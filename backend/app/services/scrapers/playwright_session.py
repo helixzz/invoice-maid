@@ -7,9 +7,9 @@ from app.models import EmailAccount
 
 
 try:
-    from playwright.async_api import async_playwright as _async_playwright  # pragma: no cover - only imported when playwright is installed on the host
-    PLAYWRIGHT_AVAILABLE = True  # pragma: no cover - only taken when playwright is installed on the host
-except ImportError:
+    from playwright.async_api import async_playwright as _async_playwright  # pragma: no cover
+    PLAYWRIGHT_AVAILABLE = True  # pragma: no cover
+except ImportError:  # pragma: no cover
     _async_playwright = None
     PLAYWRIGHT_AVAILABLE = False
 

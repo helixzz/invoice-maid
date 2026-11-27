@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.1.1] - 2026-11-27
+
+### Fixed
+
+- **Backend CI `test_playwright_session_raises_when_playwright_missing` failed when `playwright` Python package was installed without Chromium binaries.** Fixed monkeypatch ordering (patch `_async_playwright = None` before constructing `PlaywrightSession`) and marked the `except ImportError` fallback in `playwright_session.py` with `# pragma: no cover` so 100% coverage holds both with and without `playwright` installed.
+- **Frontend CI failed on `ubuntu-latest` (`ubuntu-26.04`) where Playwright 1.59.1 does not support `install --with-deps chromium`.** Pinned CI runners in `.github/workflows/ci.yml` to `ubuntu-24.04` and added `npm run test:run` (Vitest) ahead of `npm run build`.
+- **Updated all 6 Playwright E2E specs (`21` tests)** to match the localized Chinese Miri v2.1.0 UI.
+
 ## [2.1.0] - 2026-11-27
 
 ### Theme
