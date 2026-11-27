@@ -1,4 +1,4 @@
-"""Conflict-free independent Telegram Agent Bot listener for Invoice Maid v2.0.
+"""Conflict-free independent Telegram Agent Bot listener for Invoice Maid v2.2.
 
 SAFETY GUARANTEE:
   To prevent ``409 Conflict: terminated by other getUpdates request`` when the
@@ -13,13 +13,14 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+from pathlib import Path
 from typing import Any, TypedDict
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models import AppSettings, InvoiceClaimTask, InvoiceProfile, User
 from app.services.ai_service import AIService
 from app.services.claim_form_agent import BrowserRunner, execute_claim_task
@@ -101,6 +102,106 @@ async def _tg_api_call(
     return resp.json()
 
 
+async def _tg_send_photo(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    photo_bytes: bytes,
+    caption: str,
+) -> bool:
+    try:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{bot_token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption[:1000]},
+            files={"photo": ("page_screenshot.png", photo_bytes, "image/png")},
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.warning("Telegram sendPhoto failed: %s", exc)
+        return False
+
+
+async def _dismiss_inline_keyboard(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    message_id: int | None,
+    orig_text: str,
+    status_suffix: str,
+) -> None:
+    """Collapse inline profile-picker buttons after selection and stamp the chosen outcome."""
+    if not message_id:
+        return
+    try:
+        if orig_text:
+            updated_text = f"{orig_text}\n\n{status_suffix}"[:4000]
+            await _tg_api_call(
+                client,
+                bot_token,
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": updated_text,
+                    "reply_markup": {"inline_keyboard": []},
+                },
+            )
+        else:
+            await _tg_api_call(
+                client,
+                bot_token,
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reply_markup": {"inline_keyboard": []},
+                },
+            )
+    except Exception as exc:
+        logger.warning("Failed to collapse Telegram inline keyboard: %s", exc)
+
+
+async def _send_claim_outcome_to_telegram(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    task: InvoiceClaimTask,
+    profile: InvoiceProfile | None,
+    settings: Settings,
+    *,
+    override_text: str = "",
+) -> None:
+    """Send claim outcome text, attaching the actual page screenshot via sendPhoto when available."""
+    summary_text = override_text or _summarize_claim_status(task, profile)
+    shot_bytes: bytes | None = None
+    if task.last_screenshot_path:
+        shot_path = Path(settings.STORAGE_PATH).expanduser() / task.last_screenshot_path
+        if shot_path.exists():
+            shot_bytes = shot_path.read_bytes()
+
+    if shot_bytes:
+        if len(summary_text) <= 950:
+            sent_photo = await _tg_send_photo(client, bot_token, chat_id, shot_bytes, summary_text)
+            if sent_photo:
+                return
+        else:
+            await _tg_send_photo(
+                client,
+                bot_token,
+                chat_id,
+                shot_bytes,
+                f"📷 开票页面实拍截图（任务 #{task.id}）",
+            )
+
+    await _tg_api_call(
+        client,
+        bot_token,
+        "sendMessage",
+        {"chat_id": chat_id, "text": summary_text[:4000]},
+    )
+
+
 async def _download_tg_file(client: httpx.AsyncClient, bot_token: str, file_id: str) -> bytes:
     info = await _tg_api_call(client, bot_token, "getFile", {"file_id": file_id})
     file_path = info.get("result", {}).get("file_path") or ""
@@ -142,7 +243,11 @@ async def handle_telegram_update(
     if isinstance(cb, dict):
         cb_id = str(cb.get("id") or "")
         data = str(cb.get("data") or "")
-        chat_id = str((cb.get("message") or {}).get("chat", {}).get("id") or "")
+        cb_msg = cb.get("message") or {}
+        chat_id = str(cb_msg.get("chat", {}).get("id") or "")
+        raw_msg_id = cb_msg.get("message_id")
+        message_id = int(raw_msg_id) if raw_msg_id is not None else None
+        orig_text = str(cb_msg.get("text") or "")
         if allowed_chat_ids and chat_id not in allowed_chat_ids:
             return "unauthorized"
 
@@ -153,6 +258,7 @@ async def handle_telegram_update(
             if task is not None and task.user_id == user_id:
                 task.status = "cancelled"
                 await db.commit()
+            await _dismiss_inline_keyboard(client, bot_token, chat_id, message_id, orig_text, "❌ 已取消本次开票")
             await _tg_api_call(client, bot_token, "sendMessage", {"chat_id": chat_id, "text": "已取消本次开票申请。"})
             return "claim_cancelled"
 
@@ -162,14 +268,23 @@ async def handle_telegram_update(
             task = await db.get(InvoiceClaimTask, task_id)
             profile = await db.get(InvoiceProfile, profile_id)
             if task is None or profile is None or task.user_id != user_id or profile.user_id != user_id:
+                await _dismiss_inline_keyboard(client, bot_token, chat_id, message_id, orig_text, "⚠️ 任务或抬头已失效")
                 await _tg_api_call(client, bot_token, "sendMessage", {"chat_id": chat_id, "text": "开票任务或抬头不存在。"})
                 return "not_found"
 
+            await _dismiss_inline_keyboard(
+                client,
+                bot_token,
+                chat_id,
+                message_id,
+                orig_text,
+                f"✅ 已选择抬头：{profile.name}（{profile.title}）",
+            )
             await _tg_api_call(
                 client,
                 bot_token,
                 "sendMessage",
-                {"chat_id": chat_id, "text": f"收到！正在使用「{profile.name}」自动填表申请开票，请稍候…"},
+                {"chat_id": chat_id, "text": f"收到！正在使用「{profile.name}」自动处理开票，请稍候…"},
             )
             task = await execute_claim_task(
                 db,
@@ -180,12 +295,7 @@ async def handle_telegram_update(
                 file_mgr=FileManager(settings.STORAGE_PATH),
                 browser_runner=browser_runner,
             )
-            await _tg_api_call(
-                client,
-                bot_token,
-                "sendMessage",
-                {"chat_id": chat_id, "text": _summarize_claim_status(task, profile)},
-            )
+            await _send_claim_outcome_to_telegram(client, bot_token, chat_id, task, profile, settings)
             return f"claim_{task.status}"
 
         return "ignored_callback"
@@ -214,15 +324,33 @@ async def handle_telegram_update(
             source_chat_id=chat_id,
             browser_runner=browser_runner,
         )
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": intake.message}
         if intake.needs_profile_choice:
             keyboard = [
                 [{"text": f"🏢 {p.name} ({p.title[:16]})", "callback_data": f"claim_profile:{intake.task.id}:{p.id}"}]
                 for p in intake.profiles
             ]
             keyboard.append([{"text": "❌ 取消", "callback_data": f"claim_cancel:{intake.task.id}"}])
-            payload["reply_markup"] = {"inline_keyboard": keyboard}
-        await _tg_api_call(client, bot_token, "sendMessage", payload)
+            await _tg_api_call(
+                client,
+                bot_token,
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": intake.message,
+                    "reply_markup": {"inline_keyboard": keyboard},
+                },
+            )
+        else:
+            chosen_profile = intake.profiles[0] if len(intake.profiles) == 1 else None
+            await _send_claim_outcome_to_telegram(
+                client,
+                bot_token,
+                chat_id,
+                intake.task,
+                chosen_profile,
+                settings,
+                override_text=intake.message,
+            )
         return "photo_handled"
 
     text = str(msg.get("text") or "").strip()

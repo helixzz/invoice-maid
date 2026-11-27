@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.2.0] - 2026-11-27
+
+### Added
+
+- **Telegram now sends the real page screenshot (`sendPhoto`) whenever QR auto-claiming needs attention**, paired with detailed human-readable diagnostics instead of a generic error line.
+- **Profile-selection Inline Keyboards in Telegram auto-collapse immediately after clicking** (`editMessageText` / `editMessageReplyMarkup`) and stamp the selected profile (or cancellation) right onto the original message so chat history clearly shows which receipts were already handled.
+- **Multi-step smart QR claim agent (`app/services/claim_form_agent.py`)**:
+  - Waits for SPA hydration and clicks entry / resend-email buttons (`发送邮箱`, `重发邮箱`, `立即开票`, `去开票`, `申请开票`) across up to 3 interactive steps instead of giving up when the landing page has no `<input>` fields yet.
+  - Detects already-issued invoice pages (e.g. Meituan eInvoice), checks whether the extracted `invoice_no` is already archived in the database (immediately linking and completing if so), or clicks `发送邮箱` to resend the PDF to the profile's email.
+  - Detects WeChat-only in-app authorization failures (e.g. `/fpwx/` + `获取用户信息异常`), quotes the real page message, lists the steps attempted, attaches a copyable profile header card, and optionally asks the VLM (`auto/gemini-4-neon`) to summarize screenshots with no readable DOM text.
+
 ## [2.1.2] - 2026-11-27
 
 ### Fixed

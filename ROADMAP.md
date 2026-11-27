@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.2.0 — Released
+
+**Theme:** Multi-step QR Claim Agent & Telegram Visual Feedback. Sends real page screenshots via Telegram `sendPhoto` on failures, auto-collapses profile-picker inline keyboards after selection, supports multi-step button clicking (`发送邮箱` / `立即开票`), detects already-issued invoices & WeChat-auth restrictions, and adds VLM screenshot diagnosis. See [CHANGELOG.md](CHANGELOG.md#220---2026-11-27).
+
+---
+
 ## v2.1.2 — Released
 
 **Theme:** 100% Backend & Frontend CI Green. Fixes `openai.APIConnectionError` test fixture compatibility with newer `openai` SDK versions so GitHub Actions backend (100% coverage) and frontend (Vitest + 21 Playwright E2E) both pass cleanly. See [CHANGELOG.md](CHANGELOG.md#212---2026-11-27).

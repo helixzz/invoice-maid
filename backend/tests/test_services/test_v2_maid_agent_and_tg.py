@@ -300,9 +300,9 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
     sent_calls: list[tuple[str, dict]] = []
 
     class FakeHttpClient:
-        async def post(self, url: str, json: dict):
+        async def post(self, url: str, json: dict | None = None, data: dict | None = None, files: dict | None = None):
             method = url.rsplit("/", 1)[-1]
-            sent_calls.append((method, json))
+            sent_calls.append((method, json if json is not None else {"data": data, "has_files": bool(files)}))
             if method == "getFile":
                 return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"result": {"file_path": "photos/p1.jpg"}})
             return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"ok": True})
@@ -369,18 +369,51 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
     cb_data = last_payload["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     task_id = int(cb_data.split(":")[1])
 
-    # 5) Callback selects profile -> executes claim
-    async def ok_browser(_u, _p, _c):
-        return BrowserClaimOutcome(kind="submitted", detail="已提交")
+    # 5) Callback selects profile -> collapses inline keyboard & executes claim with screenshot sent via sendPhoto
+    async def shot_browser(_u, _p, _c):
+        return BrowserClaimOutcome(kind="needs_attention", detail="获取用户信息异常", screenshot_bytes=b"\x89PNGfake", page_text_excerpt="获取用户信息异常")
 
     assert await handle_telegram_update(
         db,
-        update={"callback_query": {"id": "cb2", "data": cb_data, "message": {"chat": {"id": 1001}}}},
+        update={
+            "callback_query": {
+                "id": "cb2",
+                "data": cb_data,
+                "message": {"chat": {"id": 1001}, "message_id": 77, "text": "请选择抬头："},
+            }
+        },
         bot_token="tok",
         allowed_chat_ids=["1001"],
         client=client,
-        browser_runner=ok_browser,
-    ) == "claim_submitted"
+        browser_runner=shot_browser,
+    ) == "claim_needs_attention"
+    methods_called = [m for m, _ in sent_calls]
+    assert "editMessageText" in methods_called
+    assert "sendPhoto" in methods_called
+
+    # Test dismiss keyboard fallback (no orig_text -> editMessageReplyMarkup; error swallowed) and long caption + sendPhoto failure
+    await tg_bot_mod._dismiss_inline_keyboard(client, "tok", "1001", 88, "", "done")
+    assert sent_calls[-1][0] == "editMessageReplyMarkup"
+
+    class FailingPostClient(FakeHttpClient):
+        async def post(self, url: str, json: dict | None = None, data: dict | None = None, files: dict | None = None):
+            if url.endswith(("/editMessageText", "/sendPhoto")):
+                raise RuntimeError("tg err")
+            return await super().post(url, json=json, data=data, files=files)
+
+    await tg_bot_mod._dismiss_inline_keyboard(FailingPostClient(), "tok", "1001", 88, "hi", "done")
+    task_obj = await db.get(InvoiceClaimTask, task_id)
+    # Long caption (>950 chars) sends photo + separate sendMessage
+    await tg_bot_mod._send_claim_outcome_to_telegram(client, "tok", "1001", task_obj, p1, settings, override_text="A" * 1000)
+    assert sent_calls[-2][0] == "sendPhoto" and sent_calls[-1][0] == "sendMessage"
+    # sendPhoto fails -> falls back cleanly to sendMessage
+    await tg_bot_mod._send_claim_outcome_to_telegram(FailingPostClient(), "tok", "1001", task_obj, p1, settings, override_text="short")
+    # Missing screenshot file on disk -> falls back cleanly to sendMessage
+    task_obj.last_screenshot_path = "users/1/claims/missing.png"
+    await tg_bot_mod._send_claim_outcome_to_telegram(client, "tok", "1001", task_obj, p1, settings, override_text="no file")
+
+    async def ok_browser(_u, _p, _c):
+        return BrowserClaimOutcome(kind="submitted", detail="已提交")
 
     # Callback cancel (both existing & missing task), not_found, ignored_callback
     assert await handle_telegram_update(

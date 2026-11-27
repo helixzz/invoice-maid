@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v2.1.2 — Full "Warm Stationery Ledger" UI redesign & Miri (米尔) brand identity, with green GitHub Actions CI across backend (100% coverage) and frontend (21 Playwright E2E + 23 Vitest specs).**
+**v2.2.0 — Smarter multi-step QR claim agent (auto-clicks entry / "发送邮箱" buttons, detects already-issued invoices & WeChat-auth blocks, VLM screenshot diagnosis), Telegram failure screenshot delivery (`sendPhoto`), and auto-collapsing profile-picker keyboards.**
 
 ## STRUCTURE
 

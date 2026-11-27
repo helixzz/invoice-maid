@@ -12,10 +12,16 @@ import app.services.qr_receipt_decoder as qr_mod
 from app.services.claim_form_agent import (
     BrowserClaimOutcome,
     FormFieldInfo,
+    PageDiagnosis,
+    _enrich_diagnosis_with_vlm,
     append_claim_log,
+    build_page_excerpt,
+    diagnose_non_form_page,
     evaluate_post_submit_text,
     execute_claim_task,
+    extract_issued_invoice_no,
     format_copyable_profile_card,
+    is_wechat_auth_blocked,
     match_submitted_claims,
     plan_deterministic_fills,
 )
@@ -175,6 +181,26 @@ def test_deterministic_form_fill_and_post_submit_evaluation() -> None:
     assert evaluate_post_submit_text("开票申请已受理，稍后发送")[0] == "submitted"
     assert evaluate_post_submit_text("验证码错误，请重试")[0] == "needs_attention"
     assert evaluate_post_submit_text("普通说明页")[0] == "needs_attention"
+    assert evaluate_post_submit_text("")[0] == "needs_attention"
+
+    # Rich diagnosis helpers
+    assert extract_issued_invoice_no("") == ""
+    assert extract_issued_invoice_no("发票号码：26312000006229050871") == "26312000006229050871"
+    assert is_wechat_auth_blocked("http://www.bilalipay.com/fpwx/fp/goFP.php", "开票失败 获取用户信息异常") is True
+    assert is_wechat_auth_blocked("http://example.com/fpwx/a", "开票失败") is True
+    assert is_wechat_auth_blocked("https://invoice.meituan.com/a", "正常页面") is False
+    assert build_page_excerpt("a" * 300, limit=10).endswith("…")
+
+    k1, m1 = diagnose_non_form_page(url="http://www.bilalipay.com/fpwx/a", page_text="开票失败 获取用户信息异常", profile=profile, steps_taken=["打开链接"])
+    assert k1 == "needs_attention" and "微信" in m1 and "91310000123456789X" in m1
+    k2, m2 = diagnose_non_form_page(url="https://invoice.meituan.com/a", page_text="发票号码 26312000006229050871 查看发票", profile=profile)
+    assert k2 == "already_issued" and "26312000006229050871" in m2
+    k3, m3 = diagnose_non_form_page(url="https://x.com", page_text="超出开票期限，无法开具", profile=profile)
+    assert k3 == "needs_attention" and "超出开票期限" in m3
+    k4, m4 = diagnose_non_form_page(url="https://x.com", page_text="请联系门店前台", profile=profile)
+    assert k4 == "needs_attention" and "请联系门店前台" in m4
+    k5, m5 = diagnose_non_form_page(url="https://x.com", page_text="", profile=profile)
+    assert k5 == "needs_attention" and "空白" in m5
 
 
 @pytest.mark.asyncio
@@ -216,7 +242,7 @@ async def test_execute_claim_task_and_match_submitted_claims(
     assert t2.status == "needs_attention"
     assert "测试科技" in t2.attention_reason
 
-    # 3) Browser returns needs_attention with screenshot
+    # 3) Browser returns needs_attention with screenshot + VLM diagnosis enrichment
     t3 = InvoiceClaimTask(user_id=account.user_id, qr_url="https://nnfp.jss.com.cn/cap", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
     db.add(t3)
     await db.commit()
@@ -224,9 +250,67 @@ async def test_execute_claim_task_and_match_submitted_claims(
     async def runner_captcha(_u, _p, _c):
         return BrowserClaimOutcome(kind="needs_attention", detail="需要验证码", screenshot_bytes=b"\x89PNGfake")
 
-    await execute_claim_task(db, task=t3, profile=profile, settings=settings, browser_runner=runner_captcha)
+    class VlmDiagAI:
+        async def _resolve_runtime_settings(self, _db):
+            return {"llm_vision_model": "auto/gemini-4-neon"}
+
+        async def _create_structured_with_fallback(self, **kwargs):
+            del kwargs
+            return PageDiagnosis(summary="截图显示一个四位图形验证码弹窗。")
+
+    await execute_claim_task(db, task=t3, profile=profile, settings=settings, ai=VlmDiagAI(), browser_runner=runner_captcha)
     assert t3.status == "needs_attention"
+    assert "图形验证码弹窗" in t3.attention_reason
     assert t3.last_screenshot_path.endswith(f"claim_{t3.id}.png")
+
+    # VLM diagnosis failure and empty-summary fallbacks
+    class CrashDiagAI(VlmDiagAI):
+        async def _create_structured_with_fallback(self, **kwargs):
+            del kwargs
+            raise RuntimeError("vlm down")
+
+    class EmptyDiagAI(VlmDiagAI):
+        async def _create_structured_with_fallback(self, **kwargs):
+            del kwargs
+            return PageDiagnosis(summary="")
+
+    assert await _enrich_diagnosis_with_vlm(db, None, b"x", "orig") == "orig"
+    assert await _enrich_diagnosis_with_vlm(db, CrashDiagAI(), b"x", "orig") == "orig"
+    assert await _enrich_diagnosis_with_vlm(db, EmptyDiagAI(), b"x", "orig") == "orig"
+
+    # 3b) Detected already-issued invoice number already archived in DB -> completed immediately
+    archived_inv = await create_invoice(email_account=account, invoice_no="26312000006229050871", seller="虎丸烧肉", amount=Decimal("2628.00"))
+    t3b = InvoiceClaimTask(user_id=account.user_id, qr_url="https://invoice.meituan.com/inv", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
+    db.add(t3b)
+    await db.commit()
+
+    async def runner_already_issued(_u, _p, _c):
+        return BrowserClaimOutcome(
+            kind="already_issued",
+            detail="已开具",
+            detected_invoice_no="26312000006229050871",
+            page_text_excerpt="发票号码 26312000006229050871",
+        )
+
+    await execute_claim_task(db, task=t3b, profile=profile, settings=settings, browser_runner=runner_already_issued)
+    assert t3b.status == "completed"
+    assert t3b.matched_invoice_id == archived_inv.id
+
+    # Detected invoice_no NOT yet in DB -> falls through to needs_attention
+    t3c = InvoiceClaimTask(user_id=account.user_id, qr_url="https://invoice.meituan.com/inv2", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
+    db.add(t3c)
+    await db.commit()
+
+    async def runner_not_in_db(_u, _p, _c):
+        return BrowserClaimOutcome(
+            kind="already_issued",
+            detail="已开具但未在库中",
+            detected_invoice_no="26312000009999999999",
+            page_text_excerpt="发票号码 26312000009999999999",
+        )
+
+    await execute_claim_task(db, task=t3c, profile=profile, settings=settings, browser_runner=runner_not_in_db)
+    assert t3c.status == "needs_attention"
 
     # 4) Browser directly downloads PDF -> completed
     t4 = InvoiceClaimTask(user_id=account.user_id, qr_url="https://nnfp.jss.com.cn/pdf", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
