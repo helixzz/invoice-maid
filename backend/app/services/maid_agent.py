@@ -32,16 +32,18 @@ MAX_AGENT_STEPS = 6
 
 MAID_SYSTEM_PROMPT = """你是米尔（Miri），Invoice Maid 的发票小帮手。
 性格细心可靠、记性很好，待人礼貌亲切，回复简洁明了、说人话，不堆砌套话。
-你可以调用工具帮用户：
+你可以直接调用工具帮用户完成以下全部操作（能直接办的就直接调用工具办妥，不要让用户自己去网页点）：
 1. 查询/筛选/统计发票（支持真实多币种与报销状态）；
-2. 批量修改发票报销状态或标签；
-3. 查看与管理预存发票抬头、跟进线下扫码开票任务（选抬头、输入验证码重试、查看状态）；
-4. 记住用户的长期报销/分类偏好规则（写入记忆）。
+2. 修改单张或批量发票的报销状态、标签、备注或分类；
+3. 查看、新增/更新预存发票抬头（含切换默认抬头）；
+4. 查看、选抬头、输入验证码重试、以及批量取消/放弃卡住的线下扫码开票任务；
+5. 查看、新增或删除长期报销/分类偏好记忆规则；
+6. 立即触发一次邮箱扫描来收取刚开好的电子发票。
 
 工作准则：
-- 涉及查账、统计、改状态、选抬头、保存规则时，优先调用对应工具拿到真实数据再回答，绝不编造发票号或金额。
-- 回答简短清楚，直接给结论、关键数字和下一步建议。
-- 绝不删除发票或修改邮箱密码凭证。
+- 涉及查账、统计、改状态、取消任务、维护抬头、保存/删除规则、触发扫描时，直接调用对应工具拿到真实结果再回答，绝不编造发票号或金额。
+- 回答简短清楚，用常规 Markdown（如 **加粗**、`税号/邮箱`、列表）排版清晰即可。
+- 仅守一条安全红线：绝不删除真实发票原件，也不修改邮箱登录密码凭证。
 """
 
 MAID_TOOLS_SCHEMA: list[dict[str, Any]] = [
@@ -172,6 +174,89 @@ MAID_TOOLS_SCHEMA: list[dict[str, Any]] = [
                 },
                 "required": ["rule_text"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_claim_tasks",
+            "description": "Cancel/abandon specific QR invoice claim tasks by task_ids, or cancel all stuck unfinished tasks when cancel_stuck=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_ids": {"type": "array", "items": {"type": "integer"}},
+                    "cancel_stuck": {
+                        "type": "boolean",
+                        "description": "If true, cancel all tasks in needs_attention / awaiting_profile / failed / queued status.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_invoice",
+            "description": "Update a single invoice's reimbursement status, notes, tags, or category.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "invoice_id": {"type": "integer"},
+                    "reimbursement_status": {
+                        "type": "string",
+                        "enum": ["unreimbursed", "pending", "reimbursed", "not_applicable"],
+                    },
+                    "reimbursement_notes": {"type": "string"},
+                    "tags": {"type": "string"},
+                    "invoice_category": {
+                        "type": "string",
+                        "enum": ["vat_invoice", "overseas_invoice", "receipt", "proforma", "other"],
+                    },
+                },
+                "required": ["invoice_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_invoice_profile",
+            "description": "Create a new invoice header profile or update an existing one (by profile_id).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "profile_id": {"type": "integer", "description": "Omit to create new; provide to update existing."},
+                    "name": {"type": "string"},
+                    "title": {"type": "string"},
+                    "tax_id": {"type": "string"},
+                    "email": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "address": {"type": "string"},
+                    "bank_name": {"type": "string"},
+                    "bank_account": {"type": "string"},
+                    "is_default": {"type": "boolean"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_memory_rule",
+            "description": "Delete or deactivate an existing maid memory rule by memory_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"memory_id": {"type": "integer"}},
+                "required": ["memory_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "trigger_email_scan",
+            "description": "Trigger an immediate background email scan across active accounts to fetch newly issued invoices.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
 ]
@@ -729,6 +814,105 @@ class MaidAgentRunner:
             await db.commit()
             await db.refresh(mem)
             return {"saved_memory_id": mem.id, "rule_text": mem.rule_text}
+
+        if name == "cancel_claim_tasks":
+            stmt = select(InvoiceClaimTask).where(InvoiceClaimTask.user_id == user_id)
+            raw_ids = args.get("task_ids") or []
+            if raw_ids:
+                stmt = stmt.where(InvoiceClaimTask.id.in_([int(x) for x in raw_ids]))
+            elif args.get("cancel_stuck"):
+                stmt = stmt.where(
+                    InvoiceClaimTask.status.in_(("needs_attention", "awaiting_profile", "failed", "queued"))
+                )
+            else:
+                return {"cancelled": 0, "task_ids": []}
+            tasks = list((await db.execute(stmt)).scalars().all())
+            cancelled_ids: list[int] = []
+            now_ts = datetime.now(timezone.utc)
+            for t in tasks:
+                if t.status in ("completed", "cancelled"):
+                    continue
+                t.status = "cancelled"
+                t.updated_at = now_ts
+                append_claim_log(t, "cancelled", "Cancelled via Miri agent tool")
+                cancelled_ids.append(t.id)
+            await db.commit()
+            return {"cancelled": len(cancelled_ids), "task_ids": cancelled_ids}
+
+        if name == "update_invoice":
+            inv = await db.get(Invoice, int(args["invoice_id"]))
+            if inv is None or inv.user_id != user_id:
+                return {"error": "invoice not found"}
+            if args.get("reimbursement_status"):
+                inv.reimbursement_status = str(args["reimbursement_status"])
+            if args.get("reimbursement_notes") is not None:
+                inv.reimbursement_notes = str(args["reimbursement_notes"])[:1000]
+            if args.get("tags") is not None:
+                inv.tags = str(args["tags"])[:255]
+            if args.get("invoice_category"):
+                inv.invoice_category = str(args["invoice_category"])
+            await db.commit()
+            return {"updated": True, "invoice_id": inv.id, "invoice_no": inv.invoice_no}
+
+        if name == "save_invoice_profile":
+            pid = args.get("profile_id")
+            if pid is not None:
+                prof = await db.get(InvoiceProfile, int(pid))
+                if prof is None or prof.user_id != user_id:
+                    return {"error": "invoice profile not found"}
+                for field_name in ("name", "title", "tax_id", "email", "phone", "address", "bank_name", "bank_account"):
+                    if args.get(field_name) is not None:
+                        setattr(prof, field_name, str(args[field_name]).strip())
+                if args.get("is_default") is not None:
+                    prof.is_default = bool(args["is_default"])
+            else:
+                if not args.get("name") or not args.get("title"):
+                    return {"error": "name and title are required to create a profile"}
+                prof = InvoiceProfile(
+                    user_id=user_id,
+                    name=str(args["name"]).strip(),
+                    title=str(args["title"]).strip(),
+                    tax_id=str(args.get("tax_id") or "").strip(),
+                    email=str(args.get("email") or "").strip(),
+                    phone=str(args.get("phone") or "").strip(),
+                    address=str(args.get("address") or "").strip(),
+                    bank_name=str(args.get("bank_name") or "").strip(),
+                    bank_account=str(args.get("bank_account") or "").strip(),
+                    is_default=bool(args.get("is_default", False)),
+                )
+                db.add(prof)
+                await db.flush()
+            if prof.is_default:
+                others = list(
+                    (
+                        await db.execute(
+                            select(InvoiceProfile).where(
+                                InvoiceProfile.user_id == user_id,
+                                InvoiceProfile.id != prof.id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+                for other in others:
+                    other.is_default = False
+            await db.commit()
+            await db.refresh(prof)
+            return {"profile_id": prof.id, "name": prof.name, "title": prof.title, "is_default": prof.is_default}
+
+        if name == "delete_memory_rule":
+            mem = await db.get(MaidMemory, int(args["memory_id"]))
+            if mem is None or mem.user_id != user_id:
+                return {"error": "memory rule not found"}
+            await db.delete(mem)
+            await db.commit()
+            return {"deleted": True, "memory_id": int(args["memory_id"])}
+
+        if name == "trigger_email_scan":
+            import asyncio
+            from app.tasks.scheduler import scan_all_accounts
+
+            asyncio.create_task(scan_all_accounts())
+            return {"triggered": True, "message": "已启动后台邮箱扫描，新发票入库后会自动通知。"}
 
         return {"error": f"Unknown tool: {name}"}
 

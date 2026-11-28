@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v2.3.3 — Thermal-receipt broken-line QR repair (Sam's Club & supermarket slips), WeChat URL-bound Mini Program 404 detection, and unified notifications routed through Miri's dedicated Telegram Bot channel.**
+**v2.4.0 — Expanded Miri Agent toolset (14 tools: cancel stuck claim tasks, edit invoice notes/category/tags, create/update invoice profiles, delete memory rules, trigger email scan) and full Markdown-to-Telegram-HTML rendering with tap-to-copy `<code>` chips.**
 
 ## STRUCTURE
 

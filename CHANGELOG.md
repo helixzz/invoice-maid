@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.4.0] - 2026-11-28
+
+### Added
+
+- **Expanded Miri Agent toolset (`maid_agent.py`, 9 → 14 tools)** so Miri can directly execute everyday management tasks instead of asking the user to click manually in Web UI:
+  - `cancel_claim_tasks` — cancel specific claim tasks by ID or batch-abandon all stuck tasks (`needs_attention` / `awaiting_profile` / `failed` / `queued`).
+  - `update_invoice` — update a single invoice's reimbursement status, notes, tags, or category.
+  - `save_invoice_profile` — create/update saved invoice header profiles and toggle the default profile directly from chat.
+  - `delete_memory_rule` — remove outdated long-term memory rules.
+  - `trigger_email_scan` — kick off an immediate background inbox scan on request.
+- **Markdown → Telegram HTML rendering (`telegram_agent_bot.py`)**:
+  - Converts LLM Markdown (`**bold**`, `` `code` ``, fenced code blocks, headings, bullets, links, `~~strike~~`) into clean Telegram HTML (`<b>`, `<code>`, `<pre>`, `<a>`, `<s>`) with automatic plain-text fallback, eliminating raw `**` / backticks and turning tax IDs / emails into native Telegram tap-to-copy chips.
+
 ## [2.3.3] - 2026-11-28
 
 ### Added

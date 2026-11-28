@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.4.0 — Released
+
+**Theme:** Empowered Miri Toolset & Rich Telegram Formatting. Unlocks 5 new agent tools (`cancel_claim_tasks`, `update_invoice`, `save_invoice_profile`, `delete_memory_rule`, `trigger_email_scan`) and adds safe Markdown-to-Telegram-HTML conversion so bold text, lists, and tap-to-copy `<code>` chips render cleanly in Telegram. See [CHANGELOG.md](CHANGELOG.md#240---2026-11-28).
+
+---
+
 ## v2.3.3 — Released
 
 **Theme:** Thermal-line QR repair & unified Miri Telegram channel. Fixes decoding of thermal receipts with print-head dead-pixel lines (e.g. Sam's Club), detects URL-bound WeChat Mini Program 404 pages, and lets scan summaries & alerts route cleanly through Miri's own Telegram Bot when the shared notification token is cleared. See [CHANGELOG.md](CHANGELOG.md#233---2026-11-28).

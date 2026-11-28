@@ -184,11 +184,75 @@ async def test_maid_agent_tool_calling_loop_and_memories_and_heartbeat(
 
     # Also test retry_claim_task when profile was deleted after task referenced it
     t_orphan = InvoiceClaimTask(user_id=account.user_id, qr_url="https://x", profile_id=99999, status="needs_attention")
-    db.add(t_orphan)
+    t_done = InvoiceClaimTask(user_id=account.user_id, qr_url="https://done", status="completed")
+    db.add_all([t_orphan, t_done])
     await db.commit()
     await db.refresh(t_orphan)
+    await db.refresh(t_done)
     orphan_out = await runner._execute_tool(db, user_id=account.user_id, name="retry_claim_task", args={"task_id": t_orphan.id})
     assert "error" in orphan_out
+
+    # Test new v2.4.0 tools: cancel_claim_tasks, update_invoice, save_invoice_profile, delete_memory_rule, trigger_email_scan
+    assert (await runner._execute_tool(db, user_id=account.user_id, name="cancel_claim_tasks", args={}))["cancelled"] == 0
+    c_ids = await runner._execute_tool(db, user_id=account.user_id, name="cancel_claim_tasks", args={"task_ids": [t_done.id, t_orphan.id]})
+    assert c_ids["cancelled"] == 1 and t_orphan.id in c_ids["task_ids"]
+    t_stuck = InvoiceClaimTask(user_id=account.user_id, qr_url="https://stuck", status="needs_attention")
+    db.add(t_stuck)
+    await db.commit()
+    await db.refresh(t_stuck)
+    c_stuck = await runner._execute_tool(db, user_id=account.user_id, name="cancel_claim_tasks", args={"cancel_stuck": True})
+    assert c_stuck["cancelled"] >= 1
+
+    assert "error" in await runner._execute_tool(db, user_id=account.user_id, name="update_invoice", args={"invoice_id": 99999})
+    u_inv = await runner._execute_tool(
+        db,
+        user_id=account.user_id,
+        name="update_invoice",
+        args={"invoice_id": inv.id, "reimbursement_status": "pending", "reimbursement_notes": "客户招待", "tags": "餐饮", "invoice_category": "vat_invoice"},
+    )
+    assert u_inv["updated"] is True
+    # Also exercise update_invoice omitting optional fields
+    assert (await runner._execute_tool(db, user_id=account.user_id, name="update_invoice", args={"invoice_id": inv.id}))["updated"] is True
+
+    assert "error" in await runner._execute_tool(db, user_id=account.user_id, name="save_invoice_profile", args={"profile_id": 99999})
+    assert "error" in await runner._execute_tool(db, user_id=account.user_id, name="save_invoice_profile", args={"name": "only-name"})
+    p_new = await runner._execute_tool(
+        db,
+        user_id=account.user_id,
+        name="save_invoice_profile",
+        args={"name": "新抬头", "title": "新科技有限公司", "tax_id": "9131NEW", "is_default": True},
+    )
+    assert p_new["is_default"] is True
+    p_upd = await runner._execute_tool(
+        db,
+        user_id=account.user_id,
+        name="save_invoice_profile",
+        args={"profile_id": p_new["profile_id"], "email": "new@co.com", "is_default": False},
+    )
+    assert p_upd["profile_id"] == p_new["profile_id"]
+    p_upd2 = await runner._execute_tool(
+        db,
+        user_id=account.user_id,
+        name="save_invoice_profile",
+        args={"profile_id": p_new["profile_id"]},
+    )
+    assert p_upd2["profile_id"] == p_new["profile_id"]
+    await db.delete(await db.get(InvoiceProfile, p_new["profile_id"]))
+    await db.commit()
+
+    assert "error" in await runner._execute_tool(db, user_id=account.user_id, name="delete_memory_rule", args={"memory_id": 99999})
+    m_saved = await runner._execute_tool(db, user_id=account.user_id, name="save_memory_rule", args={"rule_text": "临时规则"})
+    m_del = await runner._execute_tool(db, user_id=account.user_id, name="delete_memory_rule", args={"memory_id": m_saved["saved_memory_id"]})
+    assert m_del["deleted"] is True
+
+    import app.tasks.scheduler as sched_mod
+
+    async def fake_scan_all():
+        return None
+
+    monkeypatch.setattr(sched_mod, "scan_all_accounts", fake_scan_all)
+    scan_res = await runner._execute_tool(db, user_id=account.user_id, name="trigger_email_scan", args={})
+    assert scan_res["triggered"] is True
 
     # Test create_claim_from_receipt_photo: 0 profiles, 1 profile (auto), 2 profiles (prompt), no QR + code_type variants
     await db.delete(profile)
@@ -510,6 +574,27 @@ async def test_telegram_agent_bot_conflict_guard_and_update_flows(
         browser_runner=ok_browser,
     ) == "photo_handled"
     assert "reply_markup" not in sent_calls[-1][1]
+
+    # Test markdown_to_telegram_html formatting + HTML parse-error plain-text fallback
+    assert tg_bot_mod.markdown_to_telegram_html("") == ""
+    rendered = tg_bot_mod.markdown_to_telegram_html(
+        "### 标题\n- **任务 #9**：税号 `9131<test>` ~~旧~~ [详情](https://a.b/c?x=1&y=2)\n```json\n{\"a\": 1}\n```"
+    )
+    assert "<b>标题</b>" in rendered
+    assert "• <b>任务 #9</b>" in rendered
+    assert "<code>9131&lt;test&gt;</code>" in rendered
+    assert "<s>旧</s>" in rendered
+    assert '<a href="https://a.b/c?x=1&amp;y=2">详情</a>' in rendered
+    assert "<pre>" in rendered
+
+    class HtmlFailOnceClient(FakeHttpClient):
+        async def post(self, url: str, json: dict | None = None, data: dict | None = None, files: dict | None = None):
+            if json and json.get("parse_mode") == "HTML":
+                raise RuntimeError("can't parse entities")
+            return await super().post(url, json=json, data=data, files=files)
+
+    await tg_bot_mod._tg_send_formatted_message(HtmlFailOnceClient(), "tok", "1001", "**hello**")
+    assert sent_calls[-1][0] == "sendMessage" and "parse_mode" not in sent_calls[-1][1]
 
     # Exercise live progress callbacks inside handle_telegram_update + no_id_client single profile & callback
     orig_exec = tg_bot_mod.execute_claim_task

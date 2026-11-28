@@ -14,6 +14,7 @@ import asyncio
 import html
 import logging
 from pathlib import Path
+import re
 from typing import Any, TypedDict
 
 import httpx
@@ -107,6 +108,81 @@ async def _tg_api_call(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+_FENCED_CODE_RE = re.compile(r"```(?:[a-zA-Z0-9_+-]*)\n?(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_STRIKE_RE = re.compile(r"~~(.+?)~~")
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
+_MD_BULLET_RE = re.compile(r"^[\-\*]\s+", re.MULTILINE)
+
+
+def markdown_to_telegram_html(text: str) -> str:
+    """Convert standard LLM Markdown into clean, safe Telegram HTML.
+
+    Preserves ``<code>`` spans (which Telegram renders as tap-to-copy chips for
+    tax IDs, emails, and invoice numbers) and ``<b>`` / ``<pre>`` / ``<a>`` tags
+    without ever leaking raw ``**`` or backticks.
+    """
+    if not text:
+        return ""
+    placeholders: list[str] = []
+
+    def _stash(html_fragment: str) -> str:
+        idx = len(placeholders)
+        placeholders.append(html_fragment)
+        return f"\x00TGPH{idx}\x00"
+
+    # 1. Extract fenced & inline code before escaping/formatting
+    work = _FENCED_CODE_RE.sub(lambda m: _stash(f"<pre>{html.escape(m.group(1).strip())}</pre>"), text)
+    work = _INLINE_CODE_RE.sub(lambda m: _stash(f"<code>{html.escape(m.group(1))}</code>"), work)
+
+    # 2. Extract Markdown links before HTML-escaping URLs
+    work = _MD_LINK_RE.sub(
+        lambda m: _stash(f'<a href="{html.escape(m.group(2), quote=True)}">{html.escape(m.group(1))}</a>'),
+        work,
+    )
+
+    # 3. Escape remaining raw text safely
+    work = html.escape(work)
+
+    # 4. Convert headings, bullets, bold, strikethrough
+    work = _MD_HEADING_RE.sub(r"<b>\1</b>", work)
+    work = _MD_BULLET_RE.sub("• ", work)
+    work = _MD_BOLD_RE.sub(r"<b>\1</b>", work)
+    work = _MD_STRIKE_RE.sub(r"<s>\1</s>", work)
+
+    # 5. Restore stashed HTML fragments
+    for idx, frag in enumerate(placeholders):
+        work = work.replace(f"\x00TGPH{idx}\x00", frag)
+    return work
+
+
+async def _tg_send_formatted_message(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    text: str,
+) -> None:
+    """Send Markdown text formatted as Telegram HTML, falling back to plain text on parse error."""
+    formatted = markdown_to_telegram_html(text)[:4000]
+    try:
+        await _tg_api_call(
+            client,
+            bot_token,
+            "sendMessage",
+            {"chat_id": chat_id, "text": formatted, "parse_mode": "HTML"},
+        )
+    except Exception as exc:
+        logger.warning("Telegram HTML send failed, falling back to plain text: %s", exc)
+        await _tg_api_call(
+            client,
+            bot_token,
+            "sendMessage",
+            {"chat_id": chat_id, "text": text[:4000]},
+        )
 
 
 async def _tg_send_typing(
@@ -455,12 +531,7 @@ async def handle_telegram_update(
 
     await _tg_send_typing(client, bot_token, chat_id)
     result = await agent.chat(db, user_id=user_id, user_message=text, session_id=f"tg:{chat_id}")
-    await _tg_api_call(
-        client,
-        bot_token,
-        "sendMessage",
-        {"chat_id": chat_id, "text": html.escape(result.reply)[:4000], "parse_mode": "HTML"},
-    )
+    await _tg_send_formatted_message(client, bot_token, chat_id, result.reply)
     return "text_handled"
 
 
