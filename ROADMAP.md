@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.3.2 — Released
+
+**Theme:** WeChat Mini Program code recognition & smarter QR decoding. Explicitly identifies WeChat Mini Program sunflower codes and Alipay codes via VLM, replies with copyable saved header cards while tracking expected invoices for automatic email matching, and adds autocontrast preprocessing for standard QR photos. See [CHANGELOG.md](CHANGELOG.md#232---2026-11-27).
+
+---
+
 ## v2.3.1 — Released
 
 **Theme:** Instant Telegram acknowledgement & live in-place progress. Eliminates silent wait times after sending receipt photos by immediately acknowledging receipt and updating one live status message through QR decoding, page navigation, VLM visual steps, and completion. See [CHANGELOG.md](CHANGELOG.md#231---2026-11-27).

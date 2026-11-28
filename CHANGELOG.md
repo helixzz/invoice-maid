@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.3.2] - 2026-11-27
+
+### Added
+
+- **WeChat Mini Program sunflower code (微信小程序码/太阳码) & Alipay code detection (`qr_receipt_decoder.py`, `maid_agent.py`)**:
+  - Added `code_type` (`standard_qr`, `wechat_miniprogram_code`, `alipay_code`, `no_code`) to VLM receipt analysis so Miri explicitly identifies WeChat Mini Program codes instead of giving a generic "QR not found" error.
+  - When a WeChat Mini Program code is detected, Miri clearly explains it is a WeChat-only Mini Program code, immediately attaches copyable saved invoice header cards (title, tax ID, email), and tracks the merchant/amount so incoming email invoices still auto-match and archive via heartbeat.
+  - Added `PIL.ImageOps.autocontrast` preprocessing fallback to improve decoding of low-contrast standard square QR codes.
+
 ## [2.3.1] - 2026-11-27
 
 ### Added

@@ -127,6 +127,31 @@ async def test_analyze_receipt_photo_with_vlm_and_fallback(db, monkeypatch: pyte
     decoded3 = await analyze_receipt_photo(db, None, b"")
     assert decoded3.primary_qr_url == ""
 
+    # VLM identifies WeChat Mini Program sunflower code when pyzbar returns []
+    class WeChatCodeVisionAI(OkVisionAI):
+        async def _create_structured_with_fallback(self, **kwargs):
+            del kwargs
+            return ReceiptVisionSummary(
+                is_invoice_qr_receipt=True,
+                code_type="wechat_miniprogram_code",
+                merchant_name="某餐厅",
+                amount=Decimal("188.00"),
+            )
+
+    decoded_wx = await analyze_receipt_photo(db, WeChatCodeVisionAI(), _tiny_png_bytes())
+    assert decoded_wx.code_type == "wechat_miniprogram_code"
+    assert decoded_wx.is_wechat_only is True
+
+    # VLM identifies Alipay code (is_wechat_only remains False)
+    class AlipayCodeVisionAI(OkVisionAI):
+        async def _create_structured_with_fallback(self, **kwargs):
+            del kwargs
+            return ReceiptVisionSummary(is_invoice_qr_receipt=True, code_type="alipay_code")
+
+    decoded_ali = await analyze_receipt_photo(db, AlipayCodeVisionAI(), _tiny_png_bytes())
+    assert decoded_ali.code_type == "alipay_code"
+    assert decoded_ali.is_wechat_only is False
+
 
 def test_deterministic_form_fill_and_post_submit_evaluation() -> None:
     profile = InvoiceProfile(

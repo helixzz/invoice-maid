@@ -19,6 +19,7 @@ from app.services.claim_form_agent import (
     BrowserRunner,
     append_claim_log,
     execute_claim_task,
+    format_copyable_profile_card,
     match_submitted_claims,
 )
 from app.services.file_manager import FileManager
@@ -250,6 +251,7 @@ async def create_claim_from_receipt_photo(
     prompt for profile selection (when multiple profiles exist) or auto-submit immediately."""
     if explicit_qr_url:
         qr_url = explicit_qr_url.strip()
+        code_type = "standard_qr"
         merchant_name = ""
         amount = None
         currency = "CNY"
@@ -258,6 +260,7 @@ async def create_claim_from_receipt_photo(
     else:
         decoded = await analyze_receipt_photo(db, ai, image_bytes)
         qr_url = decoded.primary_qr_url
+        code_type = decoded.code_type
         merchant_name = decoded.merchant_name
         amount = decoded.amount
         currency = decoded.currency
@@ -279,17 +282,10 @@ async def create_claim_from_receipt_photo(
         created_at=now,
         updated_at=now,
     )
-    append_claim_log(task, "created", f"channel={source_channel} url={qr_url[:120]}")
+    append_claim_log(task, "created", f"channel={source_channel} code_type={code_type} url={qr_url[:120]}")
     db.add(task)
     await db.commit()
     await db.refresh(task)
-
-    if not qr_url:
-        task.status = "needs_attention"
-        task.attention_reason = "未能从照片中识别出开票二维码，请靠近拍清二维码或直接发送开票链接。"
-        append_claim_log(task, "no_qr", task.attention_reason)
-        await db.commit()
-        return PhotoClaimIntakeResult(task=task, message=task.attention_reason)
 
     profiles = list(
         (
@@ -300,6 +296,44 @@ async def create_claim_from_receipt_photo(
             )
         ).scalars().all()
     )
+
+    if not qr_url:
+        merchant_hint = f"（{merchant_name} {currency} {amount}）" if merchant_name and amount else (f"（{merchant_name}）" if merchant_name else "")
+        cards_block = ""
+        if profiles:
+            cards_block = "\n\n📋 您的预存发票抬头（可直接复制使用）：\n" + "\n\n".join(
+                f"【{p.name}】\n{format_copyable_profile_card(p)}" for p in profiles[:3]
+            )
+        if code_type == "wechat_miniprogram_code":
+            # Track as submitted so heartbeat can still match the invoice once user submits in WeChat!
+            task.status = "submitted" if (merchant_name or amount is not None) else "needs_attention"
+            task.attention_reason = (
+                f"识别到这是一张微信小程序码（太阳码）{merchant_hint}。"
+                "微信小程序码采用微信私有编码且仅限微信客户端内打开，浏览器无法代填。"
+                "请用微信直接扫码开票（填监控邮箱），开出后米尔会自动帮您入库归档！"
+                + cards_block
+            )
+            append_claim_log(task, "wechat_miniprogram_code", "Detected WeChat Mini Program sunflower code")
+        elif code_type == "alipay_code":
+            task.status = "needs_attention"
+            task.attention_reason = (
+                f"识别到这是一张支付宝专用开票码{merchant_hint}，仅支持在支付宝内扫码打开。"
+                + cards_block
+            )
+            append_claim_log(task, "alipay_code", "Detected Alipay-only code")
+        elif code_type == "standard_qr":
+            task.status = "needs_attention"
+            task.attention_reason = (
+                f"看到了小票上的方形二维码{merchant_hint}，但因反光、模糊或角度偏斜未能解出链接。"
+                "请正对二维码靠近重拍一张，或直接发送开票链接给我。"
+            )
+            append_claim_log(task, "qr_unreadable", task.attention_reason)
+        else:
+            task.status = "needs_attention"
+            task.attention_reason = "未能从照片中识别出开票二维码，请靠近拍清二维码或直接发送开票链接。"
+            append_claim_log(task, "no_qr", task.attention_reason)
+        await db.commit()
+        return PhotoClaimIntakeResult(task=task, profiles=profiles, message=task.attention_reason)
 
     if not profiles:
         task.status = "awaiting_profile"

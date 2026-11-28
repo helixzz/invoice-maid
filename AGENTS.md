@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v2.3.1 — Instant Telegram photo receipt ack + live in-place step progress updates (`sendChatAction` + `editMessageText`), powered by Set-of-Mark VLM browser agent.**
+**v2.3.2 — VLM recognition of WeChat Mini Program sunflower codes (微信小程序码) & Alipay codes with copyable header cards + automatic email-matching tracking, plus autocontrast QR decoding enhancement.**
 
 ## STRUCTURE
 

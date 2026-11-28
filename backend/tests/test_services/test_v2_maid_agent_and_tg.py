@@ -190,12 +190,38 @@ async def test_maid_agent_tool_calling_loop_and_memories_and_heartbeat(
     orphan_out = await runner._execute_tool(db, user_id=account.user_id, name="retry_claim_task", args={"task_id": t_orphan.id})
     assert "error" in orphan_out
 
-    # Test create_claim_from_receipt_photo: 0 profiles, 1 profile (auto), 2 profiles (prompt), no QR
+    # Test create_claim_from_receipt_photo: 0 profiles, 1 profile (auto), 2 profiles (prompt), no QR + code_type variants
     await db.delete(profile)
     await db.commit()
     monkeypatch.setattr(maid_mod, "analyze_receipt_photo", lambda _d, _a, _b: _coro(DecodedReceipt(qr_urls=[])))
     r_no_qr = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None)
     assert r_no_qr.task.status == "needs_attention"
+
+    # WeChat Mini Program code with merchant+amount -> tracked as submitted with clear explanation
+    monkeypatch.setattr(
+        maid_mod,
+        "analyze_receipt_photo",
+        lambda _d, _a, _b: _coro(DecodedReceipt(qr_urls=[], code_type="wechat_miniprogram_code", merchant_name="喜茶", amount=Decimal("28.00"))),
+    )
+    r_wx = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None)
+    assert r_wx.task.status == "submitted" and "微信小程序码" in r_wx.message
+
+    # Alipay code + unreadable standard QR
+    monkeypatch.setattr(
+        maid_mod,
+        "analyze_receipt_photo",
+        lambda _d, _a, _b: _coro(DecodedReceipt(qr_urls=[], code_type="alipay_code", merchant_name="盒马")),
+    )
+    r_ali = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None)
+    assert r_ali.task.status == "needs_attention" and "支付宝" in r_ali.message
+
+    monkeypatch.setattr(
+        maid_mod,
+        "analyze_receipt_photo",
+        lambda _d, _a, _b: _coro(DecodedReceipt(qr_urls=[], code_type="standard_qr")),
+    )
+    r_blur = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None)
+    assert r_blur.task.status == "needs_attention" and "方形二维码" in r_blur.message
 
     monkeypatch.setattr(
         maid_mod,
@@ -205,9 +231,23 @@ async def test_maid_agent_tool_calling_loop_and_memories_and_heartbeat(
     r_zero = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None)
     assert r_zero.needs_profile_choice is False and r_zero.task.status == "awaiting_profile"
 
-    p1 = InvoiceProfile(user_id=account.user_id, name="抬头1", title="公司1")
+    p1 = InvoiceProfile(user_id=account.user_id, name="抬头1", title="公司1", tax_id="9131")
     db.add(p1)
     await db.commit()
+    # WeChat Mini Program code with existing profile includes copyable profile card
+    monkeypatch.setattr(
+        maid_mod,
+        "analyze_receipt_photo",
+        lambda _d, _a, _b: _coro(DecodedReceipt(qr_urls=[], code_type="wechat_miniprogram_code")),
+    )
+    r_wx_card = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None)
+    assert "公司1" in r_wx_card.message and "9131" in r_wx_card.message
+
+    monkeypatch.setattr(
+        maid_mod,
+        "analyze_receipt_photo",
+        lambda _d, _a, _b: _coro(DecodedReceipt(qr_urls=["https://nnfp.jss.com.cn/a"], merchant_name="咖啡店", amount=Decimal("30.00"))),
+    )
     r_one = await create_claim_from_receipt_photo(db, user_id=account.user_id, image_bytes=b"img", settings=settings, ai=None, browser_runner=fake_browser)
     assert r_one.task.status == "submitted"
 

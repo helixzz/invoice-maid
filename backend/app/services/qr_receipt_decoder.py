@@ -9,7 +9,7 @@ from decimal import Decimal
 import importlib
 import io
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,15 @@ class ReceiptVisionSummary(BaseModel):
         default=False,
         description="True if photo shows a merchant receipt/QR code used to apply for an invoice.",
     )
+    code_type: Literal["standard_qr", "wechat_miniprogram_code", "alipay_code", "no_code"] = Field(
+        default="no_code",
+        description=(
+            "Visual type of scan code on the slip: "
+            "'wechat_miniprogram_code' for circular sunflower-shaped WeChat Mini Program codes (微信小程序码/太阳码), "
+            "'alipay_code' for Alipay-only codes, "
+            "'standard_qr' for normal square QR codes, or 'no_code' if none visible."
+        ),
+    )
     merchant_name: str = Field(default="", description="Merchant / store name if visible.")
     amount: Decimal | None = Field(default=None, description="Consumption total amount if visible.")
     currency: str = Field(default="CNY", description="ISO 4217 currency code.")
@@ -41,6 +50,7 @@ class ReceiptVisionSummary(BaseModel):
 @dataclass
 class DecodedReceipt:
     qr_urls: list[str] = field(default_factory=list)
+    code_type: str = "no_code"
     merchant_name: str = ""
     amount: Decimal | None = None
     currency: str = "CNY"
@@ -59,11 +69,12 @@ def is_wechat_only_url(url: str) -> bool:
 
 
 def decode_qr_urls_from_image(image_bytes: bytes) -> list[str]:
-    """Extract URL QR codes from a receipt photo using Pillow + pyzbar (with grayscale fallback)."""
+    """Extract URL QR codes from a receipt photo using Pillow + pyzbar with contrast/scale fallbacks."""
     if not image_bytes:
         return []
     try:
         pil_image = importlib.import_module("PIL.Image")
+        pil_ops = importlib.import_module("PIL.ImageOps")
         pyzbar_mod = importlib.import_module("pyzbar.pyzbar")
     except ImportError:
         logger.warning("PIL or pyzbar unavailable — QR photo decoding disabled")
@@ -79,7 +90,9 @@ def decode_qr_urls_from_image(image_bytes: bytes) -> list[str]:
     seen: set[str] = set()
     candidates = [img]
     try:
-        candidates.append(img.convert("L"))
+        gray = img.convert("L")
+        candidates.append(gray)
+        candidates.append(pil_ops.autocontrast(gray))
     except Exception:  # pragma: no cover - defensive
         pass
 
@@ -102,10 +115,11 @@ async def analyze_receipt_photo(
     ai: Any,
     image_bytes: bytes,
 ) -> DecodedReceipt:
-    """Decode QR URL(s) and optionally enrich merchant/amount metadata via VLM."""
+    """Decode QR URL(s) and enrich merchant/amount/code_type metadata via VLM."""
     qr_urls = decode_qr_urls_from_image(image_bytes)
     result = DecodedReceipt(
         qr_urls=qr_urls,
+        code_type="standard_qr" if qr_urls else "no_code",
         is_wechat_only=bool(qr_urls and is_wechat_only_url(qr_urls[0])),
     )
 
@@ -122,19 +136,26 @@ async def analyze_receipt_photo(
                     {
                         "role": "system",
                         "content": (
-                            "Inspect the photo of a Chinese/international receipt or invoice QR slip. "
-                            "Extract merchant_name, amount, currency, receipt_date, and a concise summary."
+                            "Inspect the photo of a Chinese/international receipt or invoice slip. "
+                            "Identify code_type carefully: circular sunflower-like radial dot codes are "
+                            "'wechat_miniprogram_code' (微信小程序码/太阳码), normal square 3-corner-box codes are "
+                            "'standard_qr', Alipay-branded codes are 'alipay_code', otherwise 'no_code'. "
+                            "Also extract merchant_name, amount, currency, receipt_date, and a concise summary."
                         ),
                     },
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Extract receipt metadata as JSON."},
+                            {"type": "text", "text": "Extract receipt metadata and code_type as JSON."},
                             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
                         ],
                     },
                 ],
             )
+            if not qr_urls:
+                result.code_type = vision.code_type
+                if vision.code_type == "wechat_miniprogram_code":
+                    result.is_wechat_only = True
             result.merchant_name = (vision.merchant_name or "").strip()
             result.amount = vision.amount
             result.currency = (vision.currency or "CNY").strip().upper()[:8]
