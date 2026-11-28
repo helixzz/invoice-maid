@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.4.1] - 2026-11-28
+
+### Changed
+
+- **Comprehensive `README.md`, `AGENTS.md`, and `.env.example` refresh** to reflect the full v2.x architecture: Miri (米尔) Agent Loop (14 tools), Set-of-Mark Vision Browser Agent, WeChat Mini Program & thermal-line QR handling, multi-currency reimbursement packs, Warm Stationery Ledger WebUI, and complete configuration reference.
+- **Replaced outdated v0.x/v1.x screenshots in `assets/screenshots/`** with fresh 1440×900 captures of the redesigned v2.4 Miri WebUI (Login, Ledger, 50/50 Verification Detail, Miri Workspace, Grouped Settings, AI Routing).
+
+### Fixed
+
+- **Fixed `update_invoice` agent tool to persist notes onto `Invoice.notes`** (matching the ORM column name) instead of a non-column attribute.
+
 ## [2.4.0] - 2026-11-28
 
 ### Added

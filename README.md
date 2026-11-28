@@ -1,25 +1,21 @@
-# Invoice Maid
+# Invoice Maid · 米尔 Miri
 
 <p align="center">
-  <img src="assets/images/invoice-maid-icon.png" alt="Invoice Maid icon" width="120">
+  <img src="assets/images/invoice-maid-icon.png" alt="Invoice Maid — Miri icon" width="140">
 </p>
 
 <p align="center">
-  <img src="assets/images/invoice-maid.png" alt="Invoice Maid" width="900">
+  <strong>Self-hosted AI invoice ledger &amp; multimodal agent assistant.</strong><br>
+  Automatically collect invoices from email inboxes, claim offline QR receipts via a Vision Browser Agent, track multi-currency reimbursements, and chat with <strong>Miri (米尔)</strong> in a warm stationery Web UI or on Telegram.
 </p>
 
 <p align="center">
-  <strong>AI-powered invoice extraction for self-hosted workflows.</strong><br>
-  Scan inboxes, detect invoices, parse PDF / XML / OFD files, and manage everything from one clean web UI.
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/version-2.4.0-blue" alt="v2.4.0">
+  <img src="https://img.shields.io/badge/version-2.4.1-3D7358" alt="v2.4.1">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/Tests-808%2B%20passing-brightgreen" alt="808+ tests">
+  <img src="https://img.shields.io/badge/Backend%20Tests-811%2B%20passing-brightgreen" alt="811+ tests">
   <img src="https://img.shields.io/badge/Coverage-100%25-brightgreen" alt="100% coverage">
 </p>
 
@@ -27,155 +23,116 @@
 
 ## Why Invoice Maid?
 
-Invoice Maid automates the boring part of invoice handling:
+Invoice Maid automates the entire personal &amp; small-team invoice lifecycle on your own server:
 
-- Pull invoice emails from **IMAP**, **POP3**, **QQ Mail**, and **Microsoft Outlook** — including every scannable sub-folder, not just INBOX
-- Use an **OpenAI-compatible LLM** to classify emails and extract invoice fields
-- Parse **PDF**, **XML**, and **OFD (数电票)** invoice formats — including invoices linked from the email body
-- Watch live scan progress fold-by-folder and batch-by-batch
-- Search, review, correct, and export invoices from a modern web UI
-- Download one invoice, batch-export as ZIP, or export filtered lists as CSV
-
-It is designed for **self-hosted** deployment with minimal operational overhead. As of v0.9.0, the app supports **multiple users** with full tenant isolation (per-user invoices, accounts, scan history, storage), self-service registration behind a feature flag, and an admin panel for user management. For a single-operator deployment, nothing changes from the pre-v0.9.0 experience — the single admin owns everything. The project has shipped 30+ releases of reliability and performance work — see the [CHANGELOG](CHANGELOG.md) for the full arc.
+- **Automated inbox ingestion** — Scans **IMAP**, **POP3**, **QQ Mail**, and **Microsoft Outlook (Graph Delta Query)** across every scannable folder with persistent retry queues (`failed_emails`) and watermark protection.
+- **Multi-format parsing &amp; VLM fallback** — Parses **PDF**, **XML**, and **OFD (数电票)** invoices (including Chinese railway &amp; airline e-tickets and body download links), automatically rendering image-only scanned PDFs for a Vision LLM fallback when text extraction fails.
+- **Resilient multi-model AI routing** — Supports any OpenAI-compatible API (including local gateways like Magpie) with ordered fallback model chains, circuit breaking, SHA-256 response caching, and an independent embedding endpoint.
+- **True multi-currency &amp; reimbursement loop** — Preserves real ISO-4217 currencies (`CNY`, `USD`, `EUR`, `GBP`, `HKD`, `JPY`, …), tracks reimbursement status (`未报销` / `报销中` / `已报销` / `无需报销`), tags, notes, zero-dependency Excel (`.xlsx`) exports, and one-click **Reimbursement Pack ZIPs**.
+- **Miri (米尔) Agent Loop — Web UI &amp; Telegram** — An IM-agnostic tool-calling assistant with 14 tools, persistent long-term memory rules, multi-profile invoice headers, and a **Set-of-Mark Multimodal Vision Browser Agent** that turns offline receipt photos into submitted invoices automatically.
+- **Warm Stationery Ledger Web UI** — Bespoke cream-and-sage-mint design system ([VI Design System](docs/VI-DESIGN-SYSTEM.md)) featuring a desktop stationery sidebar, mobile bottom tab bar, 50/50 PDF verification workbench, floating batch dock, and companion Miri chat drawer.
 
 ### How it works
 
 <p align="center">
-  <img src="assets/images/workflow.svg" alt="Invoice Maid workflow: two sources (email scan + manual upload) feed a five-stage pipeline of classify, parse, extract, dedupe, save; output persists to SQLite + audit log + optional webhook" width="960">
+  <img src="assets/images/workflow.svg" alt="Invoice Maid ingestion and extraction pipeline" width="960">
 </p>
 
-Two invoice sources feed the **same** five-stage pipeline. The email scanner runs on a schedule and does its own classification (is this even an invoice?) before parsing; manual uploads declare invoice-ness up front and skip straight to parsing. The parser handles PDF / XML / OFD with QR-code decoding; an OpenAI-compatible LLM fills in whatever the deterministic parser could not extract; the dedup gate blocks duplicate invoice numbers; a successful save writes the `Invoice` row, the canonical PDF / XML / OFD file on disk, an `ExtractionLog` audit entry, an optional sqlite-vec embedding, and fires the `invoice.created` webhook.
+Email scans, manual drag-and-drop uploads, and Miri's offline QR claiming all flow into the **same** unified ingestion pipeline (`invoice_ingestion.py`): deterministic parsing (PDF / XML / OFD + QR) → LLM/VLM enrichment &amp; currency detection → deduplication &amp; VAT/scam gates → automatic memory-rule tagging → SQLite (`FTS5` + optional `sqlite-vec`) + canonical file storage + optional webhooks &amp; Telegram summaries.
 
 ---
 
 ## Table of Contents
 
-- [Features](#features)
+- [Meet Miri (米尔) — Agent Loop &amp; Offline QR Claiming](#meet-miri-米尔--agent-loop--offline-qr-claiming)
+- [Core Features](#core-features)
 - [Screenshots](#screenshots)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Configuration Reference](#configuration-reference)
-- [Email Account Setup](#email-account-setup)
+- [Email &amp; Telegram Setup](#email--telegram-setup)
 - [Webhooks](#webhooks)
-- [Multi-User](#multi-user)
+- [Multi-User &amp; Tenant Isolation](#multi-user--tenant-isolation)
 - [Deployment](#deployment)
-- [Development](#development)
+- [Development &amp; CI](#development--ci)
 - [Roadmap](#roadmap)
 - [License](#license)
 
 ---
 
-## Features
+## Meet Miri (米尔) — Agent Loop &amp; Offline QR Claiming
 
-### Email ingestion
+Invoice Maid v2.x evolves from a passive inbox scanner into an interactive agent available both in the **Web UI floating drawer / `/maid` workspace** and through a **dedicated Telegram Bot**:
 
-- **Multi-provider support** — IMAP, POP3, QQ Mail (via 16-char authorization code), Microsoft Outlook (OAuth2 device code flow for both personal and work / school accounts)
-- **Multi-folder scan** — walks every scannable folder per account (INBOX plus Sent, Archive, and custom sub-folders); skips unchanged folders via IMAP `STATUS` preflight for massive repeat-scan speedups
-- **Parallel IMAP fetch** — up to 4 concurrent IMAP connections per large folder on generic providers for ~3.35× faster cold scans (single-connection fallback is automatic when providers rate-limit)
-- **QQ Mail dedicated code path** — single connection, `bulk=50`, UID-range `SEARCH` instead of `SEARCH ALL`, 1s inter-batch sleep and periodic `NOOP` keepalive — all empirically tuned for imap.qq.com's per-account connection limits and throughput ceiling
-- **Scheduled processing** — configurable scan interval via APScheduler (default 60 min), with rate-limiting hygiene so nothing runs when it shouldn't
-- **Incremental scanning** — saves per-folder `UIDVALIDITY` / `UIDNEXT` / `MESSAGES` / highest-UID state so subsequent scans only fetch genuinely new messages
-- **Tiered email classification** — free heuristics first, cheap metadata-only LLM call second, full-body LLM only for ambiguous cases; LLM responses cached by SHA-256 for free replays
+- **14 Everyday Agent Tools**:
+  - Search &amp; filter invoices (`search_invoices`), inspect multi-currency totals (`get_spend_summary`).
+  - Batch or single-invoice updates (`update_reimbursement`, `update_invoice`) for status, notes, tags, and categories.
+  - Manage saved invoice headers (`list_invoice_profiles`, `save_invoice_profile`).
+  - Manage offline QR claim tasks (`list_claim_tasks`, `select_claim_profile`, `retry_claim_task`, `cancel_claim_tasks`).
+  - Maintain persistent memory rules (`list_memories`, `save_memory_rule`, `delete_memory_rule`) that auto-apply to future incoming invoices (e.g., *"mark pharmacy invoices as `not_applicable`"*).
+  - Trigger an on-demand inbox scan (`trigger_email_scan`) right from chat.
+- **Set-of-Mark Multimodal Vision Browser Agent (`vision_browser_agent.py`)**:
+  - Snap a receipt QR photo on Telegram (or upload in `/maid`). Miri acknowledges receipt immediately, shows live in-place step progress, decodes the QR (with morphological repair for broken thermal print-head lines), and reads merchant &amp; amount via VLM.
+  - Single saved header → auto-fills &amp; auto-submits immediately. Multiple saved headers → shows an inline picker that auto-collapses after you tap.
+  - On each browser turn, Miri tags visible interactive elements (`[1]`, `[2]`, …) across native inputs and mobile H5 `<div>`/`<span>` buttons, lets the Vision LLM understand arbitrary portals (Meituan, Nuonuo, Baiwang, overseas receipts), clicks entry or *"发送邮箱"* resend buttons, fills forms, and submits.
+  - **Smart WeChat &amp; Failure Escalation**: Explicitly recognizes WeChat Mini Program sunflower codes (`微信小程序码`), URL-bound Mini Program 404 pages (e.g. Sam's Club), and WeChat-only auth errors — sending the real page screenshot (`sendPhoto`), a plain-Chinese explanation, and tap-to-copy `<code>` header cards, while still tracking the expected invoice via heartbeat so incoming email invoices match and archive automatically.
+- **Rich Telegram Experience**:
+  - Dedicated bidirectional bot token (zero `409 Conflict` with other bots), unified one-way scan summaries &amp; alerts on Miri's own channel when `TELEGRAM_BOT_TOKEN` is left blank, and clean Markdown → Telegram HTML rendering.
 
-### Manual upload
+---
 
-- **Drag-and-drop batch upload** — drop a single file or up to 25 PDF / XML / OFD invoices at once in the web UI at `/upload`; the frontend uploads up to 3 in parallel with a per-file progress bar
-- **Per-file status tracking** — each file in a batch shows its own queued / uploading / saved / failed state, its own progress %, its own error banner if rejected (with a 409-duplicate "view existing invoice" shortcut), and its own retry button so one bad file doesn't block the rest
-- **Same pipeline as email** — each uploaded file hits the exact same parse → LLM enrich → dedupe → save path used by the scanner; extraction quality is identical
-- **Streaming upload with progress bar** — axios `onUploadProgress` on the frontend, 256 KB chunked read on the backend so 20 MB OFD files don't pin RAM
-- **Three-layer size enforcement** — nginx `client_max_body_size 25M`, ASGI `ContentSizeLimitMiddleware` (25 MB), route-level streaming counter — nothing can slip past
-- **Magic-byte MIME sniffing** — first 512 bytes validated against real format signatures (not client-declared content-type); unknown or disguised files rejected with 415 before any parsing runs
-- **Structured error responses** — `duplicate` → 409 with `existing_invoice_id`, `low_confidence` → 422 with the actual confidence, `not_vat_invoice` / `scam_detected` → 422 with the reason, `parse_failed` → 422 with the underlying error, `429` when the 30/min rate limit is exceeded
+## Core Features
 
-### Invoice intelligence
+### Email Ingestion &amp; Reliability
+- **Multi-provider support** — IMAP (4-worker parallel fetch on large folders with serial fallback), POP3, QQ Mail dedicated path (single connection, UID-range search, `NOOP` keepalive), and Microsoft Outlook OAuth2 Device Code Flow using Graph Delta Query with automatic `429 Retry-After` backoff.
+- **Tiered email classification** — Pre-hydration sender blocklist + free heuristics (Tier 1) → metadata LLM (Tier 2) → full-body + smart best-link selection (Tier 3), backed by SHA-256 LLM response caching and URL presigned-parameter repair.
+- **Fault isolation &amp; DLQ** — Circuit breaker (`LLMCircuitBreaker`) stops burning calls during upstream outages; failed emails land in a persistent exponential-backoff retry queue (`failed_emails`) without advancing folder watermarks; interrupted scans auto-recover on restart.
+- **Live scan telemetry &amp; audit trail** — Real-time folder/email progress bar and per-email aggregated `ExtractionLog` drill-down with dedup badges.
 
-- **AI classification & extraction** — OpenAI-compatible LLMs classify emails and extract structured invoice data via the Instructor library
-- **Tier-3 body-link analysis** — when an email contains download links, the LLM picks the **single best direct invoice link** instead of blindly following every URL, with a pre-download URL blocklist that rejects tracking pixels and unsubscribe links before spending any HTTP round-trip
-- **Multi-format parsing** — PDF (pdfplumber + PyMuPDF), XML (lxml), OFD (easyofd) with QR code decoding via pyzbar
-- **Railway + airline e-ticket support** — 铁路电子客票 (2024年第8号公告) and 航空运输电子客票行程单 (2024年第9号公告) are recognized as valid VAT invoices, including image-based PDFs where only the 20-digit invoice_no survives parsing
-- **Invoice category taxonomy** — every invoice is classified by the LLM into one of five categories — `vat_invoice` (Chinese 增值税发票 / 数电票 / railway / airline e-tickets), `saas_invoice` (Cursor / Stripe / OpenAI and other subscription providers in non-CNY currencies), `receipt` (informal 收据 with no tax standing), `proforma` (pre-payment quote), and `other` (legitimate billing documents not matching the above). Non-VAT invoices are saved with the correct category tag rather than rejected. Filter the invoice list by one or more categories; the stats panel breaks down counts per category. Operators who want the stricter v1.1.x behavior can set `STRICT_VAT_ONLY=true` to reject everything except `vat_invoice`.
-- **SaaS portal scraping (Cursor)** — experimental Playwright-based scanner for SaaS vendors that don't email invoices. Add an account of type `cursor`, paste a session `storage_state` JSON captured via `scripts/cursor_login_local.py`, and the scheduler will navigate the Cursor billing dashboard, download each invoice PDF, and feed it through the same parse → LLM enrich → dedupe → save pipeline as email and manual uploads. 2FA supported via stored TOTP secret. Stripe / OpenAI / other providers pluggable via the `BaseScraper` interface.
-- **Manual correction** — edit any extracted field inline with a full audit trail (`CorrectionLog`)
-- **Confidence scoring** — extraction confidence and method displayed per invoice as coloured badges
-- **Duplicate detection** — composite deduplication on invoice number + email UID + attachment filename
-- **Per-email extraction audit log** — `ExtractionLog` tracks why each email was saved, skipped, or failed, with drill-down links from each `ScanLog` row
+### Manual Upload &amp; SaaS Scrapers
+- **Batch drag-and-drop upload** — Upload up to **200** PDF / XML / OFD files at once at `/upload` (up to 20 concurrent workers, streaming 256 KB chunks, 25 MB limit, magic-byte MIME verification, per-file retry &amp; 409 duplicate jump link).
+- **Multi-format &amp; tax taxonomy** — Full support for Chinese VAT / 数电票 / railway &amp; airline e-tickets, overseas invoices (`overseas_invoice`), receipts (`receipt`), proforma quotes (`proforma`), and `other`. Optional `STRICT_VAT_ONLY=true` kill-switch.
+- **Pluggable SaaS scrapers** — Experimental Playwright/API scraper framework (`BaseScraper` / `BaseAPIScraper`, including Cursor billing) feeding the same ingestion pipeline.
 
-### Search, export & analytics
-
-- **Full-text search** — SQLite FTS5 with optional sqlite-vec semantic similarity
-- **Saved views** — persist named search + filter combinations for daily workflows
-- **CSV export** — export filtered invoice lists with one click (UTF-8 BOM, opens cleanly in Excel / Numbers / WPS)
-- **Batch actions** — select multiple invoices for ZIP download (bundles an `invoices_summary.csv` metadata table alongside the PDFs) or bulk deletion
-- **Spend analytics** — monthly spend, top sellers, invoice counts by type and extraction method
-- **Similar invoices** — "more like this" discovery via embeddings (sqlite-vec) with FTS5 fallback
-
-### Operations & reliability
-
-- **Live scan telemetry** — the scan progress bar shows which account, which folder (e.g. `Folder 3/22: Archive`), and the fetching scanner's own status (`Archive: +1400 msgs`, `INBOX: unchanged, skipped`, `INBOX: searching UIDs (~35 626 msgs)`) moment by moment
-- **Scan fault isolation** — one slow / broken account never takes down the rest; orphan log cleanup stamps interrupted scans as `Scan interrupted — service was restarted` instead of leaving them forever `in_progress`
-- **Socket-level timeouts** — TCP handshake, per-recv, and per-parallel-worker deadlines so no IMAP session can hang the scheduler (learned the hard way against `imap.qq.com`)
-- **Partial-state preservation** — when a session drops mid-fold, the per-folder highest UID seen so far is still saved, so the next scan resumes from the right place
-- **Per-invocation scan options** — manually triggered scans can override scope: `unread_only`, `since=<date>`, and `reset_state` to force a full rescan
-- **AI model settings in the UI** — switch LLM provider, API key, chat model, and embedding model from the browser; stored in the DB and always wins over `.env` defaults. Test both models before saving
-- **Rate limiting** — brute-force protection (10 req/min/IP) on login
-- **Rich health endpoint** — reports DB, scheduler, sqlite-vec, invoice count, and last-scan time for monitoring
-- **Outbound webhooks** — `invoice.created` events with HMAC-SHA256 signed payloads (GitHub-style `X-Signature-256` header); delivery failures are logged but never block the scan pipeline
-- **AI classification, multi-model fallback & VLM vision fallback** — OpenAI-compatible LLMs (including local routers like Magpie) with ordered fallback model chains, circuit breaking, independent embedding endpoint support, and PyMuPDF-rendered multimodal vision fallback for image-only scanned PDFs
-- **True multi-currency support** — stores real ISO-4217 currency codes (`CNY`, `USD`, `EUR`, `GBP`, `HKD`, `JPY`, etc.) extracted from documents and breaks down spend analytics and exports accurately per currency
-- **Reimbursement workflow** — track reimbursement status (`unreimbursed` / `pending` / `reimbursed` / `not_applicable`), tags, and notes; batch-update status, export zero-dependency Excel (`.xlsx`) reports with per-currency totals, or download a complete Reimbursement Pack ZIP (`reimbursement_summary.xlsx` + `invoices_summary.csv` + original invoice files)
-- **Agent Loop Invoice Maid (v2.0)** — IM-agnostic `MaidAgentRunner` with tool-calling chat drawer in Web UI, conflict-free independent Telegram Agent Bot listener, persistent long-term memory rules (`maid_memories`), multi-profile invoice headers (`invoice_profiles`), and offline QR-code receipt photo auto-claiming (auto-fills & auto-submits forms via Playwright, prompts only when multiple profiles exist or an unexpected error/CAPTCHA occurs, and automatically matches incoming emails via heartbeat)
-- **Telegram IM notifications** — real-time alerts on LLM circuit trips or account scan failures (with 15-minute anti-spam cooldown) plus concise scan summaries whenever new invoices arrive
-- **100% test coverage** — 808+ backend tests + 23 Vitest unit tests + Playwright E2E specs, enforced in CI with `--cov-fail-under=100`
+### Multi-Currency Ledger, Reimbursement &amp; Export
+- **True multi-currency accounting** — Accurate per-currency totals on dashboard cards, monthly breakdowns, CSV, and `.xlsx` reports.
+- **Reimbursement workflow** — 1-click stamp buttons in the 50/50 invoice verification view, batch status updates via the floating bottom dock, free-form tags &amp; notes, and inline field editing with full `CorrectionLog` audit history.
+- **Exports** — UTF-8 BOM CSV, zero-dependency OOXML Excel (`.xlsx`) with per-currency summary sheets, and complete **Reimbursement Pack ZIPs** (`reimbursement_summary.xlsx` + `invoices_summary.csv` + original PDF/XML/OFD files).
+- **Search &amp; Saved Views** — SQLite FTS5 full-text search, optional `sqlite-vec` semantic similarity ("similar invoices"), and persistent Saved Views.
 
 ---
 
 ## Screenshots
 
-### Login
-
+### Login (Warm Stationery Welcome Card)
 <p align="center">
   <img src="assets/screenshots/01-login.png" alt="Login page" width="900">
 </p>
 
-### Invoice Dashboard
-
-Summary stats, search with date filters, invoice table with batch actions, saved views, and CSV export.
-
+### Invoice Ledger (Multi-Currency Cards, Filters, Stamp Badges &amp; Miri Trigger)
 <p align="center">
-  <img src="assets/screenshots/02-invoices.png" alt="Invoice dashboard" width="900">
+  <img src="assets/screenshots/02-invoices.png" alt="Invoice ledger dashboard" width="900">
 </p>
 
-### Invoice Detail
-
-Full structured data with inline editing, confidence badge, extraction method, and PDF preview.
-
+### 50/50 Invoice Verification Workbench (Sticky PDF Preview &amp; 1-Click Stamps)
 <p align="center">
-  <img src="assets/screenshots/03-invoice-detail.png" alt="Invoice detail" width="900">
+  <img src="assets/screenshots/03-invoice-detail.png" alt="50/50 invoice verification detail" width="900">
 </p>
 
-### Email Account Settings
-
-Add, edit, test, and manage email accounts. Compact scan-state summary per account (`5 folders · 47 849 messages · UID 40 993`) with a tooltip holding the raw JSON for debugging.
-
+### Miri Workspace (QR Claim Intake, Tracking Queue &amp; Long-Term Memories)
 <p align="center">
-  <img src="assets/screenshots/04-settings.png" alt="Email account settings" width="900">
+  <img src="assets/screenshots/04-maid-workspace.png" alt="Miri workspace" width="900">
 </p>
 
-### Scan Operations
-
-Manual scan trigger with `unread_only` / `since` / `reset_state` options, live progress bar showing account, folder index, folder name, and batch-by-batch fetch status, plus scan history with per-email extraction audit drill-down.
-
+### Grouped Settings (Accounts, Scans, Invoice Profiles, AI Routing &amp; Telegram)
 <p align="center">
-  <img src="assets/screenshots/05-scan-operations.png" alt="Scan operations" width="900">
+  <img src="assets/screenshots/05-settings.png" alt="Grouped settings" width="900">
 </p>
 
-### AI Model Configuration
-
-Configure your LLM provider, API key, chat model, and embedding model from the browser. Retrieve available models directly from your provider's API. Test both models before saving.
-
+### AI Model Routing &amp; Fallback Chain Configuration
 <p align="center">
-  <img src="assets/screenshots/06-ai-settings.png" alt="AI model settings" width="900">
+  <img src="assets/screenshots/06-ai-settings.png" alt="AI routing settings" width="900">
 </p>
 
 ---
@@ -183,240 +140,168 @@ Configure your LLM provider, API key, chat model, and embedding model from the b
 ## Tech Stack
 
 | Layer | Stack |
-|------|-------|
-| Backend | FastAPI, SQLAlchemy 2.0 async, APScheduler, slowapi, Instructor |
-| Frontend | Vue 3, Vite, Tailwind CSS, Pinia, vue-router |
-| Database | SQLite (WAL), FTS5, sqlite-vec |
-| AI | OpenAI-compatible HTTP API |
-| Parsing | pdfplumber, PyMuPDF, easyofd, lxml, pyzbar, imap-tools, msal |
-| Testing | pytest (769 tests), Playwright (e2e smoke) |
-
-Roughly 6 800 lines of Python and 3 600 lines of Vue / TypeScript.
+|-------|-------|
+| Backend | FastAPI, SQLAlchemy 2.0 async, Alembic (23 migrations), APScheduler, slowapi, Instructor |
+| Frontend | Vue 3, Vite, Tailwind CSS (custom Warm Stationery tokens), Pinia, vue-router |
+| Database | SQLite (WAL), FTS5, optional `sqlite-vec` |
+| AI &amp; Vision | OpenAI-compatible Chat / Tool-Calling / Vision / Embeddings API |
+| Parsing &amp; Browser | pdfplumber, PyMuPDF (`fitz`), easyofd, lxml, pyzbar, Pillow, Playwright, imap-tools, msal |
+| Testing | pytest (811+ tests, 100% line &amp; branch coverage), Vitest (23 tests), Playwright E2E (21 tests) |
 
 ---
 
 ## Prerequisites
 
 - Python 3.11+
-- Node.js 18+ (for frontend development only — pre-built `dist/` is committed)
+- Node.js 18+ (for frontend development only — pre-built `frontend/dist/` is committed)
 - System packages:
   - `libzbar0` — QR code decoding
-  - `fonts-noto-cjk` — optional, recommended for Chinese rendering
+  - `fonts-noto-cjk` — recommended for Chinese PDF / browser rendering
+  - Playwright Chromium (`playwright install chromium`) — required for QR form claiming &amp; SaaS scrapers
 
 ---
 
 ## Quick Start
 
-### 1. Clone the repository
+### Local Development
 ```bash
 git clone https://github.com/helixzz/invoice-maid.git
 cd invoice-maid/backend
-```
 
-### 2. Set up Python
-```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
-```
+pip install -e ".[full]"
 
-### 3. Configure the app
-```bash
 cp .env.example .env
-# Edit .env — at minimum set the 5 required keys below
-```
-
-### 4. Generate the admin password hash
-```bash
+# Generate a bcrypt hash for ADMIN_PASSWORD_HASH:
 python -c "from passlib.hash import bcrypt; print(bcrypt.hash('your-password'))"
-```
+# Edit .env with ADMIN_PASSWORD_HASH, JWT_SECRET, LLM_BASE_URL, LLM_API_KEY
 
-Paste the generated hash into `ADMIN_PASSWORD_HASH` in `.env`.
-
-### 5. Run the server
-```bash
 uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:8000`, log in, then configure your email accounts and AI model from the Settings page.
+Open `http://localhost:8000`, sign in, and configure your email accounts, invoice headers, AI routing, and Telegram bot right from **系统设置**.
 
 ### Docker Quick Start
 ```bash
 cp backend/.env.example backend/.env
-# Edit backend/.env with your settings
+# Edit backend/.env
 docker compose up -d
-# Visit http://localhost:8000
 ```
-
-For backend hot-reload, copy `docker-compose.override.yml.example` to `docker-compose.override.yml` and use `docker compose up`. Frontend source changes still need `cd frontend && npm run build` or a separate `npm run dev` workflow.
 
 ---
 
 ## Configuration Reference
 
+All AI, classifier, and Telegram settings can also be edited live in the Web UI (**系统设置**), where database-stored values override `.env` defaults and secrets are encrypted with Fernet using `JWT_SECRET`.
+
 | Key | Description | Example | Required |
 |-----|-------------|---------|----------|
-| `DATABASE_URL` | SQLAlchemy async connection string | `sqlite+aiosqlite:///./data/invoices.db` | Yes |
+| `DATABASE_URL` | Async SQLAlchemy connection string | `sqlite+aiosqlite:///./data/invoices.db` | Yes |
+| `ADMIN_EMAIL` | Bootstrap admin email | `admin@local` | No |
 | `ADMIN_PASSWORD_HASH` | Bcrypt hash of the admin password | `$2b$12$...` | Yes |
-| `JWT_SECRET` | Secret for signing JWT tokens | `32-char-random-string` | Yes |
-| `LLM_BASE_URL` | Base URL for OpenAI-compatible API | `https://api.openai.com/v1` | Yes |
-| `LLM_API_KEY` | API key for the LLM service | `sk-...` | Yes |
-| `STORAGE_PATH` | Invoice file storage directory | `./data/invoices` | No |
-| `JWT_EXPIRE_MINUTES` | Token expiration (minutes) | `1440` | No |
-| `LLM_MODEL` | Model for classification / extraction | `gpt-4o-mini` | No |
-| `LLM_EMBED_MODEL` | Model for embeddings | `text-embedding-3-small` | No |
-| `EMBED_DIM` | Embedding vector dimensions | `1536` | No |
-| `SCAN_INTERVAL_MINUTES` | Minutes between scheduled scans | `60` | No |
-| `SQLITE_VEC_ENABLED` | Enable semantic search | `true` | No |
-| `WEBHOOK_URL` | Outbound webhook endpoint | `https://example.com/hook` | No |
-| `WEBHOOK_SECRET` | HMAC-SHA256 signing key for webhooks | `your-secret` | No |
-| `LOG_LEVEL` | App log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | `INFO` | No |
-| `OUTLOOK_PERSONAL_CLIENT_ID` | Microsoft public client ID for personal Outlook / Live / Hotmail accounts | `04b07795-8ddb-461a-bbee-02f9e1bf7b46` | No |
-| `OUTLOOK_AAD_CLIENT_ID` | Microsoft public client ID for work / school Azure AD accounts | `d3590ed6-52b3-4102-aeff-aad2292ab01c` | No |
-
-AI model settings can also be managed from the **Settings > AI 模型** page in the web UI. Database-stored values override `.env` defaults.
+| `JWT_SECRET` | Signing &amp; Fernet encryption secret | `32-char-random-string` | Yes |
+| `LLM_BASE_URL` | Base URL for OpenAI-compatible API | `http://127.0.0.1:3425/v1` | Yes |
+| `LLM_API_KEY` | API key for the LLM endpoint | `sk-...` | Yes |
+| `LLM_MODEL` | Primary chat / extraction model | `gpt-4o-mini` | No |
+| `LLM_FALLBACK_MODELS` | Comma-separated ordered fallback models | `model-b, model-c` | No |
+| `LLM_VISION_MODEL` | Multimodal VLM for scanned PDFs &amp; QR browser agent | `gpt-4o` | No |
+| `LLM_EMBED_BASE_URL` | Optional independent embedding endpoint | `https://api.openai.com/v1` | No |
+| `LLM_EMBED_API_KEY` | Optional API key for embedding endpoint | `sk-...` | No |
+| `LLM_EMBED_MODEL` | Embedding model name | `text-embedding-3-large` | No |
+| `EMBED_DIM` | Embedding vector dimensions | `3072` | No |
+| `TELEGRAM_ENABLED` | Enable Telegram alerts &amp; scan summaries | `true` | No |
+| `TELEGRAM_BOT_TOKEN` | Optional one-way bot token (leave empty to reuse Miri's bot) | — | No |
+| `TELEGRAM_CHAT_ID` | Target Telegram chat ID for summaries &amp; alerts | `123456789` | No |
+| `TELEGRAM_AGENT_ENABLED` | Enable bidirectional Telegram Miri Agent Bot | `true` | No |
+| `TELEGRAM_AGENT_BOT_TOKEN` | Dedicated `@BotFather` token for Miri | `123456:ABC...` | No |
+| `TELEGRAM_AGENT_ALLOWED_CHAT_IDS` | Comma-separated whitelist of authorized chat IDs | `123456789` | No |
+| `MAID_HEARTBEAT_MINUTES` | Interval (min) for QR claim matching &amp; queue heartbeat | `10` | No |
+| `SCAN_INTERVAL_MINUTES` | Interval (min) between scheduled inbox scans | `60` | No |
+| `STORAGE_PATH` | Invoice &amp; claim screenshot directory | `./data/invoices` | No |
+| `ALLOW_REGISTRATION` | Enable self-service `/register` | `false` | No |
+| `STRICT_VAT_ONLY` | Reject non-VAT categories when `true` | `false` | No |
+| `SQLITE_VEC_ENABLED` | Enable `sqlite-vec` semantic search | `true` | No |
+| `WEBHOOK_URL` / `WEBHOOK_SECRET` | Outbound `invoice.created` HMAC-SHA256 webhook | `https://...` | No |
+| `LOG_LEVEL` | App log level | `INFO` | No |
 
 ---
 
-## Email Account Setup
+## Email &amp; Telegram Setup
 
-### IMAP / POP3
+### Email Accounts
+- **IMAP / POP3**: Enter host, port, username, and app password. Large folders use 4 concurrent IMAP workers and automatically fall back to serial fetch on rate limits.
+- **QQ Mail**: Enable IMAP/SMTP in QQ Mail settings, generate a **16-character authorization code**, and pick account type **`qq`** (dedicated single-connection path with UID-range search and `NOOP` keepalive).
+- **Microsoft Outlook**: Pick **`outlook`** and complete the **OAuth2 Device Code Flow** directly inside the Settings modal. Supports both personal (`@outlook.com`, `@live.*`, `@hotmail.com`) and work/school Azure AD accounts using Graph Delta Query.
 
-Use your provider's server address, port, username, and password / app password. The generic IMAP scanner uses a 4-worker parallel fetch on folders with 500+ new UIDs and falls back to a single-connection serial fetch when the provider rate-limits.
-
-### QQ Mail
-
-1. Log in to QQ Mail web interface → **Settings > Account**
-2. Enable **POP3 / IMAP Service**
-3. Generate a **16-character Authorization Code** and use it as the password in Invoice Maid
-4. Select account type **`qq`** when adding the account — this triggers the dedicated QQ code path (single connection, `bulk=50`, UID-range search, NOOP keepalive) rather than the generic IMAP path. Host-based detection (`imap.qq.com` / `imap.exmail.qq.com`) also enables this code path if you pick generic `imap` by mistake
-
-The first full scan of a large QQ INBOX takes real wall-clock time — roughly 18–20 minutes for ~35 000 messages at QQ's per-IP throughput ceiling. Subsequent incremental scans complete in seconds because Invoice Maid restricts the IMAP `SEARCH` to `UID last+1:*` once a baseline is saved.
-
-### Microsoft Outlook
-
-Invoice Maid uses **OAuth2 Device Code Flow** via the Settings page. Set **username** to the mailbox email address; Invoice Maid automatically detects personal Microsoft domains (`@outlook.com`, `@hotmail.com`, `@live.*`, etc.) and picks the correct Microsoft authority / client ID for personal vs. work / school. Authentication is initiated explicitly from the UI; scans and test-connection only use cached tokens.
+### Telegram Miri Bot
+1. Create a dedicated bot with `@BotFather`, copy the token, and send `/start` to your new bot.
+2. In **系统设置 → Telegram 通知**:
+   - Enable **双向女仆机器人**, paste the dedicated bot token, and add your numeric Telegram Chat ID to the allowed whitelist.
+   - Enable **异常告警与扫描汇总**, set your Chat ID, and leave the separate one-way Bot Token blank so all summaries, alerts, and interactive chats stay cleanly inside Miri's single channel.
+3. Add one or more invoice headers under **系统设置 → 发票抬头** (with your monitored inbox as the receiving email), then send a receipt photo or message straight to your bot.
 
 ---
 
 ## Webhooks
 
-When `WEBHOOK_URL` is configured, Invoice Maid sends a `POST` request for each new invoice:
+When `WEBHOOK_URL` is configured, Invoice Maid sends an HMAC-SHA256 signed `POST` (`X-Signature-256`) on each saved invoice:
 
 ```json
 {
   "event": "invoice.created",
-  "invoice_no": "12345678",
+  "invoice_no": "26117000001849203112",
   "buyer": "Buyer Corp",
   "seller": "Seller Inc",
-  "amount": "1234.56",
-  "invoice_date": "2026-04-17",
-  "invoice_type": "增值税电子普通发票",
-  "confidence": 0.92
+  "amount": "3520.00",
+  "currency": "CNY",
+  "invoice_date": "2026-11-26",
+  "invoice_type": "电子发票(普通发票)",
+  "confidence": 0.98
 }
 ```
 
-The `X-Signature-256` header contains an HMAC-SHA256 signature of the JSON body using `WEBHOOK_SECRET`, following the GitHub webhook signature format. Delivery failures are logged and never block the scan pipeline.
-
 ---
 
-## Multi-User
+## Multi-User &amp; Tenant Isolation
 
-As of v0.9.0, Invoice Maid supports multiple users on a single instance with full tenant isolation. Every invoice, email account, scan log, extraction log, saved view, and file on disk is scoped to its owning user; no endpoint or query can return another user's data.
-
-### Architecture
-
-- **Schema**: every tenant table (`invoices`, `email_accounts`, `scan_logs`, `extraction_logs`, `correction_logs`, `saved_views`, `webhook_logs`) has a `NOT NULL user_id` with `CASCADE` foreign key to `users.id`. `UNIQUE(user_id, invoice_no)` on `invoices` means two users may legitimately own invoices with the same invoice number.
-- **Files**: per-user subdirectories at `STORAGE_PATH/users/{user_id}/invoices/{filename}`. Collision between users with identical canonical filenames is structurally impossible.
-- **Reads**: every API endpoint filters by `user_id`. 404 is returned (not 403) for cross-tenant lookups so existence is not leaked.
-- **Shared resources**: `llm_cache` is intentionally instance-wide — two users uploading structurally identical invoices pay for only one LLM call between them. `app_settings` (AI model config, classifier rules) is also instance-wide; per-user overrides are a future release.
-
-### Single-user deployments (default)
-
-Nothing changes. `ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH` create `users[1]` on first boot. All existing invoices belong to that admin. The app works exactly as before.
-
-### Opening self-service registration
-
-Set `ALLOW_REGISTRATION=true` in `/etc/invoice-maid/invoice-maid.env` and restart the service. New users can then register at `/register` with email + password; they are created as non-admins. Rate-limited to 5 requests/minute per IP.
-
-### Admin panel
-
-Admins (users with `is_admin=True` — by default only `users[1]`) see an **Admin** link in the top navigation leading to `/admin`. The page lists every user with their invoice count and offers:
-
-- **Deactivate** / **Activate**: toggle `is_active`. Deactivated users cannot log in; existing invoices are preserved.
-- **Promote** / **Demote**: toggle `is_admin`. An admin cannot demote themselves unless another admin exists.
-- **Delete**: permanently removes the user and cascade-deletes all their invoices, email accounts, scan logs, correction logs, saved views, webhook logs, and the `users/{id}/` directory on disk. An admin cannot delete themselves.
-
-If the admin-delete handler crashes between DB commit and file cleanup, the next service restart logs a WARNING for any orphan `users/{id}/` directory it finds. The scan never auto-deletes — operator-visible, not operator-replaceable.
-
-### Change password
-
-Every user can change their own password via the profile dropdown. This revokes every OTHER session for the same user so a stolen token on a lost device stops working immediately; the current device stays logged in.
+Invoice Maid supports multiple users on one instance with strict tenant isolation: every invoice, email account, scan log, saved view, invoice profile, claim task, memory rule, chat message, and disk directory (`STORAGE_PATH/users/{user_id}/`) is scoped by `user_id`. Cross-tenant lookups return `404`. Enable `/register` with `ALLOW_REGISTRATION=true`, and manage users from `/admin`.
 
 ---
 
 ## Deployment
 
-> **Warning**
-> Run the backend with `--workers 1`. APScheduler runs in-process, and multiple workers will duplicate scheduled jobs.
+> **Important**: Always run Uvicorn with `--workers 1`. APScheduler and the Telegram long-polling listener run in-process; multiple workers would duplicate scheduled scans and cause Telegram `409 Conflict`.
 
-### LAN tryout
-```bash
-cd backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-```
-
-Open `http://<your-lan-ip>:8000` from another device. Only do this on a trusted LAN without a reverse proxy.
-
-### systemd
-Copy `deploy/invoice-maid.service` to `/etc/systemd/system/`, update placeholders, then:
-
-```bash
-systemctl daemon-reload
-systemctl enable --now invoice-maid
-```
-
-### Nginx
-Use `deploy/invoice-maid.nginx.conf` as your site template. Replace `{{DOMAIN}}` and SSL paths.
-
-### One-shot install + upgrade scripts
-
-`deploy/install.sh` bootstraps the full production stack (service user, venv, systemd unit, nginx config, SSL via certbot) interactively on a fresh Debian / Ubuntu host. `deploy/invoice-maid-upgrade` (installed by `install.sh`) pulls the latest tag from origin, runs `alembic upgrade head`, restarts the service, and waits for `/api/v1/health` to report OK — so you can redeploy with a single command. Both scripts are safe to re-run.
+- **One-shot Debian / Ubuntu setup**: `deploy/install.sh` installs the `invoice-maid` system user, venv, systemd unit (`deploy/invoice-maid.service`), Nginx reverse proxy (`deploy/invoice-maid.nginx.conf`), and automated backup/upgrade helpers.
+- **Zero-stress upgrades**: `sudo /usr/local/sbin/invoice-maid-upgrade --tag vX.Y.Z` automatically snapshots the DB &amp; files, checks out the pinned tag, runs `alembic upgrade head`, restarts the service, and verifies `/api/v1/health`.
 
 ---
 
-## Development
+## Development &amp; CI
 
-### Backend
 ```bash
+# Backend tests (100% line + branch coverage enforced in CI)
 cd backend
 pip install -e ".[dev]"
 pytest --cov=app --cov-report=term-missing --cov-fail-under=100
-```
 
-100% line and branch coverage is enforced in CI.
-
-### Frontend
-```bash
+# Frontend unit tests & production build (dist/ is committed)
 cd frontend
 npm install
-npm run dev
-```
+npm run test:run
+npm run build
 
-### E2E smoke tests
-```bash
-cd frontend
+# Playwright E2E suite (21 tests across 6 specs)
 npx playwright install chromium
 npm run test:e2e
 ```
-
-The Playwright smoke test spins up a throwaway backend against a fresh SQLite DB with a placeholder admin password, logs in, adds a dummy email account, and verifies the dashboard renders — all with no real credentials anywhere.
 
 ---
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for planned features and [CHANGELOG.md](CHANGELOG.md) for version-by-version history.
+See [ROADMAP.md](ROADMAP.md) for the release roadmap, [CHANGELOG.md](CHANGELOG.md) for detailed version-by-version changes, and [docs/VI-DESIGN-SYSTEM.md](docs/VI-DESIGN-SYSTEM.md) for Miri's brand &amp; UI specification.
 
 ---
 

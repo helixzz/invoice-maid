@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.4.1 — Released
+
+**Theme:** Up-to-date GitHub Documentation & Fresh v2.4 WebUI Screenshots. Completely rewrites `README.md` and `AGENTS.md` to document Miri's v2.x Agent Loop, Vision Browser Agent, multi-currency reimbursement loop, and full configuration reference, refreshes all 6 WebUI screenshots, and fixes `update_invoice` notes persistence. See [CHANGELOG.md](CHANGELOG.md#241---2026-11-28).
+
+---
+
 ## v2.4.0 — Released
 
 **Theme:** Empowered Miri Toolset & Rich Telegram Formatting. Unlocks 5 new agent tools (`cancel_claim_tasks`, `update_invoice`, `save_invoice_profile`, `delete_memory_rule`, `trigger_email_scan`) and adds safe Markdown-to-Telegram-HTML conversion so bold text, lists, and tap-to-copy `<code>` chips render cleanly in Telegram. See [CHANGELOG.md](CHANGELOG.md#240---2026-11-28).

@@ -846,7 +846,7 @@ class MaidAgentRunner:
             if args.get("reimbursement_status"):
                 inv.reimbursement_status = str(args["reimbursement_status"])
             if args.get("reimbursement_notes") is not None:
-                inv.reimbursement_notes = str(args["reimbursement_notes"])[:1000]
+                inv.notes = str(args["reimbursement_notes"])[:1000]
             if args.get("tags") is not None:
                 inv.tags = str(args["tags"])[:255]
             if args.get("invoice_category"):

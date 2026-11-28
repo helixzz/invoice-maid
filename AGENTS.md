@@ -1,14 +1,14 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-11-27
+**Generated:** 2026-11-28
 
 ## OVERVIEW
 
-Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 frontend. Scans email inboxes via IMAP/POP3/Outlook (Graph Delta Query)/QQ and SaaS portals, classifies emails with tiered heuristics + OpenAI-compatible LLM (supporting multi-model fallback chains, circuit breaking, and multimodal VLM fallback), parses PDF/XML/OFD invoices, extracts true multi-currency structured fields, supports reimbursement workflows & Telegram alerts, and serves a multi-user web UI for search, editing, and batch export.
+Invoice Maid (米尔 Miri) — Self-hosted AI invoice ledger and multimodal agent assistant. FastAPI backend + Vue 3 "Warm Stationery Ledger" frontend. Scans email inboxes via IMAP/POP3/Outlook (Graph Delta Query)/QQ and SaaS portals, classifies emails with tiered heuristics + OpenAI-compatible LLM (multi-model fallback chains, circuit breaking, independent embeddings, VLM PDF fallback), parses PDF/XML/OFD invoices with true multi-currency support, manages reimbursement workflows &amp; Excel/ZIP exports, and runs an IM-agnostic Agent Loop (`MaidAgentRunner`) with 14 tools, Set-of-Mark VLM QR receipt auto-claiming, persistent memory rules, and a dedicated Telegram Bot.
 
 ## STATUS
 
-**v2.4.0 — Expanded Miri Agent toolset (14 tools: cancel stuck claim tasks, edit invoice notes/category/tags, create/update invoice profiles, delete memory rules, trigger email scan) and full Markdown-to-Telegram-HTML rendering with tap-to-copy `<code>` chips.**
+**v2.4.1 — Refreshed README &amp; v2.4 WebUI screenshots, fixed `update_invoice` notes field persistence, 14-tool Miri Agent with Set-of-Mark VLM QR claiming, and 100% CI parity.** 811+ backend tests (100% line &amp; branch coverage), 23 Vitest unit tests, 21 Playwright E2E tests.
 
 ## STRUCTURE
 
@@ -20,24 +20,30 @@ invoice-maid/
 │   │   ├── config.py            # Pydantic Settings from .env
 │   │   ├── database.py          # Async SQLAlchemy + FTS5 + sqlite-vec
 │   │   ├── deps.py              # Auth & tenant-isolation dependencies (CurrentUser)
-│   │   ├── models/              # SQLAlchemy 2.0 ORM (Invoice, EmailAccount, ScanLog, LLMCache, AppSettings, ExtractionLog, FailedEmail, CorrectionLog, SavedView, WebhookLog, User, UserSession)
+│   │   ├── models/              # SQLAlchemy 2.0 ORM (Invoice, EmailAccount, ScanLog, LLMCache, AppSettings, ExtractionLog, FailedEmail, CorrectionLog, SavedView, WebhookLog, User, UserSession, InvoiceProfile, MaidMemory, InvoiceClaimTask, MaidMessage)
 │   │   ├── schemas/             # Pydantic request/response schemas
-│   │   ├── api/                 # FastAPI routers (auth, admin, invoices, downloads, email_accounts, scan, stats, views, ai_settings, classifier_settings, notification_settings, test_helpers)
-│   │   ├── services/            # Business logic (ai_service, email_classifier, email_scanner, graph_http, failed_email_queue, invoice_parser, invoice_ingestion, manual_upload, invoice_csv, invoice_xlsx, telegram_notifier, file_manager, search_service, settings_resolver, scrapers/)
-│   │   ├── tasks/               # APScheduler scan orchestration & maintenance jobs
+│   │   ├── api/                 # FastAPI routers (auth, admin, invoices, downloads, email_accounts, scan, stats, views, ai_settings, classifier_settings, notification_settings, profiles, maid, test_helpers)
+│   │   ├── services/            # Business logic (ai_service, email_classifier, email_scanner, graph_http, failed_email_queue, invoice_parser, invoice_ingestion, manual_upload, invoice_csv, invoice_xlsx, telegram_notifier, telegram_agent_bot, qr_receipt_decoder, claim_form_agent, vision_browser_agent, maid_agent, file_manager, search_service, settings_resolver, scrapers/)
+│   │   ├── tasks/               # APScheduler scan orchestration, DLQ retry & maid heartbeat jobs
 │   │   └── prompts/             # LLM prompt templates (classify_email.txt, extract_invoice.txt)
-│   ├── alembic/                 # DB migrations (0001–0022)
-│   ├── tests/                   # 797+ tests, 100% coverage enforced
+│   ├── alembic/                 # DB migrations (0001–0023)
+│   ├── tests/                   # 811+ tests, 100% line & branch coverage enforced
 │   ├── pyproject.toml
 │   └── .env.example
 ├── frontend/
 │   ├── src/
-│   │   ├── components/          # Shared UI + modular settings/ panels (AI, Classifier, Notifications)
-│   │   ├── views/               # Login, Register, InvoiceList, InvoiceDetail, InvoiceUpload, Settings, Admin
+│   │   ├── components/          # Warm Stationery shared UI (AppLayout, MaidChatDrawer, badges, dialogs, toast, ScanProgressBar) + modular settings/ panels (AI, Classifier, Notifications, InvoiceProfiles)
+│   │   ├── views/               # Login, Register, InvoiceList, InvoiceDetail, InvoiceUpload, MaidWorkspace, Settings, Admin
 │   │   ├── stores/              # Pinia stores (auth, invoices)
 │   │   └── api/                 # Typed axios API client
+│   ├── e2e/                     # 6 Playwright E2E specs (21 tests)
 │   └── dist/                    # Built frontend (committed)
-├── deploy/                      # systemd + nginx + upgrade templates
+├── docs/
+│   └── VI-DESIGN-SYSTEM.md      # Miri (米尔) brand VI & Warm Stationery Ledger spec
+├── assets/
+│   ├── images/                  # Transparent 2026 Miri avatar & workflow SVG
+│   └── screenshots/             # Current v2.4 WebUI screenshots for README
+├── deploy/                      # systemd + nginx + idempotent install/upgrade scripts
 ├── README.md
 ├── CHANGELOG.md
 └── ROADMAP.md
@@ -48,15 +54,18 @@ invoice-maid/
 | Task | Location | Notes |
 |------|----------|-------|
 | Requirements / spec | `IDEA.md` | Chinese; private, never push |
+| Brand & UI design system | `docs/VI-DESIGN-SYSTEM.md` | Miri (米尔) tokens, typography, layout & tone |
 | API surface | `backend/app/api/` | All routers mounted under `/api/v1/` |
 | Email scanning & Graph retry | `backend/app/services/email_scanner.py`, `graph_http.py` | IMAP/POP3/QQ/Outlook Delta + 429 Retry-After backoff |
 | Invoice parsing & VLM render | `backend/app/services/invoice_parser.py` | PDF/XML/OFD + QR + currency detect + PyMuPDF PNG render |
-| Shared ingestion pipeline | `backend/app/services/invoice_ingestion.py` | Unified enrich/VLM/currency/scam/VAT gate for email + upload |
-| LLM routing & circuit breaker | `backend/app/services/ai_service.py` | Ordered fallback chain, circuit breaker, independent embed endpoint, VLM |
+| Shared ingestion pipeline | `backend/app/services/invoice_ingestion.py` | Unified enrich/VLM/currency/scam/VAT gate + memory rules |
+| LLM routing & circuit breaker | `backend/app/services/ai_service.py` | Ordered fallback chain, circuit breaker, independent embed endpoint, VLM, tool-calling |
 | Persistent retry queue (DLQ) | `backend/app/services/failed_email_queue.py` | Exponential backoff retry queue + watermark protection |
-| Telegram IM notifications | `backend/app/services/telegram_notifier.py` | Error alerts (15m cooldown) + scan summary |
+| Miri Agent Loop (14 tools) | `backend/app/services/maid_agent.py` | Tool-calling chat, memory rules, QR intake, heartbeat |
+| QR decoding & Vision Browser Agent | `backend/app/services/qr_receipt_decoder.py`, `vision_browser_agent.py`, `claim_form_agent.py` | Thermal-line QR repair, WeChat code detection, Set-of-Mark VLM browser loop |
+| Telegram notifications & Agent Bot | `backend/app/services/telegram_notifier.py`, `telegram_agent_bot.py` | Unified Miri channel, live progress, `sendPhoto`, Markdown→HTML |
 | Export (CSV / Excel / Pack) | `backend/app/services/invoice_csv.py`, `invoice_xlsx.py` | Zero-dependency OOXML `.xlsx` + reimbursement ZIP pack |
-| Settings UI panels | `frontend/src/components/settings/` | Modular AI / Classifier / Telegram notification panels |
+| Settings UI panels | `frontend/src/components/settings/` | Modular AI / Classifier / Telegram / InvoiceProfiles panels |
 | Config reference | `backend/.env.example` | All env vars documented |
 | Deployment | `deploy/` | systemd + nginx + idempotent upgrade script |
 
@@ -66,7 +75,7 @@ invoice-maid/
 - 100% unit test coverage required (`pytest --cov=app --cov-fail-under=100`)
 - `.coveragerc` must have `concurrency = greenlet, thread`
 - `expire_on_commit=False` on all session factories
-- APScheduler `--workers 1` mandatory (in-process scheduler)
+- APScheduler `--workers 1` mandatory (in-process scheduler & Telegram polling)
 - SPA catch-all route MUST be registered last in `main.py`
 - Fernet encryption for stored passwords, API keys, and Telegram bot tokens (key from `JWT_SECRET`)
 - LLM calls cached by SHA-256(`prompt_type + content`)
@@ -76,7 +85,7 @@ invoice-maid/
 
 - Pushing credentials, API keys, Bot tokens, `.env`, `IDEA.md`, or `*.db` to git
 - Shipping features without updating `README.md` + `CHANGELOG.md` + `ROADMAP.md`
-- Multiple uvicorn workers (duplicates scheduler jobs)
+- Multiple uvicorn workers (duplicates scheduler jobs & causes Telegram 409 Conflict)
 - Forgetting `easyofd.del_data()` cleanup after OFD parsing
 - Using sync `imap-tools` without `run_in_executor`
 - **Pushing code without bumping the version** — every behavioral change (feature, fix, refactor) must increment `backend/pyproject.toml` version AND move/create the release tag on HEAD before pushing.

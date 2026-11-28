@@ -211,6 +211,8 @@ async def test_maid_agent_tool_calling_loop_and_memories_and_heartbeat(
         args={"invoice_id": inv.id, "reimbursement_status": "pending", "reimbursement_notes": "客户招待", "tags": "餐饮", "invoice_category": "vat_invoice"},
     )
     assert u_inv["updated"] is True
+    await db.refresh(inv)
+    assert inv.notes == "客户招待"
     # Also exercise update_invoice omitting optional fields
     assert (await runner._execute_tool(db, user_id=account.user_id, name="update_invoice", args={"invoice_id": inv.id}))["updated"] is True
 
