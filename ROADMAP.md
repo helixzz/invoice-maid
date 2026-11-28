@@ -1,5 +1,11 @@
 # Roadmap
 
+## v2.3.3 — Released
+
+**Theme:** Thermal-line QR repair & unified Miri Telegram channel. Fixes decoding of thermal receipts with print-head dead-pixel lines (e.g. Sam's Club), detects URL-bound WeChat Mini Program 404 pages, and lets scan summaries & alerts route cleanly through Miri's own Telegram Bot when the shared notification token is cleared. See [CHANGELOG.md](CHANGELOG.md#233---2026-11-28).
+
+---
+
 ## v2.3.2 — Released
 
 **Theme:** WeChat Mini Program code recognition & smarter QR decoding. Explicitly identifies WeChat Mini Program sunflower codes and Alipay codes via VLM, replies with copyable saved header cards while tracking expected invoices for automatic email matching, and adds autocontrast preprocessing for standard QR photos. See [CHANGELOG.md](CHANGELOG.md#232---2026-11-27).

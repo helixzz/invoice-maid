@@ -75,6 +75,7 @@ def decode_qr_urls_from_image(image_bytes: bytes) -> list[str]:
     try:
         pil_image = importlib.import_module("PIL.Image")
         pil_ops = importlib.import_module("PIL.ImageOps")
+        pil_filter = importlib.import_module("PIL.ImageFilter")
         pyzbar_mod = importlib.import_module("pyzbar.pyzbar")
     except ImportError:
         logger.warning("PIL or pyzbar unavailable — QR photo decoding disabled")
@@ -91,8 +92,14 @@ def decode_qr_urls_from_image(image_bytes: bytes) -> list[str]:
     candidates = [img]
     try:
         gray = img.convert("L")
-        candidates.append(gray)
-        candidates.append(pil_ops.autocontrast(gray))
+        min3 = gray.filter(pil_filter.MinFilter(3))
+        candidates.extend([gray, pil_ops.autocontrast(gray), min3])
+        # Thermal receipt printer dead-pixel vertical line repair + multi-scale/threshold passes
+        if gray.width >= 320 and gray.height >= 320:
+            half = gray.resize((gray.width // 2, gray.height // 2), pil_image.Resampling.LANCZOS)
+            candidates.append(half.filter(pil_filter.MinFilter(3)))
+        for thresh in (165, 130):
+            candidates.append(min3.point(lambda p, t=thresh: 255 if p > t else 0, mode="1"))
     except Exception:  # pragma: no cover - defensive
         pass
 

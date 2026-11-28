@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.3.3] - 2026-11-28
+
+### Added
+
+- **Thermal-receipt broken-line QR decoding repair (`qr_receipt_decoder.py`)**:
+  - Added morphological `MinFilter(3)` dilation, half-scale resize + `MinFilter(3)`, and multi-threshold binarization passes so square QR codes printed with vertical thermal print-head dead-pixel lines (such as Sam's Club receipts) decode reliably.
+- **URL-bound WeChat Mini Program detection (`claim_form_agent.py`, `vision_browser_agent.py`)**:
+  - Recognizes standard-URL QR codes that open a WeChat Mini Program inside WeChat but render a `404 / 微信小程序` page in regular browsers (e.g. `samsclub.cn/invoice`), clearly explaining the WeChat restriction and attaching copyable header cards.
+- **Unified Miri Telegram channel for scan summaries & alerts (`telegram_notifier.py`, `telegram_agent_bot.py`)**:
+  - When `telegram_bot_token` is cleared, one-way scan summaries and alerts automatically send through Miri's own `telegram_agent_bot_token` without triggering a self-conflict, keeping all Invoice Maid notifications inside Miri's dedicated Telegram chat instead of the shared Hermes channel.
+
 ## [2.3.2] - 2026-11-27
 
 ### Added

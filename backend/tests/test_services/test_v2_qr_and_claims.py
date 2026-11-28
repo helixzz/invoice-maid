@@ -33,11 +33,11 @@ from app.services.qr_receipt_decoder import (
 )
 
 
-def _tiny_png_bytes() -> bytes:
+def _tiny_png_bytes(size: tuple[int, int] = (20, 20)) -> bytes:
     from PIL import Image
 
     buf = io.BytesIO()
-    Image.new("RGB", (20, 20), color=(255, 255, 255)).save(buf, format="PNG")
+    Image.new("RGB", size, color=(255, 255, 255)).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -77,9 +77,10 @@ def test_qr_decoder_helpers_and_edge_cases(monkeypatch: pytest.MonkeyPatch) -> N
     fake_pyzbar.decode = grayscale_pyzbar
     assert decode_qr_urls_from_image(_tiny_png_bytes()) == ["weixin://inv/2"]
 
-    # Empty decode on both RGB and grayscale
+    # Empty decode on small and large (>=320px thermal-repair resize) images
     fake_pyzbar.decode = lambda _img: []
     assert decode_qr_urls_from_image(_tiny_png_bytes()) == []
+    assert decode_qr_urls_from_image(_tiny_png_bytes((340, 340))) == []
 
     # ImportError graceful degradation
     def missing_import(name: str):

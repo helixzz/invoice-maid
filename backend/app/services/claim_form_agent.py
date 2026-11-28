@@ -71,6 +71,7 @@ WECHAT_AUTH_TEXT_SIGNALS = (
     "微信授权失败",
     "请使用微信扫码",
     "仅支持微信",
+    "微信小程序",
 )
 
 WECHAT_URL_PATH_HINTS = ("/fpwx/", "/wx/", "wxinvoice", "weixin")

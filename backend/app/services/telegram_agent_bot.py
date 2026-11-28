@@ -78,8 +78,15 @@ async def resolve_agent_bot_settings(db: AsyncSession) -> ResolvedAgentBotSettin
     if "telegram_agent_allowed_chat_ids" in rows:
         allowed_raw = rows["telegram_agent_allowed_chat_ids"]
 
-    notify_cfg = await resolve_telegram_settings(db)
-    conflict = has_token_conflict(notify_cfg["bot_token"], bot_token)
+    # Compare against the explicit one-way notification token ONLY (not the agent fallback)
+    # so clearing telegram_bot_token to unify notifications on Miri's own bot never self-conflicts.
+    explicit_notify_token = settings.TELEGRAM_BOT_TOKEN
+    notify_row = await db.get(AppSettings, "telegram_bot_token")
+    if notify_row is not None:
+        explicit_notify_token = (
+            decrypt_password(notify_row.value, settings.JWT_SECRET) if notify_row.value else ""
+        )
+    conflict = has_token_conflict(explicit_notify_token, bot_token)
     return {
         "enabled": enabled,
         "bot_token": bot_token,

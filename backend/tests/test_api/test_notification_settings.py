@@ -76,6 +76,31 @@ async def test_notification_settings_crud_and_encryption(client, auth_headers, d
     assert upd3.status_code == 200
     assert upd3.json()["telegram_chat_id"] == "555"
 
+    # Clearing telegram_bot_token while telegram_agent_bot_token is set routes
+    # one-way notifications cleanly through Miri's own bot with zero conflict
+    upd4 = await client.put(
+        "/api/v1/settings/notifications",
+        headers=auth_headers,
+        json={
+            "telegram_bot_token": "",
+            "telegram_agent_enabled": True,
+            "telegram_agent_bot_token": "999888:MIRI-ONLY-TOKEN",
+        },
+    )
+    assert upd4.status_code == 200
+    assert upd4.json()["telegram_agent_token_conflict"] is False
+    resolved_unified = await resolve_telegram_settings(db)
+    assert resolved_unified["bot_token"] == "999888:MIRI-ONLY-TOKEN"
+
+    # Empty agent token stays empty cleanly
+    await client.put(
+        "/api/v1/settings/notifications",
+        headers=auth_headers,
+        json={"telegram_agent_bot_token": ""},
+    )
+    resolved_empty = await resolve_telegram_settings(db)
+    assert resolved_empty["bot_token"] == ""
+
 
 @pytest.mark.asyncio
 async def test_notification_test_endpoint_and_http_paths(

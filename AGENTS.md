@@ -8,7 +8,7 @@ Invoice Maid — AI-powered invoice extraction service. FastAPI backend + Vue 3 
 
 ## STATUS
 
-**v2.3.2 — VLM recognition of WeChat Mini Program sunflower codes (微信小程序码) & Alipay codes with copyable header cards + automatic email-matching tracking, plus autocontrast QR decoding enhancement.**
+**v2.3.3 — Thermal-receipt broken-line QR repair (Sam's Club & supermarket slips), WeChat URL-bound Mini Program 404 detection, and unified notifications routed through Miri's dedicated Telegram Bot channel.**
 
 ## STRUCTURE
 

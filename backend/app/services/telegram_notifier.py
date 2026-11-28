@@ -21,6 +21,8 @@ TELEGRAM_SETTINGS_KEYS = (
     "telegram_chat_id",
     "telegram_notify_on_error",
     "telegram_notify_on_scan_summary",
+    "telegram_agent_enabled",
+    "telegram_agent_bot_token",
 )
 
 ALERT_COOLDOWN_SECONDS = 900.0  # 15 minutes per alert key to prevent spam
@@ -83,6 +85,19 @@ async def resolve_telegram_settings(db: AsyncSession) -> ResolvedTelegramSetting
             resolved["notify_on_scan_summary"] = _parse_bool(
                 rows["telegram_notify_on_scan_summary"], resolved["notify_on_scan_summary"]
             )
+
+    # When dedicated notification bot token is left blank, seamlessly route one-way
+    # scan summaries and alerts through Miri's independent Agent Bot token so all
+    # Invoice Maid messages stay in Miri's own Telegram channel (no Hermes overlap).
+    if not resolved["bot_token"]:
+        agent_token_plain = settings.TELEGRAM_AGENT_BOT_TOKEN
+        if "telegram_agent_bot_token" in rows:
+            raw_agent = rows["telegram_agent_bot_token"]
+            agent_token_plain = (
+                decrypt_password(raw_agent, settings.JWT_SECRET) if raw_agent else ""
+            )
+        if agent_token_plain:
+            resolved["bot_token"] = agent_token_plain
     return resolved
 
 
